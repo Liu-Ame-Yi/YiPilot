@@ -109,6 +109,7 @@ Application services
 - `Typer`：CLI；`Pydantic v2`：边界 DTO 与文件 schema；`PyYAML`：配置。
 - `pytest`、`pytest-xdist`、`Hypothesis`：测试与属性测试。
 - `filelock` 或自研跨平台文件锁：单机互斥。
+- `platformdirs`：定位全局用户设置目录；`keyring`：将 API key 保存到 Windows Credential Locker。
 - `httpx`：外部 HTTP Adapter；所有 network 必须经过共享 transport。
 - `FastAPI`、`uvicorn`：仅作为可选 `server` extra；当前 CLI 核心不安装、不导入。
 - 可选 LangGraph：只作为 graph runtime；其持久化记录不得成为业务唯一事实源。
@@ -211,6 +212,10 @@ docs/
 ### 6.3 恢复原则
 
 恢复不重新“猜测”模型或外部副作用。它先验证 Run 状态、锁/lease、输入 fingerprint、可用 artifact、执行器记录和 approval；只有能证明之前副作用完成时才跳过。无法证明时标为 failed 或 waiting，要求用户建立新的 Run/Operation。
+
+### 6.4 配置分层
+
+项目配置 `.yipilot/config.yaml` 只记录项目级选择：默认 provider profile 名称、模型用途覆盖、允许的 repo 与执行策略。全局用户设置位于 Windows 的 platform data/config 目录，记录 provider profile 元数据；两者都禁止保存 API key 明文。密钥只由 SecretStore 解析：优先 Windows Credential Locker，其次是用户指定的环境变量。项目配置可覆盖“选哪个 profile”，不得覆盖或打印密钥。
 
 ## 7. Harness 工程规格
 
@@ -376,6 +381,11 @@ yipilot code generate --taskid <id> --executor fake|codex_cli
 yipilot harness run --taskid <id> --stage <stage>
 yipilot harness show --taskid <id> --run-id <id>
 yipilot code apply --taskid <id> --prepare-only
+yipilot settings provider add <name> --kind openai_compatible --base-url <url> --model <model>
+yipilot settings provider set-key <name>       # 安全提示输入，写入系统凭据库
+yipilot settings provider use <name>
+yipilot settings provider list
+yipilot settings provider test <name> [--request]
 ```
 
 默认输出为人类可读摘要；`--output json` 供自动化。所有 mutating command 支持 request id/idempotency key；解析失败不得创建部分文件。
@@ -410,6 +420,32 @@ yipilot run watch --run-id <id> --after-sequence <n>
 ```
 
 人类模式可以使用终端进度/流式文本；`jsonl` 模式只能输出事件 JSON，不混入进度条、颜色码或日志。`run watch` 先从指定 cursor 回放已持久化事件，再以短轮询或平台文件通知跟随 JSONL 尾部；终态事件出现后正常退出。这样在单进程、跨 CLI 进程和未来 HTTP 客户端之间保持相同的 replay/cursor 语义。
+
+### 10.3 模型提供商设置与密钥管理
+
+Yipilot 不绑定 Codex CLI 或单一厂商。`ModelPort` 接收统一的流式文本请求，向 Run Event Stream 产生 `model.delta`/`model.message_completed`；provider profile 决定请求发往哪个大模型服务。M4 的首个 production Adapter 是 `openai_compatible`，以 `base_url`、模型名和 Bearer API key 调用兼容的流式聊天接口。OpenAI、兼容网关或本地服务可分别建 profile；协议不兼容的厂商以后以独立 Adapter 接入，不能用模糊的配置开关伪装兼容。
+
+全局 provider profile 的非敏感 schema：
+
+```yaml
+providers:
+  my-provider:
+    kind: openai_compatible
+    base_url: https://example.invalid/v1
+    model: example-model
+    api_key_ref: keyring:yipilot/my-provider
+    timeout_seconds: 120
+    max_output_tokens: 4096
+    capabilities: [streaming, text]
+    enabled: true
+default_provider: my-provider
+```
+
+`api_key_ref` 仅允许 `keyring:<service>/<name>` 或 `env:<VARIABLE_NAME>`，拒绝裸 key、URL 中的 credential、文件路径和任意命令替换。`settings provider set-key` 必须使用无回显输入并调用 `keyring.set_password("yipilot", provider_name, key)`；不得提供会把 key 写入 shell history 的 `--api-key` 参数。`settings provider list/show` 始终显示引用和掩码状态，绝不显示值；Run、Event、Harness、异常、HTTP trace 与 debug 日志均须通过 secret redactor。
+
+`settings provider test <name>` 默认仅校验 schema、secret 是否可解析、URL scheme/allowlist 和 capability 声明，不发送网络请求。只有 `--request` 才发送一个固定的最小流式文本探测请求；它显示预计发生网络请求和可能消耗 token 的提示，记录 provider、模型、时长、状态码类别和已脱敏错误，绝不记录 Authorization header 或响应正文。
+
+模型调用前，Application service 必须将 provider 名、模型、profile revision、请求预算、允许输入 artifact、timeout 和 input fingerprint 写入 model-call record。默认仅允许文本与已批准的 Markdown 工件；向外发送源码、附件或图片必须由 stage policy 和用户确认显式允许。若 provider 不支持 streaming，Adapter 只在完成时发出 `model.message_completed`，CLI 仍能正确工作但不伪造 token 实时输出。
 
 ## 11. 安全与可靠性
 
@@ -453,6 +489,7 @@ HTTP/SSE、ACP、服务端认证、Postgres/Redis lease、多 worker、凭据轮
 
 - Project/Task/Operation/Run/Event/Artifact 模型和状态机。
 - 文件 Store、原子写、锁、权限、恢复扫描。
+- provider profile schema、SecretStore Port、Windows keyring 与环境变量引用；不发送模型请求。
 - CLI init/task/run/harness 查询；TaskIntegrityHarness。
 
 ### M2：Git 隔离与证据（约 8 项）
@@ -469,7 +506,7 @@ HTTP/SSE、ACP、服务端认证、Postgres/Redis lease、多 worker、凭据轮
 
 ### M4：研发工件与质量闭环（约 10 项）
 
-- PRD fixture input、SRS/SDD artifact、ModelPort fake/replay。
+- PRD fixture input、SRS/SDD artifact、ModelPort fake/replay、`openai_compatible` production Adapter。
 - SRS/SDD Harness v1、Python/pytest test plan、UnitTestHarness。
 - input fingerprint、新鲜度、report schema/golden tests。
 
@@ -521,6 +558,7 @@ Git provider、MCP、Wiki、BugTask、企业身份系统均通过 Port 接入。
 | CLI | Typer | 类型标注驱动的命令、参数、帮助与 shell completion，适合命令树 | 不手写 argparse；不引入 GUI |
 | Schema | Pydantic v2 | 配置、CLI DTO、持久化记录和 HarnessReport 的严格校验；可导出 JSON Schema | Domain 规则仍保持普通 Python，不让 Pydantic 侵入所有业务行为 |
 | 配置 | PyYAML + Pydantic 校验 | 人类可编辑 YAML，加载后严格校验/版本化 | 不直接把 dict 当配置事实源 |
+| 密钥 | `keyring` + 显式环境变量引用 | Windows Credential Locker 优先；密钥与项目/审计工件分离 | 不在 YAML、CLI 参数、日志或 Git 中保存明文 |
 | 持久化 | `pathlib` + 原子 JSON/YAML/JSONL + 文件锁 | 单用户、本地审计、可直接检查与归档 | 当前不引入 ORM、Postgres、Redis |
 | Git/子进程 | stdlib `subprocess` argv + 自有 Port | 命令、cwd、超时、环境与证据完全可控 | 不让 Agent 传入 shell 字符串 |
 | 测试 | pytest + Hypothesis | Yipilot 和受管项目首版只支持 Python；断言、fixture、property test 统一 | 不支持 Go/Node/Java 或通用任意命令 runner |
