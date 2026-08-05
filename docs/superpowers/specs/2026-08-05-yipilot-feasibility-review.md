@@ -11,7 +11,7 @@
 | M0–M2：文件化控制面与 Git 隔离 | 可行 | 使用临时 Git repo、文件锁和原子写；不依赖公司系统 |
 | M3：受控执行器与代码证据 | 可行 | 自动化测试仅 fake；真实 CLI 执行必须显式接受 host-trusted 风险或在 sandbox 运行 |
 | M4：SRS/SDD/测试工件闭环 | 可行 | 从 fixture/fake/replay 开始；真实模型是可选 Adapter，不能成为 CI 前置 |
-| REST/SSE、ACP、企业系统、Bugfix、生产化 | 计划外 | 当前仅交付本地 CLI；未来需要时必须另建规格 |
+| REST/SSE、ACP、企业系统、Bugfix、生产化 | 条件可行、未承诺 | 当前仅交付本地 CLI；扩展边界已保留，实施前另建里程碑、fixture 与验收 |
 
 ## 2. 已确认的范围边界
 

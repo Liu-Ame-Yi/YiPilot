@@ -28,7 +28,7 @@ Yipilot 是一个本地优先的 AI 辅助研发流程控制器。用户以 `tas
 1. 不实现 Go/Eino 私有 checkpoint 的二进制兼容或直接恢复。
 2. 不在 M1–M4 依赖公司内网服务、真实 GitLab、真实 MCP、真实 Wiki、BugTask 或生产 token。
 3. 不自动合并 PR/MR，不自动 push，除非用户在未来版本明确批准 Apply。
-4. 当前项目只交付本地 CLI；GUI、REST、SSE、ACP、云端多租户、多 worker 集群和服务端认证均不在计划范围内。
+4. 当前项目只承诺交付本地 CLI；GUI、REST、SSE、ACP、云端多租户、多 worker 集群和服务端认证不属于当前实现范围，但其扩展边界保留在第 16 节，后续是否实施另行决定。
 5. 不声称 Harness 证明需求正确、代码无缺陷或模型输出真实；它只证明明确列出的、可重复执行的检查已通过。
 
 ### 2.3 Definition of Done
@@ -110,6 +110,7 @@ Application services
 - `pytest`、`pytest-xdist`、`Hypothesis`：测试与属性测试。
 - `filelock` 或自研跨平台文件锁：单机互斥。
 - `httpx`：外部 HTTP Adapter；所有 network 必须经过共享 transport。
+- `FastAPI`、`uvicorn`：仅作为可选 `server` extra；当前 CLI 核心不安装、不导入。
 - 可选 LangGraph：只作为 graph runtime；其持久化记录不得成为业务唯一事实源。
 
 任何新增依赖必须记录：用途、替代方案、许可证、升级策略和是否执行生命周期脚本。依赖安装和 CI 默认禁用非必要脚本。
@@ -124,7 +125,7 @@ src/yipilot/
   infrastructure/  # filesystem、git、subprocess、http、adapter
   harness/         # 独立质量门禁工程
   workflows/       # stage graph 与输入/输出组装
-  transport/       # cli
+  transport/       # cli；future extras: rest、sse、acp
   bootstrap/       # composition root、配置与 DI
   assets/          # 版本化 SKILL、模板、JSON Schema
 tests/
@@ -286,7 +287,7 @@ Runner 只读取 `HarnessContext` 允许访问的工件和目录；它不直接�
 | SRS | 存在/非空、FR/NFR、未决 clarify、需求 ID、来源引用 | M4 先允许部分 warning；缺失结构 failed |
 | SDD | 输入 SRS 可用、主文档/细节文档、链接、追踪矩阵、模块/文件矩阵 | C2 基础检查，增强语义检查 feature flag |
 | Code | executor record、workspace、diff/stat/changed-files、验证命令证据 | 缺关键证据 failed；无变更为明确 `no_changes` |
-| UnitTest | 计划/结果一一对应、命令日志、失败诊断、禁止未解释 skipped、超时清理 | failed 阻断 Report/Apply |
+| UnitTest | Python/pytest 计划与结果一一对应、命令日志、失败诊断、禁止未解释 skipped、超时清理 | failed 阻断 Report/Apply |
 
 检查 ID 永不因文案变更而重用。新增严格语义检查必须使用新 ID、新 harness version 和 feature flag，避免破坏业务兼容。
 
@@ -339,7 +340,7 @@ MVP 的 `apply` 只做“准备发布证据”，不 push。启用真实 push �
 | code_generate | M3 | 明确开发指令、workspace 与可选现有 SDD | executor/evidence | fake 或本地 executor |
 | srs_generate | M4 | PRD 文本/fixture | srs.md/report | fake/ModelPort |
 | sdd_generate | M4 | SRS/repo evidence | sdd bundle/report | fake/ModelPort |
-| unit_test_execute | M4 | test plan/workspace | reports/logs | CommandRunner |
+| unit_test_execute | M4 | Python/pytest test plan/workspace | reports/logs | pytest CommandRunner |
 | code_apply_prepare | M3 | code evidence/approval | 本地交接包 | 无 |
 
 ### 9.2 典型闭环
@@ -379,7 +380,7 @@ yipilot code apply --taskid <id> --prepare-only
 
 默认输出为人类可读摘要；`--output json` 供自动化。所有 mutating command 支持 request id/idempotency key；解析失败不得创建部分文件。
 
-CLI 是唯一 transport。交互式确认采用标准输入/输出，但所有决定仍写成 Approval/Event；脚本化使用 `--output json` 与明确的 confirm token。当前不实现 HTTP、SSE、ACP、浏览器 UI 或远程身份认证，也不为它们保留运行时依赖。
+CLI 是当前唯一 transport。交互式确认采用标准输入/输出，但所有决定仍写成 Approval/Event；脚本化使用 `--output json` 与明确的 confirm token。HTTP、SSE、ACP、浏览器 UI 或远程身份认证不在当前实现中，也不进入核心运行时依赖；若后续启用，遵循第 16 节的 extension 设计。
 
 ## 11. 安全与可靠性
 
@@ -397,7 +398,7 @@ M1–M3：单机文件锁、原子写、崩溃后保守失败、可人工重试�
 
 M4：checkpoint 提示、审批陈旧检查和 fault injection。
 
-HTTP/SSE、ACP、服务端认证、Postgres/Redis lease、多 worker、凭据轮换和负载演练均为明确的计划外能力；若未来需要，必须另建规格与里程碑。
+HTTP/SSE、ACP、服务端认证、Postgres/Redis lease、多 worker、凭据轮换和负载演练不在当前实现范围；其接口与验收方向保留在第 16 节。实现前必须新增里程碑、fixture 和专项验收。
 
 ## 12. 测试与交付策略
 
@@ -440,10 +441,10 @@ HTTP/SSE、ACP、服务端认证、Postgres/Redis lease、多 worker、凭据轮
 ### M4：研发工件与质量闭环（约 10 项）
 
 - PRD fixture input、SRS/SDD artifact、ModelPort fake/replay。
-- SRS/SDD Harness v1、test plan、UnitTestHarness。
+- SRS/SDD Harness v1、Python/pytest test plan、UnitTestHarness。
 - input fingerprint、新鲜度、report schema/golden tests。
 
-总量约 40 个可验收交付项；每项必须有范围、非目标、依赖、Harness/测试证据和 DoD。M0–M3 是不依赖模型或公司环境的本地控制面 MVP；M4 是首个研发工件闭环。服务化、ACP、Bugfix、企业 Git Provider、迁移、多 worker 和生产化不属于本项目范围。
+总量约 40 个当前可验收交付项；每项必须有范围、非目标、依赖、Harness/测试证据和 DoD。M0–M3 是不依赖模型或公司环境的本地控制面 MVP；M4 是首个研发工件闭环。服务化、ACP、Bugfix、企业 Git Provider、迁移、多 worker 和生产化属于未承诺的可选扩展，而非当前交付范围。
 
 ## 14. 决策与待确认项
 
@@ -467,3 +468,34 @@ HTTP/SSE、ACP、服务端认证、Postgres/Redis lease、多 worker、凭据轮
 - [ ] 任何 `skipped` 均不会被 UI、CLI、API 或 Apply 当作通过。
 - [ ] 不存在“自动 push/merge”“读取任意路径”“恢复未知副作用”的隐含行为。
 - [ ] 计划以 M0–M4 为独立可验收范围，不依赖公司环境或服务端组件。
+
+## 16. 可选扩展路线（不构成当前承诺）
+
+本节保留未来可能需要的边界，避免现在的 CLI 领域模型阻断后续演进。它们均不进入 M0–M4 的依赖、测试或完成定义。
+
+### 16.1 Server extra：FastAPI、REST 与 SSE
+
+若需要本地或远程 API，选择 FastAPI 作为 `yipilot[server]` 的首选框架：它以 Python 类型和 Pydantic 模型定义请求/响应，并可自动生成 OpenAPI/JSON Schema 文档。REST 只调用现有 Application service；写操作要求 `Idempotency-Key`；SSE 从 Event sequence replay。CLI Core 不可导入 FastAPI，禁止让 HTTP DTO 进入 Domain。
+
+### 16.2 ACP、Human Review 与多 worker
+
+ACP 只能映射到既有 Operation/Run/Event；不可建立第二状态机。Human Review 必须使用不可变 transcript、candidate/diff、Harness 和 hash-CAS approval。多 worker 仅在文件锁不足以支持目标部署时考虑，并需先为 lease、队列、数据库与恢复建立专项设计和故障注入测试。
+
+### 16.3 企业 Adapter 与 Bugfix
+
+Git provider、MCP、Wiki、BugTask、企业身份系统均通过 Port 接入。它们必须先具备脱敏 schema、fake、recorded replay、disabled 状态和生产授权，再被添加为独立 stage；任何缺少这些输入的集成都保持 disabled。
+
+## 17. 框架决策
+
+| 层 | 当前选择 | 原因 | 不选择/延后 |
+| --- | --- | --- | --- |
+| CLI | Typer | 类型标注驱动的命令、参数、帮助与 shell completion，适合命令树 | 不手写 argparse；不引入 GUI |
+| Schema | Pydantic v2 | 配置、CLI DTO、持久化记录和 HarnessReport 的严格校验；可导出 JSON Schema | Domain 规则仍保持普通 Python，不让 Pydantic 侵入所有业务行为 |
+| 配置 | PyYAML + Pydantic 校验 | 人类可编辑 YAML，加载后严格校验/版本化 | 不直接把 dict 当配置事实源 |
+| 持久化 | `pathlib` + 原子 JSON/YAML/JSONL + 文件锁 | 单用户、本地审计、可直接检查与归档 | 当前不引入 ORM、Postgres、Redis |
+| Git/子进程 | stdlib `subprocess` argv + 自有 Port | 命令、cwd、超时、环境与证据完全可控 | 不让 Agent 传入 shell 字符串 |
+| 测试 | pytest + Hypothesis | Yipilot 和受管项目首版只支持 Python；断言、fixture、property test 统一 | 不支持 Go/Node/Java 或通用任意命令 runner |
+| 工作流 | 自定义 StageRunner/状态机 | M0–M4 阶段固定且需精确审计、重试与 Harness gate | LangGraph 延后为可选 graph runtime |
+| API extension | FastAPI + Uvicorn extra | 与 Pydantic 类型/JSON Schema 复用，未来 OpenAPI、依赖注入和测试路径清晰 | 当前不安装；不使用 Django/Flask |
+
+LangGraph 若在未来引入，只能用于某个 stage 内部的图执行。其节点在恢复时可能从节点开头重新运行，因此每个含副作用的节点仍必须使用 Yipilot 的 Operation、idempotency key、evidence 与 Approval 边界；LangGraph checkpoint 永远不是业务事实源。
