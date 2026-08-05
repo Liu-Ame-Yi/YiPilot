@@ -1,15 +1,15 @@
-# Zpilot-Py 实施设计规格（业务兼容、能力分级版）
+# Yipilot 实施设计规格（业务兼容、能力分级版）
 
 - 状态：Draft，待评审
 - 日期：2026-08-05
-- 暂定包名：`zpilot`
-- 代码仓库名：`zpilot-py`
+- 规范包名与 CLI：`yipilot`
+- 代码仓库名：`yipilot`
 - 事实来源：`规划书.md`（公司 Go 项目的行为与合同梳理）以及公开工程实践
 - 实施策略：业务合同优先；无法取得的公司环境不得虚构，必须显式降级、禁用或以可替换 Adapter 表达。
 
 ## 1. 执行摘要
 
-Zpilot-Py 是一个本地优先的 AI 辅助研发流程控制器。用户以 `task_id` 建立研发单元，系统将需求、设计、代码变更、测试、审批、Git 证据和运行事件持久化为可审计工件。模型或外部 coding agent 只负责受控的推理和生成；状态机、权限、路径、工作区、质量门禁和发布动作必须由确定性程序控制。
+Yipilot 是一个本地优先的 AI 辅助研发流程控制器。用户以 `task_id` 建立研发单元，系统将需求、设计、代码变更、测试、审批、Git 证据和运行事件持久化为可审计工件。模型或外部 coding agent 只负责受控的推理和生成；状态机、权限、路径、工作区、质量门禁和发布动作必须由确定性程序控制。
 
 第一版不追求复制 Go、Eino、Hertz、公司 MCP、内部 Wiki、BugTask、GitLab 或 ACP 的私有实现。第一版应做到：在一台开发者机器上，从空目录创建 Project，登记一个 Git 仓库，为一个 Task 创建隔离 worktree，记录 Operation/Run/Event，调用一个受控执行器，收集 Git 证据，并由 Harness 阻止未经验证或未经批准的下一步动作。
 
@@ -35,12 +35,16 @@ Zpilot-Py 是一个本地优先的 AI 辅助研发流程控制器。用户以 `t
 
 MVP 完成时，离线测试必须证明：
 
-- 可 `zpilot init`、`task init`、`repo add --sync`；不需要真实模型。
+- 可 `yipilot init`、`task init`、`repo add --sync`；不需要真实模型。
 - 同一个 `task_id` 的重复 Operation 请求遵守幂等规则；不同请求冲突时明确失败。
 - 两个 Task 的路径、锁、Run、事件和 workspace 绝不混用。
 - 执行器的写入路径被限制到任务 workspace；主工作区的 Git 状态保持不变。
 - 每次受控执行至少保存输入摘要、stdout/stderr、Git 四件套和 HarnessReport。
 - Harness 失败、取消、超时、审批拒绝、进程重启均产生可解释的终态或可恢复状态。
+
+### 2.4 产品命名与 Go 基线的关系
+
+Yipilot 是新的产品、Python 包、CLI 和运行目录名称：`yipilot`、`src/yipilot/`、`.yipilot/`。公司 Go 基线中的 `zpilot` 名称仅作为行为参考，不是 Python 的外部兼容合同。因此第一版不提供 `zpilot` CLI alias，也不读取/覆盖 `.zpilot/`；未来若需导入旧数据，必须新增只读、显式确认的 `yipilot migrate zpilot` 工具，并按 C0–C3 规则写迁移账本。
 
 ## 3. 兼容性模型与外部依赖策略
 
@@ -69,7 +73,7 @@ MVP 完成时，离线测试必须证明：
 
 ### 3.3 可借鉴但不直接复用的公开项目
 
-- Pi 提供 agent runtime、工具调用、模型统一接口和交互 CLI；其默认不包含文件、进程、网络、凭据权限边界，因此 Zpilot-Py 不应把它视为安全控制面。
+- Pi 提供 agent runtime、工具调用、模型统一接口和交互 CLI；其默认不包含文件、进程、网络、凭据权限边界，因此 Yipilot 不应把它视为安全控制面。
 - OpenHands 表明 agent backend、worktree 隔离和本地/远程执行环境可解耦；本项目采用同样的 `ExecutorPort` 思路，但不引入其完整 UI/服务平台。
 - SWE-agent 的 Issue→代码修复闭环可作为 Bugfix 的参考；本项目额外要求持久 Task、审批与阶段工件。
 - LangGraph 的 checkpoint/interrupt 模式可用于阶段内部图，但不替代 Application 层的 Operation、Run、事件与审计事实源。
@@ -94,7 +98,7 @@ CLI / REST (M5+) / future ACP (M6+)
               │
  Infrastructure: filesystem · git · subprocess · HTTP · FastAPI · adapters
               │
-         local `.zpilot/` evidence tree
+         local `.yipilot/` evidence tree
 ```
 
 依赖只能自外向内。Domain 不能导入 Typer、FastAPI、Pydantic HTTP 类型、LangGraph、subprocess 或 Git SDK。Application service 是唯一能同时协调 Domain、Store、Harness 与外部 Port 的位置。CLI/REST 只能做输入校验、呈现与调用 service；不得绕过状态机直接写文件。
@@ -114,7 +118,7 @@ CLI / REST (M5+) / future ACP (M6+)
 ### 4.2 建议包布局
 
 ```text
-src/zpilot/
+src/yipilot/
   domain/          # 纯模型、枚举、不变量、领域错误
   application/     # 用例与编排服务
   ports/           # Protocol/ABC 接口
@@ -136,7 +140,7 @@ docs/
 
 | 实体 | 作用 | 不变量 |
 | --- | --- | --- |
-| Project | `.zpilot/config.yaml` 所在根 | 不可在未初始化根外写运行数据 |
+| Project | `.yipilot/config.yaml` 所在根 | 不可在未初始化根外写运行数据 |
 | Task | 长生命周期研发单元 | `task_id` 为非负十进制字符串；拥有独立根目录 |
 | Stage | 稳定业务阶段 | 名称是受控枚举，不由用户任意输入 |
 | Operation | 一次用户意图 | 有 request fingerprint 与 idempotency key |
@@ -170,7 +174,7 @@ docs/
 ### 6.1 目录合同
 
 ```text
-.zpilot/
+.yipilot/
   config.yaml
   locks/
   tasks/<task-id>/
@@ -253,12 +257,12 @@ HarnessReport = {
 }
 ```
 
-聚合规则必须版本化：任一 `failed` 则总体 `failed`；无失败但存在 `warning` 则 `warning`；只有全部成功才 `passed`；`skipped` 默认不等于通过。某一阶段能否接受 `warning` 必须由 stage policy 显式声明，不能由 Runner 临时判断。
+聚合规则必须版本化：任一 blocking `failed` 则总体 `failed`；无失败且至少一个 blocking `skipped` 则总体 `skipped`；无 failed/skipped 但有 warning 则 `warning`；只有全部 blocking check 通过才 `passed`。`skipped` 默认不等于通过，且不得推进下游 stage。某一阶段能否接受 `warning` 必须由 stage policy 显式声明；non-blocking check 必须在策略中显式声明，不能由 Runner 临时判断。
 
 ### 7.3 代码结构
 
 ```text
-src/zpilot/harness/
+src/yipilot/harness/
   models.py              # schema、状态、聚合规则
   protocol.py            # HarnessRunner Port
   registry.py            # stage + policy → runner
@@ -309,7 +313,7 @@ Runner 只读取 `HarnessContext` 允许访问的工件和目录；它不直接�
 ### 8.2 受控 worktree
 
 1. 创建 Task 后先记录 base commit 和 workspace manifest。
-2. 以受控分支名创建或复用 worktree，例如 `zpilot/task-1001/<run-id>`。
+2. 以受控分支名创建或复用 worktree，例如 `yipilot/task-1001/<run-id>`。
 3. Executor 的 cwd 必须等于 workspace，允许写入集合由 PathGuard 计算。
 4. Executor 结束后收集 `status.txt`、`diff.patch`、`diff-stat.txt`、`changed-files.txt`、HEAD 与 base SHA。
 5. GitWorkspaceHarness 验证证据与路径；失败时保留变更、阻断 Apply，不自动 reset。
@@ -318,7 +322,7 @@ Runner 只读取 `HarnessContext` 允许访问的工件和目录；它不直接�
 
 `ExecutorPort.execute(request) -> ExecutorResult` 支持 `codex_cli`、未来 `pi`、未来 `claude_code` 和 `fake`。request 必须含 workspace、任务上下文摘要、允许工具、超时、预算、输入 artifact refs；result 必须含 argv/provider、开始/结束、退出码、stdout/stderr refs、取消状态、可解析的变更摘要。
 
-默认策略：Executor 可写 workspace，但不具备直接 push、全盘扫描、任意网络访问或读取 token 存储的权限。若底层工具无法原生限制权限，必须以运行目录、容器/沙箱（可选）、环境变量白名单和事前审批降低风险，并在报告中声明限制。
+Executor 的信任级别必须随每次 Run 持久化：`fake`、`sandboxed`、`host_trusted`。只有 `sandboxed`（容器或可验证 OS sandbox，白名单挂载 workspace、网络和凭据）可宣称最小权限。未沙箱化的 Codex/Pi/Claude Code 只能以显式 `--risk-accept host_trusted` 启动，报告必须标记它拥有启动用户的潜在权限；运行目录和环境变量白名单只能降低风险，不能构成安全隔离。M3 的默认自动化测试只使用 fake；真实宿主执行是用户手动 opt-in 的试验能力。
 
 ### 8.4 Apply
 
@@ -334,7 +338,7 @@ MVP 的 `apply` 只做“准备发布证据”，不 push。启用真实 push �
 | task_init | M1 | task_id | task record | 无 |
 | repo_sync | M2 | repo metadata | cache/metadata | 本地 Git/远端 Git |
 | code_prepare | M2 | task/repo/base | workspace manifest | 本地 Git |
-| code_generate | M3 | SDD 或任务指令 | executor/evidence | fake 或本地 executor |
+| code_generate | M3 | 明确开发指令、workspace 与可选现有 SDD | executor/evidence | fake 或本地 executor |
 | srs_generate | M4 | PRD 文本/fixture | srs.md/report | fake/ModelPort |
 | sdd_generate | M4 | SRS/repo evidence | sdd bundle/report | fake/ModelPort |
 | unit_test_execute | M4 | test plan/workspace | reports/logs | CommandRunner |
@@ -361,19 +365,19 @@ Task init
 ### 10.1 CLI（M1–M4）
 
 ```text
-zpilot init
-zpilot task init --taskid <id>
-zpilot task show --taskid <id>
-zpilot task repo add --taskid <id> --url <url> --alias <alias> [--sync]
-zpilot task repo sync --taskid <id> --alias <alias>
-zpilot run list --taskid <id>
-zpilot run show --taskid <id> --run-id <id>
-zpilot srs generate --taskid <id> [--source file]
-zpilot sdd generate --taskid <id>
-zpilot code generate --taskid <id> --executor fake|codex_cli
-zpilot harness run --taskid <id> --stage <stage>
-zpilot harness show --taskid <id> --run-id <id>
-zpilot code apply --taskid <id> --prepare-only
+yipilot init
+yipilot task init --taskid <id>
+yipilot task show --taskid <id>
+yipilot task repo add --taskid <id> --url <url> --alias <alias> [--sync]
+yipilot task repo sync --taskid <id> --alias <alias>
+yipilot run list --taskid <id>
+yipilot run show --taskid <id> --run-id <id>
+yipilot srs generate --taskid <id> [--source file]
+yipilot sdd generate --taskid <id>
+yipilot code generate --taskid <id> --executor fake|codex_cli
+yipilot harness run --taskid <id> --stage <stage>
+yipilot harness show --taskid <id> --run-id <id>
+yipilot code apply --taskid <id> --prepare-only
 ```
 
 默认输出为人类可读摘要；`--output json` 供自动化。所有 mutating command 支持 request id/idempotency key；解析失败不得创建部分文件。
@@ -421,7 +425,7 @@ M6：可选 Postgres/Redis lease、多 worker、凭据轮换、负载与权限�
 
 - Git、`.gitignore`、Python packaging、锁文件、测试命令、pre-commit/CI。
 - `CONTEXT.md`、ADR 模板、贡献与安全策略。
-- 最小 `zpilot --version` 与 fake adapter 测试基线。
+- 最小 `yipilot --version` 与 fake adapter 测试基线。
 
 ### M1：确定性本地控制面（约 10 项）
 
@@ -439,7 +443,7 @@ M6：可选 Postgres/Redis lease、多 worker、凭据轮换、负载与权限�
 
 - ExecutorPort、fake executor、codex adapter（可选启用）。
 - tool-run record、审批模型、PathGuard、CodeHarness。
-- `code generate` 与 prepare-only Apply 交接包。
+- 基于明确开发指令的 `code generate` 与 prepare-only Apply 交接包；它不依赖尚未生成的 SDD。
 
 ### M4：研发工件与质量闭环（约 10 项）
 
@@ -457,7 +461,7 @@ M6：可选 Postgres/Redis lease、多 worker、凭据轮换、负载与权限�
 - Human Review、Bugfix、ACP、真实 Git provider/PR、外部 PRD adapter。
 - 迁移工具、compatibility report、多 worker/lease、系统韧性演练。
 
-总量约 55 个可验收交付项；每项必须有范围、非目标、依赖、Harness/测试证据和 DoD。M0–M4 构成可本地使用的产品闭环；M5–M6 不应阻塞它。
+总量约 55 个可验收交付项；每项必须有范围、非目标、依赖、Harness/测试证据和 DoD。M0–M3 是不依赖模型或公司环境的本地控制面 MVP；M4 是首个研发工件闭环；M5–M6 是增量，不应阻塞前两者。
 
 ## 14. 决策与待确认项
 
@@ -466,6 +470,10 @@ M6：可选 Postgres/Redis lease、多 worker、凭据轮换、负载与权限�
 3. M4 的 SDD 语义检查以 feature flag 发布，避免伪称与 Go 行为相同。
 4. `apply` 在未明确提供远端仓库、用户身份和审批策略前固定为 `--prepare-only`。
 5. 公司私有协议仅在获得脱敏 schema、fixture 和明确授权后提升兼容等级。
+
+### 14.1 崩溃后的恢复边界
+
+文件 Store 支持 C3 的范围仅限于 Yipilot 自己持久化的 Task、Operation、Run、Event、Approval 和已完整写入的 Artifact。若进程在纯本地、无副作用的步骤中断，恢复可从最后一个验证通过的 checkpoint 提示创建新的 Run。若进程在模型调用、Git 写操作、测试子进程或网络请求中中断，旧 Run 必须标记 `execution_interrupted`，不得从中间命令盲目续跑；Application service 先验证可用 evidence，随后创建一个新的、可审计的 retry Run。只有未来接入具备事务性/幂等证明的 Adapter 后，才可为该 Adapter 声明更强的 resumable 行为。
 
 ## 15. 规格评审检查表
 

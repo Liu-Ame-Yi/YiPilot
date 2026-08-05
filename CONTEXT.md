@@ -1,14 +1,14 @@
-# Zpilot-Py Domain Context
+# Yipilot Domain Context
 
 ## Purpose
 
-Zpilot-Py is a local-first, auditable controller for AI-assisted software-delivery work. It coordinates work; it is not itself an unrestricted coding agent.
+Yipilot is a local-first, auditable controller for AI-assisted software-delivery work. It coordinates work; it is not itself an unrestricted coding agent.
 
 ## Ubiquitous language
 
 | Term | Meaning |
 | --- | --- |
-| Project | A local directory governed by one `.zpilot/config.yaml` file. |
+| Project | A local directory governed by one `.yipilot/config.yaml` file. |
 | Task | A long-lived, user-visible development unit identified by a decimal `task_id`. |
 | Stage | A stable business capability, such as `srs_generate` or `code_generate`. |
 | Operation | A durable record of one user intent to perform work. It may coordinate one or more runs. |
