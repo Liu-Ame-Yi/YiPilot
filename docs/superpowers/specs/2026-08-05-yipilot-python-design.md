@@ -382,6 +382,35 @@ yipilot code apply --taskid <id> --prepare-only
 
 CLI 是当前唯一 transport。交互式确认采用标准输入/输出，但所有决定仍写成 Approval/Event；脚本化使用 `--output json` 与明确的 confirm token。HTTP、SSE、ACP、浏览器 UI 或远程身份认证不在当前实现中，也不进入核心运行时依赖；若后续启用，遵循第 16 节的 extension 设计。
 
+### 10.2 实时事件流与终端呈现
+
+CLI 需要实时呈现模型文字、工具进度、Harness 结论和人工确认提示，但这不是 HTTP SSE。Yipilot 的核心能力是 Run Event Stream：每个 Run 将严格递增的事件写入 `events.jsonl`，并由 `EventPublisherPort` 同步发布给当前进程的订阅者。CLI 是第一个订阅者；未来的 SSE/ACP 只是同一事件流的协议适配器，不能各自维护状态或生成第二份事件。
+
+事件的最小合同如下：
+
+```text
+sequence        # 同一 run 内从 1 开始严格递增
+event_id        # UUID
+run_id/task_id/stage
+timestamp       # UTC RFC 3339
+type            # 受控枚举
+visibility      # user | audit
+payload         # 受 schema 与体积上限约束
+```
+
+第一版事件类型为：`run.started`、`stage.progress`、`model.delta`、`model.message_completed`、`tool.started`、`tool.output`、`tool.completed`、`harness.completed`、`approval.required`、`run.paused`、`run.succeeded`、`run.failed`、`run.cancelled`。`model.delta` 与 `tool.output` 必须先脱敏、截断并受总大小/频率预算限制；完整、可审计的最终产物另存为 Artifact，不能依赖 terminal 回显恢复事实。
+
+CLI 行为：
+
+```text
+yipilot code generate ...              # 订阅当前 Run，实时渲染给人阅读
+yipilot code generate ... --output jsonl  # 逐行输出同一事件 schema，供脚本消费
+yipilot run watch --run-id <id> --after-sequence <n>
+                                      # 从持久事件日志回放并继续跟随
+```
+
+人类模式可以使用终端进度/流式文本；`jsonl` 模式只能输出事件 JSON，不混入进度条、颜色码或日志。`run watch` 先从指定 cursor 回放已持久化事件，再以短轮询或平台文件通知跟随 JSONL 尾部；终态事件出现后正常退出。这样在单进程、跨 CLI 进程和未来 HTTP 客户端之间保持相同的 replay/cursor 语义。
+
 ## 11. 安全与可靠性
 
 ### 11.1 必须从 M1 执行的规则
@@ -475,7 +504,7 @@ HTTP/SSE、ACP、服务端认证、Postgres/Redis lease、多 worker、凭据轮
 
 ### 16.1 Server extra：FastAPI、REST 与 SSE
 
-若需要本地或远程 API，选择 FastAPI 作为 `yipilot[server]` 的首选框架：它以 Python 类型和 Pydantic 模型定义请求/响应，并可自动生成 OpenAPI/JSON Schema 文档。REST 只调用现有 Application service；写操作要求 `Idempotency-Key`；SSE 从 Event sequence replay。CLI Core 不可导入 FastAPI，禁止让 HTTP DTO 进入 Domain。
+若需要本地或远程 API，选择 FastAPI 作为 `yipilot[server]` 的首选框架：它以 Python 类型和 Pydantic 模型定义请求/响应，并可自动生成 OpenAPI/JSON Schema 文档。REST 只调用现有 Application service；写操作要求 `Idempotency-Key`。SSE endpoint 只把既有 Event Stream 转成 `text/event-stream`，以 event `id` 映射 `sequence`、以 `Last-Event-ID` 映射 `after_sequence`，先 replay 后 follow；它不创建、修改或重排事件。CLI Core 不可导入 FastAPI，禁止让 HTTP DTO 进入 Domain。
 
 ### 16.2 ACP、Human Review 与多 worker
 
