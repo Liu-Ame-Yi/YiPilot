@@ -1,0 +1,479 @@
+# Zpilot-Py 实施设计规格（业务兼容、能力分级版）
+
+- 状态：Draft，待评审
+- 日期：2026-08-05
+- 暂定包名：`zpilot`
+- 代码仓库名：`zpilot-py`
+- 事实来源：`规划书.md`（公司 Go 项目的行为与合同梳理）以及公开工程实践
+- 实施策略：业务合同优先；无法取得的公司环境不得虚构，必须显式降级、禁用或以可替换 Adapter 表达。
+
+## 1. 执行摘要
+
+Zpilot-Py 是一个本地优先的 AI 辅助研发流程控制器。用户以 `task_id` 建立研发单元，系统将需求、设计、代码变更、测试、审批、Git 证据和运行事件持久化为可审计工件。模型或外部 coding agent 只负责受控的推理和生成；状态机、权限、路径、工作区、质量门禁和发布动作必须由确定性程序控制。
+
+第一版不追求复制 Go、Eino、Hertz、公司 MCP、内部 Wiki、BugTask、GitLab 或 ACP 的私有实现。第一版应做到：在一台开发者机器上，从空目录创建 Project，登记一个 Git 仓库，为一个 Task 创建隔离 worktree，记录 Operation/Run/Event，调用一个受控执行器，收集 Git 证据，并由 Harness 阻止未经验证或未经批准的下一步动作。
+
+## 2. 目标、非目标与成功标准
+
+### 2.1 产品目标
+
+1. 用可追溯的工件链替代一次性 prompt：`PRD → SRS → SDD → Code → Test → Apply`。
+2. 任意 Task 的状态、输入、输出、工具调用和人工决定可在重启后读取和解释。
+3. 任何会修改代码的执行都只发生在任务专属 Git worktree，而非用户主工作区。
+4. 所有模型输出均可被 Harness 检查；模型自评不能作为质量证明。
+5. 所有高风险副作用（执行器写代码、Git push、外部回写）具备最小权限、证据与显式审批边界。
+
+### 2.2 非目标
+
+1. 不实现 Go/Eino 私有 checkpoint 的二进制兼容或直接恢复。
+2. 不在 M1–M4 依赖公司内网服务、真实 GitLab、真实 MCP、真实 Wiki、BugTask 或生产 token。
+3. 不自动合并 PR/MR，不自动 push，除非用户在未来版本明确批准 Apply。
+4. 不将 GUI、云端多租户、多 worker 集群或完整 ACP 作为首版前置条件。
+5. 不声称 Harness 证明需求正确、代码无缺陷或模型输出真实；它只证明明确列出的、可重复执行的检查已通过。
+
+### 2.3 Definition of Done
+
+MVP 完成时，离线测试必须证明：
+
+- 可 `zpilot init`、`task init`、`repo add --sync`；不需要真实模型。
+- 同一个 `task_id` 的重复 Operation 请求遵守幂等规则；不同请求冲突时明确失败。
+- 两个 Task 的路径、锁、Run、事件和 workspace 绝不混用。
+- 执行器的写入路径被限制到任务 workspace；主工作区的 Git 状态保持不变。
+- 每次受控执行至少保存输入摘要、stdout/stderr、Git 四件套和 HarnessReport。
+- Harness 失败、取消、超时、审批拒绝、进程重启均产生可解释的终态或可恢复状态。
+
+## 3. 兼容性模型与外部依赖策略
+
+### 3.1 能力等级
+
+| 等级 | 名称 | 定义 | 示例 |
+| --- | --- | --- | --- |
+| C0 | unavailable | 显式不可用，不伪装成功 | 公司 BugTask Adapter 未配置 |
+| C1 | inspectable | 可读取、展示或归档，不能继续执行 | 历史 Go checkpoint |
+| C2 | equivalent | 用 Python 记录实现同一业务效果 | Task/Run/Event、Git evidence |
+| C3 | resumable | 重启或暂停后可在安全条件下继续 | Python 自己创建的 Run/Approval |
+| C4 | byte/protocol compatible | 字节或对外协议严格兼容 | 仅在 fixture 证明后声明 |
+
+项目 README、CLI help 和 `compatibility-report.json` 必须逐能力声明等级，禁止使用笼统的“完全兼容”。
+
+### 3.2 Adapter 状态
+
+每个外部端口都必须有至少四种实现形态：
+
+- `fake`：用于单元与集成测试，结果完全确定。
+- `recorded_replay`：读取脱敏 fixture，模拟曾经获得的真实响应。
+- `disabled`：给出稳定错误码、配置说明和下一步建议，不发生网络请求。
+- `production`：仅在显式配置、allowlist、凭据和审批满足时启用。
+
+公司依赖暂时均为 `disabled` 或 `recorded_replay`。Git 本地命令和本地 Python/CLI 执行器可作为 MVP 的 production Adapter，但仍需路径与审批控制。
+
+### 3.3 可借鉴但不直接复用的公开项目
+
+- Pi 提供 agent runtime、工具调用、模型统一接口和交互 CLI；其默认不包含文件、进程、网络、凭据权限边界，因此 Zpilot-Py 不应把它视为安全控制面。
+- OpenHands 表明 agent backend、worktree 隔离和本地/远程执行环境可解耦；本项目采用同样的 `ExecutorPort` 思路，但不引入其完整 UI/服务平台。
+- SWE-agent 的 Issue→代码修复闭环可作为 Bugfix 的参考；本项目额外要求持久 Task、审批与阶段工件。
+- LangGraph 的 checkpoint/interrupt 模式可用于阶段内部图，但不替代 Application 层的 Operation、Run、事件与审计事实源。
+
+参考链接：
+
+- <https://github.com/earendil-works/pi>
+- <https://github.com/OpenHands/OpenHands>
+- <https://github.com/SWE-agent/SWE-agent>
+- <https://docs.langchain.com/oss/python/langgraph/persistence>
+
+## 4. 总体架构
+
+```text
+CLI / REST (M5+) / future ACP (M6+)
+              │
+      Application services
+              │
+ Domain: Task · Operation · Run · Event · Approval · Artifact
+              │
+ Ports: Store · Clock · Lock · Repo · Executor · Model · PRD · Identity
+              │
+ Infrastructure: filesystem · git · subprocess · HTTP · FastAPI · adapters
+              │
+         local `.zpilot/` evidence tree
+```
+
+依赖只能自外向内。Domain 不能导入 Typer、FastAPI、Pydantic HTTP 类型、LangGraph、subprocess 或 Git SDK。Application service 是唯一能同时协调 Domain、Store、Harness 与外部 Port 的位置。CLI/REST 只能做输入校验、呈现与调用 service；不得绕过状态机直接写文件。
+
+### 4.1 Python 技术基线
+
+- Python 3.12+、`uv` 或等价受锁定依赖管理。
+- `Typer`：CLI；`Pydantic v2`：边界 DTO 与文件 schema；`PyYAML`：配置。
+- `pytest`、`pytest-xdist`、`Hypothesis`：测试与属性测试。
+- `filelock` 或自研跨平台文件锁：单机互斥。
+- `FastAPI`、`uvicorn`：仅 M5 的 REST/SSE。
+- `httpx`：外部 HTTP Adapter；所有 network 必须经过共享 transport。
+- 可选 LangGraph：只作为 graph runtime；其持久化记录不得成为业务唯一事实源。
+
+任何新增依赖必须记录：用途、替代方案、许可证、升级策略和是否执行生命周期脚本。依赖安装和 CI 默认禁用非必要脚本。
+
+### 4.2 建议包布局
+
+```text
+src/zpilot/
+  domain/          # 纯模型、枚举、不变量、领域错误
+  application/     # 用例与编排服务
+  ports/           # Protocol/ABC 接口
+  infrastructure/  # filesystem、git、subprocess、http、adapter
+  harness/         # 独立质量门禁工程
+  workflows/       # stage graph 与输入/输出组装
+  transport/       # cli、rest、sse、acp
+  bootstrap/       # composition root、配置与 DI
+  assets/          # 版本化 SKILL、模板、JSON Schema
+tests/
+  unit/ contract/ integration/ live/ fixtures/
+docs/
+  adr/ specs/ compatibility/
+```
+
+## 5. 领域模型与不变量
+
+### 5.1 核心实体
+
+| 实体 | 作用 | 不变量 |
+| --- | --- | --- |
+| Project | `.zpilot/config.yaml` 所在根 | 不可在未初始化根外写运行数据 |
+| Task | 长生命周期研发单元 | `task_id` 为非负十进制字符串；拥有独立根目录 |
+| Stage | 稳定业务阶段 | 名称是受控枚举，不由用户任意输入 |
+| Operation | 一次用户意图 | 有 request fingerprint 与 idempotency key |
+| Run | 一次 stage 尝试 | 只能单向进入终态；属于唯一 Operation 与 Task |
+| Event | 追加式运行事实 | 同 Run 的 `sequence` 严格递增 |
+| Artifact | 可引用业务工件 | 有 producer、输入 fingerprint、相对路径与 hash |
+| Approval | 高风险动作的人类决定 | 决定绑定目标 hash/revision；陈旧即失效 |
+| HarnessReport | 质量门报告 | 关联唯一 Run、Stage、输入 fingerprint 与 checks |
+
+### 5.2 状态机
+
+`RunStatus = pending | running | paused | succeeded | failed | cancelled`。
+
+- `pending → running`：取得 stage lock 且前置条件通过。
+- `running → paused`：需要澄清或审批；保存 interaction/approval 与 checkpoint 提示。
+- `running → succeeded`：产物与必需 Harness 均达到策略要求。
+- `running/paused → cancelled`：用户显式取消；后续子进程必须终止。
+- `running/paused → failed`：不可恢复错误、超时、Harness 阻断或恢复校验失败。
+- 终态不可倒退。重试必须创建新 Run，不覆盖旧 Run。
+
+`OperationStatus = planned | running | waiting | completed | failed | cancelled`，由其 Run 集合投影得出。Task 中的阶段摘要只是投影，可从 Operation/Run 重建，不能成为唯一事实源。
+
+### 5.3 错误模型
+
+每个用户可见错误具有稳定 `code`、安全 `message`、`stage`、`occurred_at` 与可选 `retryable`。内部异常、路径、token、命令参数和响应正文仅写受控日志；绝不回显 secret。
+
+建议基础错误码：`PROJECT_NOT_INITIALIZED`、`TASK_NOT_FOUND`、`INVALID_TASK_ID`、`PRECONDITION_FAILED`、`OPERATION_CONFLICT`、`LOCK_UNAVAILABLE`、`HARNESS_FAILED`、`APPROVAL_REQUIRED`、`APPROVAL_STALE`、`PATH_DENIED`、`EXTERNAL_UNAVAILABLE`、`EXECUTOR_TIMEOUT`、`GIT_FAILED`、`UNSUPPORTED_CAPABILITY`。
+
+## 6. 本地持久化、权限与恢复
+
+### 6.1 目录合同
+
+```text
+.zpilot/
+  config.yaml
+  locks/
+  tasks/<task-id>/
+    task.yaml
+    operations/<operation-id>.json
+    runs/<run-id>/
+      run.json
+      events.jsonl
+      checkpoints/
+      inputs/
+      artifacts/
+      harness/
+      tool-runs/
+      git/
+      logs/
+    repos/<alias>/
+      metadata.json
+      workspace/             # Git worktree；不得纳入本仓库
+    approvals/
+    srs-review/              # M6+
+  cache/repos/<url-hash>/
+  audit/
+```
+
+所有内部引用使用 Project 根目录相对路径。任何绝对路径、`..`、符号链接逃逸或不在 allowlist 下的真实路径均拒绝。`workspace` 与 cache 的路径由 repo URL 的规范化 hash 派生；alias 仅作人类显示，不能决定真实存储位置。
+
+### 6.2 写入与锁
+
+- 权威 JSON/YAML：同目录临时文件、fsync、原子 rename；写后 re-read 验证 schema。
+- JSONL：持锁追加，单行 JSON，带 sequence 与 timestamp；损坏尾部作为诊断项，不静默吞掉。
+- 配置、token、任务、Operation、Run、Approval 默认仅当前用户可读写；跨平台无法实现 POSIX `0600` 时记录降级警告。
+- 锁以细粒度为原则：project config、task、stage、operation、workspace、approval 不共用一把全局锁。
+- 任一写入失败不得让 Run 标为成功；保留失败证据并让恢复逻辑重新判定。
+
+### 6.3 恢复原则
+
+恢复不重新“猜测”模型或外部副作用。它先验证 Run 状态、锁/lease、输入 fingerprint、可用 artifact、执行器记录和 approval；只有能证明之前副作用完成时才跳过。无法证明时标为 failed 或 waiting，要求用户建立新的 Run/Operation。
+
+## 7. Harness 工程规格
+
+### 7.1 定位与边界
+
+Harness 是独立质量门禁子系统，负责对确定性输入执行确定性检查、产生持久化证据，并向 Application service 返回可用于状态机决策的结论。Harness 不是：
+
+- LLM 对其输出的自我评价；
+- 可从任意 prompt 调用的通用“工具”；
+- 代替测试框架、代码审查或人工审批的万能判定器；
+- 仅在终端打印一行结果的 helper。
+
+### 7.2 公共数据合同
+
+```python
+HarnessStatus = Literal['passed', 'warning', 'failed', 'skipped']
+
+HarnessCheck = {
+  'id': str,                 # 稳定 ID，例如 GIT-WORKTREE-003
+  'description': str,
+  'status': HarnessStatus,
+  'message': str,
+  'suggestion': str | None,
+  'evidence_refs': list[str],
+}
+
+HarnessReport = {
+  'schema_version': 1,
+  'report_id': str,
+  'task_id': str,
+  'operation_id': str,
+  'run_id': str,
+  'stage': str,
+  'harness_name': str,
+  'harness_version': str,
+  'started_at': str,
+  'ended_at': str,
+  'input_fingerprint': str,
+  'inputs': list[dict],
+  'status': HarnessStatus,
+  'checks': list[HarnessCheck],
+  'summary': str,
+}
+```
+
+聚合规则必须版本化：任一 `failed` 则总体 `failed`；无失败但存在 `warning` 则 `warning`；只有全部成功才 `passed`；`skipped` 默认不等于通过。某一阶段能否接受 `warning` 必须由 stage policy 显式声明，不能由 Runner 临时判断。
+
+### 7.3 代码结构
+
+```text
+src/zpilot/harness/
+  models.py              # schema、状态、聚合规则
+  protocol.py            # HarnessRunner Port
+  registry.py            # stage + policy → runner
+  fingerprint.py         # 工件、Git、配置、版本的摘要
+  report_store.py        # 原子报告存取
+  task_integrity.py
+  git_workspace.py
+  srs.py
+  sdd.py
+  code.py
+  unit_test.py
+  policies.py
+```
+
+Runner 只读取 `HarnessContext` 允许访问的工件和目录；它不直接读取任意主机路径，不启动未登记命令，不修改权威 SRS/SDD/源代码。需要执行测试的 Unit-test Harness 只能通过受控 `CommandRunnerPort` 调用白名单命令。
+
+### 7.4 Harness 类别与初始检查
+
+| Harness | 首版稳定检查 | 阻断策略 |
+| --- | --- | --- |
+| TaskIntegrity | task/run schema、目录归属、event sequence、原子记录 | failed 阻断所有后续 stage |
+| GitWorkspace | cache/worktree 存在、HEAD 基线、主目录未改、变更路径合法、Git 四件套齐全 | failed 阻断 code 成功与 Apply |
+| SRS | 存在/非空、FR/NFR、未决 clarify、需求 ID、来源引用 | M4 先允许部分 warning；缺失结构 failed |
+| SDD | 输入 SRS 可用、主文档/细节文档、链接、追踪矩阵、模块/文件矩阵 | C2 基础检查，增强语义检查 feature flag |
+| Code | executor record、workspace、diff/stat/changed-files、验证命令证据 | 缺关键证据 failed；无变更为明确 `no_changes` |
+| UnitTest | 计划/结果一一对应、命令日志、失败诊断、禁止未解释 skipped、超时清理 | failed 阻断 Report/Apply |
+
+检查 ID 永不因文案变更而重用。新增严格语义检查必须使用新 ID、新 harness version 和 feature flag，避免破坏业务兼容。
+
+### 7.5 输入 fingerprint 与新鲜度
+
+每个 Report 至少包含：stage、任务元数据版本、输入 artifact hash、repo URL、Git HEAD、workspace 相对路径、Harness 版本、配置策略版本。任一相关值变化后，旧 Report 标记 `stale`（通过 metadata 表达，不伪造新 Report）。下一阶段不得把 stale report 当作通过证据。
+
+### 7.6 Harness 的测试要求
+
+- 每个 Check 有 passed/failed/边界 fixture。
+- report schema、聚合、顺序、错误码和输出 JSON 做 golden tests。
+- 路径穿越、符号链接、损坏 JSON、超大工件、恶意 Markdown/YAML 做负向测试。
+- Unit-test Harness 需验证子进程超时后确已停止、日志截断、未运行用例被明确标记。
+- M6 增加 property tests：事件序列递增、任意合法 path 不逃逸根、报告 fingerprint 与输入一一对应。
+
+## 8. Git、Repo 与受控执行
+
+### 8.1 Repo 生命周期
+
+`repo add` 接受 URL、alias、默认分支和只读/可写策略。系统规范化 URL，建立 cache，记录 remote HEAD 和同步时间。clone/fetch 发生在 cache；Task 的开发发生在 workspace worktree。所有 Git 子进程使用 argv 数组，禁止 shell 拼接。
+
+### 8.2 受控 worktree
+
+1. 创建 Task 后先记录 base commit 和 workspace manifest。
+2. 以受控分支名创建或复用 worktree，例如 `zpilot/task-1001/<run-id>`。
+3. Executor 的 cwd 必须等于 workspace，允许写入集合由 PathGuard 计算。
+4. Executor 结束后收集 `status.txt`、`diff.patch`、`diff-stat.txt`、`changed-files.txt`、HEAD 与 base SHA。
+5. GitWorkspaceHarness 验证证据与路径；失败时保留变更、阻断 Apply，不自动 reset。
+
+### 8.3 ExecutorPort
+
+`ExecutorPort.execute(request) -> ExecutorResult` 支持 `codex_cli`、未来 `pi`、未来 `claude_code` 和 `fake`。request 必须含 workspace、任务上下文摘要、允许工具、超时、预算、输入 artifact refs；result 必须含 argv/provider、开始/结束、退出码、stdout/stderr refs、取消状态、可解析的变更摘要。
+
+默认策略：Executor 可写 workspace，但不具备直接 push、全盘扫描、任意网络访问或读取 token 存储的权限。若底层工具无法原生限制权限，必须以运行目录、容器/沙箱（可选）、环境变量白名单和事前审批降低风险，并在报告中声明限制。
+
+### 8.4 Apply
+
+MVP 的 `apply` 只做“准备发布证据”，不 push。启用真实 push 的后续版本必须要求：workspace Harness passed、测试 Harness passed、相对 base 有提交、approval 绑定当前 commit hash、remote/branch 在 allowlist、显式用户确认。永不自动 merge。
+
+## 9. Workflow 与业务阶段
+
+### 9.1 阶段策略
+
+| 阶段 | MVP | 输入 | 输出 | 外部依赖 |
+| --- | --- | --- | --- | --- |
+| project_init | M1 | 项目路径、配置 | config、目录 | 无 |
+| task_init | M1 | task_id | task record | 无 |
+| repo_sync | M2 | repo metadata | cache/metadata | 本地 Git/远端 Git |
+| code_prepare | M2 | task/repo/base | workspace manifest | 本地 Git |
+| code_generate | M3 | SDD 或任务指令 | executor/evidence | fake 或本地 executor |
+| srs_generate | M4 | PRD 文本/fixture | srs.md/report | fake/ModelPort |
+| sdd_generate | M4 | SRS/repo evidence | sdd bundle/report | fake/ModelPort |
+| unit_test_execute | M4 | test plan/workspace | reports/logs | CommandRunner |
+| code_apply | M5+ | approval/evidence | push/MR evidence | Git provider |
+| bugfix | M6+ | bug record | analysis/fix evidence | BugfixGateway |
+
+### 9.2 典型闭环
+
+```text
+Task init
+  → Repo sync
+  → Workspace prepare + GitWorkspaceHarness
+  → SRS/SDD（可用 fixture/fake 模型）
+  → Code generate
+  → CodeHarness + UnitTestHarness
+  → Approval
+  → Apply（默认仅生成交接包）
+```
+
+每一个箭头都是 Operation；每个实际执行是 Run；每个重要输出是 Artifact；每个质量判断是 HarnessReport。任一 stage 可以被替换为 disabled/fake/replay Adapter，但必须使状态与报告明确反映该事实。
+
+## 10. CLI、REST 与交互
+
+### 10.1 CLI（M1–M4）
+
+```text
+zpilot init
+zpilot task init --taskid <id>
+zpilot task show --taskid <id>
+zpilot task repo add --taskid <id> --url <url> --alias <alias> [--sync]
+zpilot task repo sync --taskid <id> --alias <alias>
+zpilot run list --taskid <id>
+zpilot run show --taskid <id> --run-id <id>
+zpilot srs generate --taskid <id> [--source file]
+zpilot sdd generate --taskid <id>
+zpilot code generate --taskid <id> --executor fake|codex_cli
+zpilot harness run --taskid <id> --stage <stage>
+zpilot harness show --taskid <id> --run-id <id>
+zpilot code apply --taskid <id> --prepare-only
+```
+
+默认输出为人类可读摘要；`--output json` 供自动化。所有 mutating command 支持 request id/idempotency key；解析失败不得创建部分文件。
+
+### 10.2 REST/SSE（M5）
+
+REST 只调用 application services。写操作要求 `Idempotency-Key`；DTO 严格白名单；响应只暴露允许字段。SSE 以 Event sequence 断点续传，先 replay 后 watch；终态后关闭连接。M5 先采用本地 token 与单机授权，企业 SSO/多租户以后通过 IdentityPort 扩展。
+
+### 10.3 Human Review 与 ACP（M6）
+
+SRS Human Review 必须与普通聊天分离：不可变 transcript、结构化 edit plan、candidate/diff、Harness、hash-CAS Apply 和精确确认。ACP 仅作为到同一 Operation/Run/Event 事实源的协议适配，不得建立第二个工作流状态机。
+
+## 11. 安全与可靠性
+
+### 11.1 必须从 M1 执行的规则
+
+- path guard 在所有文件、副作用和子进程边界执行；不使用 `shell=True`。
+- 配置、日志、错误和 Harness evidence 统一脱敏 token、Authorization、常见密钥格式。
+- 外部 URL、Git remote、输出大小、超时、并发数和可写路径全部配置化并有安全默认值。
+- 取消会终止受控子进程；超时产生事件与诊断，不静默重试高风险副作用。
+- 任意外部 Adapter 的 uncertain response 必须标记 uncertain，不能自行重复写请求。
+
+### 11.2 分期韧性目标
+
+M1–M3：单机文件锁、原子写、崩溃后保守失败、可人工重试。
+
+M4–M5：checkpoint 提示、SSE replay、审批陈旧检查、fault injection。
+M6：可选 Postgres/Redis lease、多 worker、凭据轮换、负载与权限演练。
+
+## 12. 测试与交付策略
+
+| 层级 | 目的 | 默认是否执行 |
+| --- | --- | --- |
+| unit | 领域、schema、Harness checks、path/lock | 是 |
+| contract | Port 与 fake/replay/disabled 一致性 | 是 |
+| integration | 临时目录、临时 Git repo、CLI/ASGI | 是 |
+| fault | kill/rename/lock/timeout 注入 | 夜间或显式 |
+| live | 真模型、真实 Git host、真实外部系统 | 否，显式 opt-in |
+
+所有普通测试必须无需 API key、公司网络或真实仓库。live 测试必须有单独 marker、预算、允许目标和清理策略。每项 Bug 修复加入回归 fixture；每个扩展依赖加入禁用态测试。
+
+## 13. 分期交付计划
+
+### M0：项目治理（约 5 项）
+
+- Git、`.gitignore`、Python packaging、锁文件、测试命令、pre-commit/CI。
+- `CONTEXT.md`、ADR 模板、贡献与安全策略。
+- 最小 `zpilot --version` 与 fake adapter 测试基线。
+
+### M1：确定性本地控制面（约 10 项）
+
+- Project/Task/Operation/Run/Event/Artifact 模型和状态机。
+- 文件 Store、原子写、锁、权限、恢复扫描。
+- CLI init/task/run/harness 查询；TaskIntegrityHarness。
+
+### M2：Git 隔离与证据（约 8 项）
+
+- Repo cache、sync、worktree、workspace manifest。
+- 受控 Git runner、四件套 evidence、GitWorkspaceHarness。
+- 临时 Git repo 的并发 Task 与主目录不变测试。
+
+### M3：受控 Agent 执行（约 7 项）
+
+- ExecutorPort、fake executor、codex adapter（可选启用）。
+- tool-run record、审批模型、PathGuard、CodeHarness。
+- `code generate` 与 prepare-only Apply 交接包。
+
+### M4：研发工件与质量闭环（约 10 项）
+
+- PRD fixture input、SRS/SDD artifact、ModelPort fake/replay。
+- SRS/SDD Harness v1、test plan、UnitTestHarness。
+- input fingerprint、新鲜度、report schema/golden tests。
+
+### M5：本地服务协作（约 6 项）
+
+- FastAPI、身份/令牌、严格 DTO、Operation API、SSE replay。
+- 应用重启恢复、API idempotency、访问控制集成测试。
+
+### M6：扩展与生产化（约 10+ 项）
+
+- Human Review、Bugfix、ACP、真实 Git provider/PR、外部 PRD adapter。
+- 迁移工具、compatibility report、多 worker/lease、系统韧性演练。
+
+总量约 55 个可验收交付项；每项必须有范围、非目标、依赖、Harness/测试证据和 DoD。M0–M4 构成可本地使用的产品闭环；M5–M6 不应阻塞它。
+
+## 14. 决策与待确认项
+
+1. 首个真实 executor 选 Codex CLI；Pi/Claude Code 以后以同一 Port 接入。
+2. M1 采用文件 Store；M6 才评估 Postgres/Redis。文件 Store 仍是本地工件事实源。
+3. M4 的 SDD 语义检查以 feature flag 发布，避免伪称与 Go 行为相同。
+4. `apply` 在未明确提供远端仓库、用户身份和审批策略前固定为 `--prepare-only`。
+5. 公司私有协议仅在获得脱敏 schema、fixture 和明确授权后提升兼容等级。
+
+## 15. 规格评审检查表
+
+- [ ] 所有声称 C2/C3 的能力都有相应 fixture 与测试。
+- [ ] 所有外部系统都有 fake、replay、disabled、production 的处理说明。
+- [ ] 每个写路径都有原子性、锁、权限与崩溃后结果定义。
+- [ ] 每个 Harness 检查有稳定 ID、输入、状态、证据和测试。
+- [ ] 每个 agent/executor 都有路径、命令、网络、审批与日志脱敏策略。
+- [ ] 任何 `skipped` 均不会被 UI、CLI、API 或 Apply 当作通过。
+- [ ] 不存在“自动 push/merge”“读取任意路径”“恢复未知副作用”的隐含行为。
+- [ ] 计划以 M0–M4 为独立可验收范围，M5–M6 为增量，不依赖公司环境。
