@@ -11,8 +11,7 @@
 | M0–M2：文件化控制面与 Git 隔离 | 可行 | 使用临时 Git repo、文件锁和原子写；不依赖公司系统 |
 | M3：受控执行器与代码证据 | 可行 | 自动化测试仅 fake；真实 CLI 执行必须显式接受 host-trusted 风险或在 sandbox 运行 |
 | M4：SRS/SDD/测试工件闭环 | 可行 | 从 fixture/fake/replay 开始；真实模型是可选 Adapter，不能成为 CI 前置 |
-| M5：单机 REST/SSE | 可行 | 只做本地 token、严格 DTO、单进程事件 replay；不承诺多租户 |
-| M6：ACP、企业系统、Bugfix、生产化 | 条件可行 | 必须获得脱敏 schema、真实响应 fixture、授权和集成环境 |
+| REST/SSE、ACP、企业系统、Bugfix、生产化 | 计划外 | 当前仅交付本地 CLI；未来需要时必须另建规格 |
 
 ## 2. 已确认的范围边界
 
@@ -44,4 +43,4 @@
 
 先把 M0–M2 当成第一个 release：`yipilot init`、Task/Operation/Run/Event、原子 Store、临时 Git repo sync、隔离 worktree、GitWorkspaceHarness。它不需要模型、不改远端、不依赖公司条件，却能验证该项目最关键的业务控制能力。
 
-第二个 release 才加入 M3 fake executor 和显式风险模型；第三个 release 添加 M4 的 SRS/SDD 与 UnitTest Harness。这样每一步都有可运行、可审计、可回归的产品成果。
+第二个 release 才加入 M3 fake executor 和显式风险模型；第三个 release 添加 M4 的 SRS/SDD 与 UnitTest Harness。这样每一步都有可运行、可审计、可回归的 CLI 产品成果。

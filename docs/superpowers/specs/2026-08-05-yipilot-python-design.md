@@ -5,7 +5,7 @@
 - 规范包名与 CLI：`yipilot`
 - 代码仓库名：`yipilot`
 - 事实来源：`规划书.md`（公司 Go 项目的行为与合同梳理）以及公开工程实践
-- 实施策略：业务合同优先；无法取得的公司环境不得虚构，必须显式降级、禁用或以可替换 Adapter 表达。
+- 实施策略：业务合同优先；仅本地 CLI；无法取得的公司环境不得虚构，必须显式降级、禁用或以可替换 Adapter 表达。
 
 ## 1. 执行摘要
 
@@ -28,7 +28,7 @@ Yipilot 是一个本地优先的 AI 辅助研发流程控制器。用户以 `tas
 1. 不实现 Go/Eino 私有 checkpoint 的二进制兼容或直接恢复。
 2. 不在 M1–M4 依赖公司内网服务、真实 GitLab、真实 MCP、真实 Wiki、BugTask 或生产 token。
 3. 不自动合并 PR/MR，不自动 push，除非用户在未来版本明确批准 Apply。
-4. 不将 GUI、云端多租户、多 worker 集群或完整 ACP 作为首版前置条件。
+4. 当前项目只交付本地 CLI；GUI、REST、SSE、ACP、云端多租户、多 worker 集群和服务端认证均不在计划范围内。
 5. 不声称 Harness 证明需求正确、代码无缺陷或模型输出真实；它只证明明确列出的、可重复执行的检查已通过。
 
 ### 2.3 Definition of Done
@@ -88,20 +88,20 @@ Yipilot 是新的产品、Python 包、CLI 和运行目录名称：`yipilot`、`
 ## 4. 总体架构
 
 ```text
-CLI / REST (M5+) / future ACP (M6+)
-              │
-      Application services
+CLI
+ │
+Application services
               │
  Domain: Task · Operation · Run · Event · Approval · Artifact
               │
  Ports: Store · Clock · Lock · Repo · Executor · Model · PRD · Identity
               │
- Infrastructure: filesystem · git · subprocess · HTTP · FastAPI · adapters
+ Infrastructure: filesystem · git · subprocess · adapters
               │
          local `.yipilot/` evidence tree
 ```
 
-依赖只能自外向内。Domain 不能导入 Typer、FastAPI、Pydantic HTTP 类型、LangGraph、subprocess 或 Git SDK。Application service 是唯一能同时协调 Domain、Store、Harness 与外部 Port 的位置。CLI/REST 只能做输入校验、呈现与调用 service；不得绕过状态机直接写文件。
+依赖只能自外向内。Domain 不能导入 Typer、Pydantic CLI DTO、LangGraph、subprocess 或 Git SDK。Application service 是唯一能同时协调 Domain、Store、Harness 与外部 Port 的位置。CLI 只能做输入校验、呈现与调用 service；不得绕过状态机直接写文件。
 
 ### 4.1 Python 技术基线
 
@@ -109,7 +109,6 @@ CLI / REST (M5+) / future ACP (M6+)
 - `Typer`：CLI；`Pydantic v2`：边界 DTO 与文件 schema；`PyYAML`：配置。
 - `pytest`、`pytest-xdist`、`Hypothesis`：测试与属性测试。
 - `filelock` 或自研跨平台文件锁：单机互斥。
-- `FastAPI`、`uvicorn`：仅 M5 的 REST/SSE。
 - `httpx`：外部 HTTP Adapter；所有 network 必须经过共享 transport。
 - 可选 LangGraph：只作为 graph runtime；其持久化记录不得成为业务唯一事实源。
 
@@ -125,7 +124,7 @@ src/yipilot/
   infrastructure/  # filesystem、git、subprocess、http、adapter
   harness/         # 独立质量门禁工程
   workflows/       # stage graph 与输入/输出组装
-  transport/       # cli、rest、sse、acp
+  transport/       # cli
   bootstrap/       # composition root、配置与 DI
   assets/          # 版本化 SKILL、模板、JSON Schema
 tests/
@@ -194,7 +193,6 @@ docs/
       metadata.json
       workspace/             # Git worktree；不得纳入本仓库
     approvals/
-    srs-review/              # M6+
   cache/repos/<url-hash>/
   audit/
 ```
@@ -302,7 +300,7 @@ Runner 只读取 `HarnessContext` 允许访问的工件和目录；它不直接�
 - report schema、聚合、顺序、错误码和输出 JSON 做 golden tests。
 - 路径穿越、符号链接、损坏 JSON、超大工件、恶意 Markdown/YAML 做负向测试。
 - Unit-test Harness 需验证子进程超时后确已停止、日志截断、未运行用例被明确标记。
-- M6 增加 property tests：事件序列递增、任意合法 path 不逃逸根、报告 fingerprint 与输入一一对应。
+- M4 增加 property tests：事件序列递增、任意合法 path 不逃逸根、报告 fingerprint 与输入一一对应。
 
 ## 8. Git、Repo 与受控执行
 
@@ -342,8 +340,7 @@ MVP 的 `apply` 只做“准备发布证据”，不 push。启用真实 push �
 | srs_generate | M4 | PRD 文本/fixture | srs.md/report | fake/ModelPort |
 | sdd_generate | M4 | SRS/repo evidence | sdd bundle/report | fake/ModelPort |
 | unit_test_execute | M4 | test plan/workspace | reports/logs | CommandRunner |
-| code_apply | M5+ | approval/evidence | push/MR evidence | Git provider |
-| bugfix | M6+ | bug record | analysis/fix evidence | BugfixGateway |
+| code_apply_prepare | M3 | code evidence/approval | 本地交接包 | 无 |
 
 ### 9.2 典型闭环
 
@@ -360,7 +357,7 @@ Task init
 
 每一个箭头都是 Operation；每个实际执行是 Run；每个重要输出是 Artifact；每个质量判断是 HarnessReport。任一 stage 可以被替换为 disabled/fake/replay Adapter，但必须使状态与报告明确反映该事实。
 
-## 10. CLI、REST 与交互
+## 10. CLI
 
 ### 10.1 CLI（M1–M4）
 
@@ -382,13 +379,7 @@ yipilot code apply --taskid <id> --prepare-only
 
 默认输出为人类可读摘要；`--output json` 供自动化。所有 mutating command 支持 request id/idempotency key；解析失败不得创建部分文件。
 
-### 10.2 REST/SSE（M5）
-
-REST 只调用 application services。写操作要求 `Idempotency-Key`；DTO 严格白名单；响应只暴露允许字段。SSE 以 Event sequence 断点续传，先 replay 后 watch；终态后关闭连接。M5 先采用本地 token 与单机授权，企业 SSO/多租户以后通过 IdentityPort 扩展。
-
-### 10.3 Human Review 与 ACP（M6）
-
-SRS Human Review 必须与普通聊天分离：不可变 transcript、结构化 edit plan、candidate/diff、Harness、hash-CAS Apply 和精确确认。ACP 仅作为到同一 Operation/Run/Event 事实源的协议适配，不得建立第二个工作流状态机。
+CLI 是唯一 transport。交互式确认采用标准输入/输出，但所有决定仍写成 Approval/Event；脚本化使用 `--output json` 与明确的 confirm token。当前不实现 HTTP、SSE、ACP、浏览器 UI 或远程身份认证，也不为它们保留运行时依赖。
 
 ## 11. 安全与可靠性
 
@@ -404,8 +395,9 @@ SRS Human Review 必须与普通聊天分离：不可变 transcript、结构化 
 
 M1–M3：单机文件锁、原子写、崩溃后保守失败、可人工重试。
 
-M4–M5：checkpoint 提示、SSE replay、审批陈旧检查、fault injection。
-M6：可选 Postgres/Redis lease、多 worker、凭据轮换、负载与权限演练。
+M4：checkpoint 提示、审批陈旧检查和 fault injection。
+
+HTTP/SSE、ACP、服务端认证、Postgres/Redis lease、多 worker、凭据轮换和负载演练均为明确的计划外能力；若未来需要，必须另建规格与里程碑。
 
 ## 12. 测试与交付策略
 
@@ -413,7 +405,7 @@ M6：可选 Postgres/Redis lease、多 worker、凭据轮换、负载与权限�
 | --- | --- | --- |
 | unit | 领域、schema、Harness checks、path/lock | 是 |
 | contract | Port 与 fake/replay/disabled 一致性 | 是 |
-| integration | 临时目录、临时 Git repo、CLI/ASGI | 是 |
+| integration | 临时目录、临时 Git repo、CLI | 是 |
 | fault | kill/rename/lock/timeout 注入 | 夜间或显式 |
 | live | 真模型、真实 Git host、真实外部系统 | 否，显式 opt-in |
 
@@ -451,22 +443,12 @@ M6：可选 Postgres/Redis lease、多 worker、凭据轮换、负载与权限�
 - SRS/SDD Harness v1、test plan、UnitTestHarness。
 - input fingerprint、新鲜度、report schema/golden tests。
 
-### M5：本地服务协作（约 6 项）
-
-- FastAPI、身份/令牌、严格 DTO、Operation API、SSE replay。
-- 应用重启恢复、API idempotency、访问控制集成测试。
-
-### M6：扩展与生产化（约 10+ 项）
-
-- Human Review、Bugfix、ACP、真实 Git provider/PR、外部 PRD adapter。
-- 迁移工具、compatibility report、多 worker/lease、系统韧性演练。
-
-总量约 55 个可验收交付项；每项必须有范围、非目标、依赖、Harness/测试证据和 DoD。M0–M3 是不依赖模型或公司环境的本地控制面 MVP；M4 是首个研发工件闭环；M5–M6 是增量，不应阻塞前两者。
+总量约 40 个可验收交付项；每项必须有范围、非目标、依赖、Harness/测试证据和 DoD。M0–M3 是不依赖模型或公司环境的本地控制面 MVP；M4 是首个研发工件闭环。服务化、ACP、Bugfix、企业 Git Provider、迁移、多 worker 和生产化不属于本项目范围。
 
 ## 14. 决策与待确认项
 
 1. 首个真实 executor 选 Codex CLI；Pi/Claude Code 以后以同一 Port 接入。
-2. M1 采用文件 Store；M6 才评估 Postgres/Redis。文件 Store 仍是本地工件事实源。
+2. 当前 CLI 项目采用文件 Store；Postgres/Redis 不在本规格的评估范围内。
 3. M4 的 SDD 语义检查以 feature flag 发布，避免伪称与 Go 行为相同。
 4. `apply` 在未明确提供远端仓库、用户身份和审批策略前固定为 `--prepare-only`。
 5. 公司私有协议仅在获得脱敏 schema、fixture 和明确授权后提升兼容等级。
@@ -484,4 +466,4 @@ M6：可选 Postgres/Redis lease、多 worker、凭据轮换、负载与权限�
 - [ ] 每个 agent/executor 都有路径、命令、网络、审批与日志脱敏策略。
 - [ ] 任何 `skipped` 均不会被 UI、CLI、API 或 Apply 当作通过。
 - [ ] 不存在“自动 push/merge”“读取任意路径”“恢复未知副作用”的隐含行为。
-- [ ] 计划以 M0–M4 为独立可验收范围，M5–M6 为增量，不依赖公司环境。
+- [ ] 计划以 M0–M4 为独立可验收范围，不依赖公司环境或服务端组件。
