@@ -105,7 +105,7 @@ Application services
 
 ### 4.1 Python 技术基线
 
-- Python 3.12+、`uv` 或等价受锁定依赖管理。
+- Python 3.11+；Windows 开发使用项目内 `.venv`，并以 `uv` 管理锁定依赖。
 - `Typer`：CLI；`Pydantic v2`：边界 DTO 与文件 schema；`PyYAML`：配置。
 - `pytest`、`pytest-xdist`、`Hypothesis`：测试与属性测试。
 - `filelock` 或自研跨平台文件锁：单机互斥。
