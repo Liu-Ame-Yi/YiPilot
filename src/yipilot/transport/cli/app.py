@@ -4,7 +4,6 @@ import typer
 
 from yipilot import __version__
 
-
 app = typer.Typer(no_args_is_help=True, add_completion=False, invoke_without_command=True)
 
 
