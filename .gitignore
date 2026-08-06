@@ -16,6 +16,9 @@ venv/
 # Local runtime state: may contain tokens, task evidence, logs and worktrees
 .yipilot/
 
+# Isolated Git worktrees used for planned and implementation work
+.worktrees/
+
 # Local editor and operating-system files
 .idea/
 .vscode/
