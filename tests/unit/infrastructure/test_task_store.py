@@ -10,6 +10,8 @@ from hypothesis import strategies as st
 from yipilot.domain.errors import DomainError
 from yipilot.infrastructure.task_store import FileTaskStore, OperationRecord
 
+JSON_SAFE_INTEGER = st.integers(min_value=-(2**63), max_value=2**63 - 1)
+
 
 def _symlink_or_skip(link: Path, target: Path, *, is_directory: bool) -> None:
     try:
@@ -170,7 +172,24 @@ def test_failed_task_write_leaves_no_task_directory_or_temporary_file(
     assert not list((tmp_path / ".yipilot" / "tasks").glob("*.tmp"))
 
 
-@given(st.dictionaries(st.text(min_size=1, max_size=8), st.integers()))
+def test_operation_rejects_an_integer_outside_the_json_persistence_contract(
+    tmp_path: Path,
+) -> None:
+    store = FileTaskStore(tmp_path)
+    store.initialize_project()
+    store.create_task("1001")
+    operations_directory = tmp_path / ".yipilot" / "tasks" / "1001" / "operations"
+
+    with pytest.raises(DomainError) as error:
+        store.create_operation("1001", "task_init", "key-a", {"too_large": 10**5000})
+
+    assert error.value.code == "OPERATION_CONFLICT"
+    assert error.value.message == "operation payload must be JSON serializable"
+    assert not list(operations_directory.glob("*.json"))
+    assert not list(operations_directory.glob(".*.tmp"))
+
+
+@given(st.dictionaries(st.text(min_size=1, max_size=8), JSON_SAFE_INTEGER))
 def test_operation_replays_for_the_same_payload_regardless_of_mapping_order(
     payload: dict[str, int]
 ) -> None:
