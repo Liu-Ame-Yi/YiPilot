@@ -13,7 +13,7 @@ from filelock import FileLock
 from pydantic import BaseModel, ValidationError
 
 from yipilot.domain.errors import DomainError
-from yipilot.domain.models import validate_task_id
+from yipilot.domain.models import RunStatus, transition_run, validate_task_id
 from yipilot.infrastructure.filesystem import (
     atomic_write_json,
     atomic_write_yaml,
@@ -47,7 +47,8 @@ class RunRecord(BaseModel):
     task_id: str
     operation_id: str
     stage: str
-    status: Literal["pending"] = "pending"
+    status: RunStatus = RunStatus.PENDING
+    error_code: str | None = None
     created_at: str
 
 
@@ -191,7 +192,9 @@ class FileTaskStore:
             staging.mkdir()
             try:
                 atomic_write_json(
-                    staging / "run.json", run.model_dump(mode="json"), _validate_run
+                    staging / "run.json",
+                    run.model_dump(mode="json", exclude_none=True),
+                    _validate_run,
                 )
                 staging.replace(run_directory)
             except Exception:
@@ -206,6 +209,72 @@ class FileTaskStore:
         if run.task_id != task_id:
             raise DomainError("RUN_NOT_FOUND", "run does not belong to task")
         return run
+
+    def find_run(self, run_id: str) -> RunRecord:
+        """Find a run by its globally unique identifier."""
+        self._require_initialized()
+        _validate_uuid(run_id, "RUN_NOT_FOUND")
+        for task_directory in self._tasks_directory().iterdir():
+            if not task_directory.is_dir() or task_directory.name.startswith("."):
+                continue
+            try:
+                task_id = validate_task_id(task_directory.name)
+            except DomainError as error:
+                raise DomainError("STORAGE_INVALID", "invalid task directory") from error
+            candidate = self._runs_directory(task_id) / run_id / "run.json"
+            if candidate.is_file():
+                return self.get_run(task_id, run_id)
+        raise DomainError("RUN_NOT_FOUND", "record not found")
+
+    def list_runs(self, task_id: str) -> list[RunRecord]:
+        """Return task-owned runs in deterministic creation order."""
+        self.get_task(task_id)
+        runs: list[RunRecord] = []
+        for run_directory in self._runs_directory(task_id).iterdir():
+            if not run_directory.is_dir() or run_directory.name.startswith("."):
+                continue
+            try:
+                runs.append(self.get_run(task_id, run_directory.name))
+            except DomainError as error:
+                if error.code == "RUN_NOT_FOUND":
+                    raise DomainError("STORAGE_INVALID", "invalid run directory") from error
+                raise
+        return sorted(runs, key=lambda run: (run.created_at, run.run_id))
+
+    def set_run_status(
+        self,
+        run_id: str,
+        status: RunStatus | str,
+        *,
+        error_code: str | None = None,
+    ) -> RunRecord:
+        """Apply a domain-validated status transition and persist it atomically."""
+        run = self.find_run(run_id)
+        try:
+            target = RunStatus(status)
+        except ValueError as error:
+            raise DomainError("RUN_TRANSITION_INVALID", "unknown run status") from error
+        with self._lock(f"task-{run.task_id}"):
+            current = self.get_run(run.task_id, run_id)
+            if current.status == target:
+                return current
+            transition_run(current.status, target)
+            updated = current.model_copy(
+                update={"status": target, "error_code": error_code}
+            )
+            atomic_write_json(
+                self._run_path(run.task_id, run_id),
+                updated.model_dump(mode="json", exclude_none=True),
+                _validate_run,
+            )
+            return self.get_run(run.task_id, run_id)
+
+    def event_journal_path(self, run_id: str) -> Path:
+        """Return the project-contained event path for an existing run."""
+        run = self.find_run(run_id)
+        return self._runtime_path(
+            "tasks", run.task_id, "runs", run.run_id, "events.jsonl"
+        )
 
     def _runtime_root(self) -> Path:
         return project_path(self._project_root, ".yipilot")
