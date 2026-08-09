@@ -3,7 +3,7 @@
 import hashlib
 import json
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from uuid import uuid4
 
 from pydantic import JsonValue
@@ -16,12 +16,13 @@ from yipilot.harness.models import (
     aggregate_checks,
 )
 from yipilot.harness.report_store import HarnessReportStore
+from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.infrastructure.event_journal import EventRecord, JsonlEventJournal
 from yipilot.infrastructure.filesystem import project_path
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord, TaskRecord
 
 _HARNESS_NAME = "task_integrity"
-_HARNESS_VERSION = "1.0.0"
+_HARNESS_VERSION = "1.1.0"
 
 
 class TaskIntegrityHarness:
@@ -38,9 +39,17 @@ class TaskIntegrityHarness:
         task, task_check = self._check_task()
         run, run_check = self._check_run(task)
         events, events_check = self._check_events(run)
-        artifact_refs, artifacts_check = self._check_artifacts(run, events)
+        artifact_records, event_artifact_refs, artifacts_check = self._check_artifacts(
+            run, events
+        )
         checks = [task_check, run_check, events_check, artifacts_check]
-        inputs = self._input_summary(run, events, artifact_refs, checks)
+        inputs = self._input_summary(
+            run,
+            events,
+            artifact_records,
+            event_artifact_refs,
+            checks,
+        )
         status = aggregate_checks(checks).status
         report = HarnessReport(
             report_id=str(uuid4()),
@@ -165,9 +174,9 @@ class TaskIntegrityHarness:
         self,
         run: RunRecord | None,
         events: list[EventRecord] | None,
-    ) -> tuple[list[str], HarnessCheck]:
+    ) -> tuple[list[ArtifactRecord], list[str], HarnessCheck]:
         if run is None or events is None:
-            return [], HarnessCheck(
+            return [], [], HarnessCheck(
                 id="TASK-INTEGRITY-004",
                 status=HarnessStatus.SKIPPED,
                 blocking=True,
@@ -176,7 +185,18 @@ class TaskIntegrityHarness:
                 suggestion="resolve the preceding integrity check and run the harness again",
             )
 
-        artifact_refs: list[str] = []
+        try:
+            artifact_records = FileArtifactStore(self._store).list(
+                run.task_id, run.run_id
+            )
+        except DomainError as error:
+            if error.code != "PATH_DENIED":
+                raise
+            return [], [], _artifact_failure(
+                [],
+                "registered artifact reference is outside the run",
+            )
+        event_artifact_refs: list[str] = []
         for event in events:
             value = event.payload.get("artifact_refs")
             if value is None:
@@ -184,47 +204,61 @@ class TaskIntegrityHarness:
             if not isinstance(value, list) or not all(
                 isinstance(item, str) for item in value
             ):
-                return artifact_refs, _artifact_failure(
-                    artifact_refs,
+                return artifact_records, event_artifact_refs, _artifact_failure(
+                    [record.relative_path for record in artifact_records]
+                    + event_artifact_refs,
                     "artifact_refs must be a list of relative path strings",
                 )
-            artifact_refs.extend(value)
+            event_artifact_refs.extend(value)
 
         run_root = self._store.event_journal_path(run.run_id).parent
-        for reference in artifact_refs:
+        registered_refs = [record.relative_path for record in artifact_records]
+        all_refs = registered_refs + event_artifact_refs
+        for reference in all_refs:
             path = Path(reference)
+            windows_path = PureWindowsPath(reference)
             try:
                 if (
                     not reference
                     or path == Path(".")
                     or path.is_absolute()
                     or bool(path.drive)
+                    or bool(windows_path.drive)
+                    or bool(windows_path.root)
+                    or ".." in windows_path.parts
                 ):
                     raise DomainError("PATH_DENIED", "artifact path is not relative")
                 project_path(run_root, reference)
             except (DomainError, OSError):
-                return artifact_refs, _artifact_failure(
-                    artifact_refs,
+                return artifact_records, event_artifact_refs, _artifact_failure(
+                    list(dict.fromkeys(all_refs)),
                     f"artifact reference is outside the run: {reference}",
                 )
 
-        return artifact_refs, HarnessCheck(
+        return artifact_records, event_artifact_refs, HarnessCheck(
             id="TASK-INTEGRITY-004",
             status=HarnessStatus.PASSED,
             blocking=True,
             description="artifact references are safe paths relative to the run",
-            message=f"validated {len(artifact_refs)} artifact reference(s)",
-            evidence_refs=artifact_refs,
+            message=(
+                f"validated {len(registered_refs)} registered artifact(s) and "
+                f"{len(event_artifact_refs)} event reference(s)"
+            ),
+            evidence_refs=list(dict.fromkeys(all_refs)),
         )
 
     def _input_summary(
         self,
         run: RunRecord | None,
         events: list[EventRecord] | None,
-        artifact_refs: list[str],
+        artifact_records: list[ArtifactRecord],
+        event_artifact_refs: list[str],
         checks: list[HarnessCheck],
     ) -> list[dict[str, JsonValue]]:
-        serialized_artifact_refs: list[JsonValue] = list(artifact_refs)
+        serialized_artifact_records: list[JsonValue] = [
+            record.model_dump(mode="json") for record in artifact_records
+        ]
+        serialized_event_refs: list[JsonValue] = list(event_artifact_refs)
         return [
             {
                 "kind": "task",
@@ -245,7 +279,8 @@ class TaskIntegrityHarness:
             },
             {
                 "kind": "artifacts",
-                "refs": serialized_artifact_refs,
+                "records": serialized_artifact_records,
+                "event_refs": serialized_event_refs,
                 "check_status": checks[3].status.value,
             },
         ]

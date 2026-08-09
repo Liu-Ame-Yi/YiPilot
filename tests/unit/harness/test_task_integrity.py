@@ -12,6 +12,7 @@ from yipilot.harness.models import (
 )
 from yipilot.harness.report_store import HarnessReportStore
 from yipilot.harness.task_integrity import TaskIntegrityHarness
+from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
 
@@ -127,6 +128,150 @@ def test_artifact_reference_must_be_safe_and_run_relative(
     assert _check(report, "TASK-INTEGRITY-003").status == "passed"
     assert _check(report, "TASK-INTEGRITY-004").status == "failed"
     assert report.status == "failed"
+
+
+def test_registered_artifact_without_event_reference_is_checked(
+    tmp_path: Path,
+) -> None:
+    store, run = _seed_run(tmp_path)
+    run_root = store.event_journal_path(run.run_id).parent
+    artifact_path = run_root / "artifacts" / "result.json"
+    artifact_path.parent.mkdir()
+    artifact_path.write_text("{}\n", encoding="utf-8")
+    record = FileArtifactStore(store).register(
+        run.task_id,
+        run.run_id,
+        producer="unit-test",
+        relative_path="artifacts/result.json",
+        input_fingerprint="producer-input-v1",
+    )
+
+    report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+
+    artifact_check = _check(report, "TASK-INTEGRITY-004")
+    assert artifact_check.status == "passed"
+    assert artifact_check.evidence_refs == [record.relative_path]
+    assert report.status == "passed"
+
+
+def test_registered_artifact_path_is_checked_without_event_artifact_refs(
+    tmp_path: Path,
+) -> None:
+    store, run = _seed_run(tmp_path)
+    run_root = store.event_journal_path(run.run_id).parent
+    artifact_path = run_root / "artifacts" / "result.json"
+    artifact_path.parent.mkdir()
+    artifact_path.write_text("{}\n", encoding="utf-8")
+    record = FileArtifactStore(store).register(
+        run.task_id,
+        run.run_id,
+        producer="unit-test",
+        relative_path="artifacts/result.json",
+        input_fingerprint="producer-input-v1",
+    )
+    record_path = (
+        run_root / "artifacts" / "records" / f"{record.artifact_id}.json"
+    )
+    value = json.loads(record_path.read_text(encoding="utf-8"))
+    value["relative_path"] = "../outside.txt"
+    record_path.write_text(json.dumps(value), encoding="utf-8")
+
+    report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+
+    assert _check(report, "TASK-INTEGRITY-004").status == "failed"
+    assert report.status == "failed"
+
+
+def test_report_fingerprint_contains_stable_artifact_record_summary(
+    tmp_path: Path,
+) -> None:
+    store, run = _seed_run(tmp_path)
+    run_root = store.event_journal_path(run.run_id).parent
+    artifact_path = run_root / "artifacts" / "result.json"
+    artifact_path.parent.mkdir()
+    artifact_path.write_text("{}\n", encoding="utf-8")
+    artifact_store = FileArtifactStore(store)
+    record = artifact_store.register(
+        run.task_id,
+        run.run_id,
+        producer="unit-test",
+        relative_path="artifacts/result.json",
+        input_fingerprint="producer-input-v1",
+    )
+
+    first = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+    replay = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+    artifacts_input = next(
+        item for item in first.inputs if item["kind"] == "artifacts"
+    )
+
+    assert first.harness_version == "1.1.0"
+    assert first.input_fingerprint == replay.input_fingerprint
+    assert artifacts_input["records"] == [record.model_dump(mode="json")]
+    assert artifacts_input["event_refs"] == []
+
+    second_path = run_root / "git" / "diff.patch"
+    second_path.parent.mkdir()
+    second_path.write_text("diff --git a/a b/a\n", encoding="utf-8")
+    artifact_store.register(
+        run.task_id,
+        run.run_id,
+        producer="unit-test",
+        relative_path="git/diff.patch",
+        input_fingerprint="producer-input-v2",
+    )
+    changed = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+
+    assert changed.input_fingerprint != first.input_fingerprint
+
+
+def test_legacy_run_without_artifact_records_has_zero_artifacts(
+    tmp_path: Path,
+) -> None:
+    _store, run = _seed_run(tmp_path)
+
+    report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+    artifacts_input = next(
+        item for item in report.inputs if item["kind"] == "artifacts"
+    )
+
+    assert _check(report, "TASK-INTEGRITY-004").status == "passed"
+    assert artifacts_input["records"] == []
+    assert artifacts_input["event_refs"] == []
+
+
+def test_task_integrity_004_does_not_add_file_existence_or_hash_semantics(
+    tmp_path: Path,
+) -> None:
+    store, run = _seed_run(tmp_path)
+    run_root = store.event_journal_path(run.run_id).parent
+    artifact_path = run_root / "artifacts" / "result.json"
+    artifact_path.parent.mkdir()
+    artifact_path.write_text("original\n", encoding="utf-8")
+    FileArtifactStore(store).register(
+        run.task_id,
+        run.run_id,
+        producer="unit-test",
+        relative_path="artifacts/result.json",
+        input_fingerprint="producer-input-v1",
+    )
+    artifact_path.unlink()
+    JsonlEventJournal(
+        store.event_journal_path(run.run_id),
+        task_id=run.task_id,
+        run_id=run.run_id,
+        stage=run.stage,
+    ).append("stage.progress", {"artifact_refs": ["artifacts/missing.json"]})
+
+    report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+
+    assert _check(report, "TASK-INTEGRITY-004").status == "passed"
+    assert [check.id for check in report.checks] == [
+        "TASK-INTEGRITY-001",
+        "TASK-INTEGRITY-002",
+        "TASK-INTEGRITY-003",
+        "TASK-INTEGRITY-004",
+    ]
 
 
 def test_aggregation_uses_failed_skipped_warning_passed_priority() -> None:
