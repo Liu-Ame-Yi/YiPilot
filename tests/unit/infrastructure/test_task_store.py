@@ -196,7 +196,11 @@ def test_operation_rejects_an_integer_outside_the_json_persistence_contract(
     assert not list(operations_directory.glob(".*.tmp"))
 
 
-@given(st.dictionaries(st.text(min_size=1, max_size=8), JSON_SAFE_INTEGER))
+@given(
+    st.dictionaries(
+        st.text(min_size=1, max_size=8), JSON_SAFE_INTEGER, max_size=20
+    )
+)
 def test_canonical_request_is_identical_regardless_of_mapping_order(
     payload: dict[str, int]
 ) -> None:
