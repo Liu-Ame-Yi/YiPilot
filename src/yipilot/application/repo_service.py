@@ -158,6 +158,14 @@ def normalize_repo_url(url: str) -> str:
     parsed = urlsplit(value)
     if not parsed.scheme or (parsed.scheme != "file" and not parsed.netloc):
         raise DomainError("REPO_URL_INVALID", "repository URL is invalid")
+    if (
+        parsed.password is not None
+        or parsed.scheme.lower() in {"http", "https"}
+        and parsed.username is not None
+    ):
+        raise DomainError(
+            "REPO_URL_INVALID", "repository URL must not contain credentials"
+        )
     normalized_path = parsed.path.rstrip("/") or "/"
     return urlunsplit(
         (parsed.scheme.lower(), parsed.netloc.lower(), normalized_path, parsed.query, "")

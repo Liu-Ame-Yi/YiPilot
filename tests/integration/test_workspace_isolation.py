@@ -173,6 +173,24 @@ def test_matching_workspace_manifest_is_reused_idempotently(
     assert second == first
 
 
+def test_matching_workspace_survives_a_later_repository_sync(
+    prepared_project: Path, source_repository: Path
+) -> None:
+    workspaces = WorkspaceService(prepared_project, GitRunner())
+    first = workspaces.prepare("1001", "sample", "run-a")
+    (source_repository / "tracked.py").write_text("value = 2\n", encoding="utf-8")
+    _git(source_repository, "add", "tracked.py")
+    _git(source_repository, "commit", "-m", "second")
+
+    latest = RepoService(prepared_project, GitRunner()).add_and_sync(
+        "1001", str(source_repository), "sample"
+    )
+    second = workspaces.prepare("1001", "sample", "run-a")
+
+    assert latest.head_sha != first.base_sha
+    assert second == first
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

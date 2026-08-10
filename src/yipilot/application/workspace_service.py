@@ -85,7 +85,6 @@ class WorkspaceService:
                     repo_alias=repo_alias,
                     repo_hash=metadata.url_hash,
                     branch=branch,
-                    base_sha=metadata.head_sha,
                     workspace_path=relative_workspace,
                 )
                 if not workspace_path.is_dir() or not (workspace_path / ".git").is_file():
@@ -139,7 +138,6 @@ class WorkspaceService:
         repo_alias: str,
         repo_hash: str,
         branch: str,
-        base_sha: str,
         workspace_path: str,
     ) -> None:
         expected = (
@@ -148,7 +146,6 @@ class WorkspaceService:
             repo_alias,
             repo_hash,
             branch,
-            base_sha,
             workspace_path,
         )
         actual = (
@@ -157,7 +154,6 @@ class WorkspaceService:
             manifest.repo_alias,
             manifest.repo_hash,
             manifest.branch,
-            manifest.base_sha,
             manifest.workspace_path,
         )
         if actual != expected:

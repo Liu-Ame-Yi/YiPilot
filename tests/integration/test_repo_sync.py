@@ -212,3 +212,34 @@ def test_nul_url_is_rejected_before_git_is_invoked(
         )
 
     assert called is False
+
+
+def test_credentialed_http_url_is_rejected_without_persisting_secret(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "top-secret-token"
+    called = False
+
+    def fail_if_called(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal called
+        called = True
+        raise AssertionError("Git must not be invoked for a credentialed URL")
+
+    monkeypatch.setattr(subprocess, "run", fail_if_called)
+
+    with pytest.raises(DomainError, match="REPO_URL_INVALID") as raised:
+        RepoService(project, GitRunner()).add_and_sync(
+            "1001", f"https://user:{secret}@example.invalid/repo.git", "sample"
+        )
+
+    assert secret not in str(raised.value)
+    assert called is False
+    assert not (
+        project
+        / ".yipilot"
+        / "tasks"
+        / "1001"
+        / "repos"
+        / "sample"
+        / "metadata.json"
+    ).exists()
