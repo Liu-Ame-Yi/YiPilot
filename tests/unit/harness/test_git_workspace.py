@@ -10,6 +10,7 @@ import pytest
 from yipilot.application.repo_service import RepoService
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
+from yipilot.harness import git_workspace as git_workspace_module
 from yipilot.harness.git_workspace import GitWorkspaceHarness
 from yipilot.harness.models import HarnessCheck, HarnessReport
 from yipilot.infrastructure.git_runner import GitRunner
@@ -67,12 +68,15 @@ def _retarget_source(
 class _RecordingGitRunner(GitRunner):
     def __init__(self) -> None:
         self.argv: list[list[str]] = []
+        self.text_argv: list[list[str]] = []
+        self.bytes_argv: list[list[str]] = []
         self.calls: list[tuple[list[str], Path]] = []
 
     def run(
         self, argv: list[str], *, cwd: Path, timeout: float = 60
     ) -> subprocess.CompletedProcess[str]:
         self.argv.append(argv)
+        self.text_argv.append(argv)
         self.calls.append((argv, cwd))
         return super().run(argv, cwd=cwd, timeout=timeout)
 
@@ -80,6 +84,7 @@ class _RecordingGitRunner(GitRunner):
         self, argv: list[str], *, cwd: Path, timeout: float = 60
     ) -> subprocess.CompletedProcess[bytes]:
         self.argv.append(argv)
+        self.bytes_argv.append(argv)
         self.calls.append((argv, cwd))
         return super().run_bytes(argv, cwd=cwd, timeout=timeout)
 
@@ -128,6 +133,7 @@ def test_harness_writes_all_git_evidence(
         "diff.patch",
         "diff-stat.txt",
         "changed-files.txt",
+        "changed-files.nul",
         "head.txt",
         "base.txt",
     ]:
@@ -147,6 +153,58 @@ def test_harness_reports_no_changes_as_passed(
     assert (harness.evidence_dir / "changed-files.txt").read_text(
         encoding="utf-8"
     ) == ""
+    assert (harness.evidence_dir / "changed-files.nul").read_bytes() == b""
+
+
+def test_changed_path_nul_round_trip_preserves_embedded_newline() -> None:
+    paths = (b"dir/first\nsecond.py",)
+
+    serialized = git_workspace_module._serialize_changed_paths(paths)
+
+    assert serialized == b"dir/first\nsecond.py\0"
+    assert git_workspace_module._parse_changed_paths(serialized) == paths
+    assert len(git_workspace_module._parse_changed_paths(serialized)) == 1
+    assert git_workspace_module._serialize_changed_paths(()) == b""
+    assert git_workspace_module._parse_changed_paths(b"") == ()
+
+
+def test_changed_files_display_escapes_all_control_bytes() -> None:
+    path = b"dir/new\ncarriage\rtab\tcontrol\x01delete\x7f.py"
+
+    display = git_workspace_module._display_changed_paths((path,))
+
+    assert display == json.dumps(os.fsdecode(path), ensure_ascii=True) + "\n"
+    assert display.count("\n") == 1
+    assert "\\n" in display
+    assert "\\r" in display
+    assert "\\t" in display
+    assert "\\u0001" in display
+    assert "\\u007f" in display
+
+
+def test_changed_path_commands_preserve_nul_delimited_bytes(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    (prepared_workspace.path / "new.py").write_text("new = True\n", encoding="utf-8")
+    git_runner = _RecordingGitRunner()
+
+    report = GitWorkspaceHarness(prepared_workspace, git_runner).run()
+
+    assert report.status == "passed"
+    assert [
+        "git",
+        "diff",
+        "--name-only",
+        "-z",
+        prepared_workspace.base_sha,
+    ] in git_runner.bytes_argv
+    assert [
+        "git",
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+    ] in git_runner.bytes_argv
 
 
 def test_clean_evidence_becomes_stale_after_untracked_file_is_added(
@@ -216,7 +274,9 @@ def test_precreated_empty_evidence_bundle_is_rejected(
 
     assert report.status == "failed"
     assert _check(report, "GIT-WORKSPACE-003").status == "failed"
-    assert "stale" in _check(report, "GIT-WORKSPACE-003").message.lower()
+    evidence_message = _check(report, "GIT-WORKSPACE-003").message.lower()
+    assert "incomplete" in evidence_message or "legacy" in evidence_message
+    assert "changed-files.nul" in evidence_message
     assert _evidence_bytes(harness) == original_evidence
 
 
@@ -257,7 +317,10 @@ def test_changed_files_contains_tracked_and_untracked_paths(
     assert report.status == "passed"
     assert (harness.evidence_dir / "changed-files.txt").read_text(
         encoding="utf-8"
-    ).splitlines() == ["new.py", "tracked.py"]
+    ).splitlines() == ['"new.py"', '"tracked.py"']
+    assert (harness.evidence_dir / "changed-files.nul").read_bytes() == (
+        b"new.py\0tracked.py\0"
+    )
     assert [check.id for check in report.checks] == [
         "GIT-WORKSPACE-001",
         "GIT-WORKSPACE-002",
@@ -362,7 +425,96 @@ def test_untracked_unicode_path_is_captured_without_git_quoting(
     )
     assert report.status == "passed"
     assert "+message = '你好'" in patch
-    assert changed_files == "新文件.py\n"
+    assert changed_files == json.dumps("新文件.py", ensure_ascii=True) + "\n"
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows filenames cannot contain an embedded newline",
+)
+def test_posix_newline_path_is_one_nul_evidence_item(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    directory = prepared_workspace.path / "dir"
+    directory.mkdir()
+    relative_path = "dir/first\nsecond.py"
+    (prepared_workspace.path / relative_path).write_text(
+        "newline = True\n", encoding="utf-8"
+    )
+    index_before = _git(
+        prepared_workspace.path, "diff", "--cached", "--binary"
+    ).stdout
+
+    harness = GitWorkspaceHarness(prepared_workspace)
+    report = harness.run()
+
+    changed_nul = (harness.evidence_dir / "changed-files.nul").read_bytes()
+    changed_text = (harness.evidence_dir / "changed-files.txt").read_text(
+        encoding="utf-8"
+    )
+    patch = (harness.evidence_dir / "diff.patch").read_bytes()
+    assert report.status == "passed"
+    assert changed_nul == os.fsencode(relative_path) + b"\0"
+    assert git_workspace_module._parse_changed_paths(changed_nul) == (
+        os.fsencode(relative_path),
+    )
+    assert changed_text == json.dumps(relative_path, ensure_ascii=False) + "\n"
+    assert "\\n" in changed_text
+    assert b"first\\nsecond.py" in patch
+    assert b"+newline = True" in patch
+    assert (
+        _git(prepared_workspace.path, "diff", "--cached", "--binary").stdout
+        == index_before
+    )
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows filenames cannot contain an embedded newline",
+)
+def test_posix_newline_path_evidence_is_repeatable(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    directory = prepared_workspace.path / "dir"
+    directory.mkdir()
+    (directory / "first\nsecond.py").write_text("value = 1\n", encoding="utf-8")
+    harness = GitWorkspaceHarness(prepared_workspace)
+
+    first = harness.run()
+    original_evidence = _evidence_bytes(harness)
+    second = harness.run()
+
+    assert first.status == "passed"
+    assert second.status == "passed"
+    assert second.input_fingerprint == first.input_fingerprint
+    assert second.checks == first.checks
+    assert _evidence_bytes(harness) == original_evidence
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows filenames cannot contain an embedded newline",
+)
+def test_posix_newline_path_subsequent_change_is_stale_without_overwrite(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    directory = prepared_workspace.path / "dir"
+    directory.mkdir()
+    changed = directory / "first\nsecond.py"
+    changed.write_text("value = 1\n", encoding="utf-8")
+    harness = GitWorkspaceHarness(prepared_workspace)
+    first = harness.run()
+    original_evidence = _evidence_bytes(harness)
+    changed.write_text("value = 2\n", encoding="utf-8")
+
+    second = harness.run()
+
+    assert first.status == "passed"
+    assert second.status == "failed"
+    evidence_check = _check(second, "GIT-WORKSPACE-003")
+    assert evidence_check.status == "failed"
+    assert "stale" in evidence_check.message.lower()
+    assert _evidence_bytes(harness) == original_evidence
 
 
 def test_patch_collection_disables_external_diff_and_textconv(
@@ -428,7 +580,7 @@ def test_changed_files_contains_staged_paths(
     assert report.summary == "changes_validated"
     assert (harness.evidence_dir / "changed-files.txt").read_text(
         encoding="utf-8"
-    ).splitlines() == ["tracked.py"]
+    ).splitlines() == ['"tracked.py"']
     assert "value = 3" in (harness.evidence_dir / "diff.patch").read_text(
         encoding="utf-8"
     )
@@ -441,6 +593,7 @@ def test_changed_files_contains_staged_paths(
         "diff.patch",
         "diff-stat.txt",
         "changed-files.txt",
+        "changed-files.nul",
         "head.txt",
         "base.txt",
     ],
@@ -495,15 +648,16 @@ def test_invalid_manifest_encoding_is_git_workspace_001_failure(
     assert _check(report, "GIT-WORKSPACE-001").status == "failed"
 
 
-@pytest.mark.parametrize("unsafe_path", ["../outside.py", "C:/outside.py"])
-def test_changed_path_outside_workspace_is_git_workspace_002_failure(
-    prepared_workspace: PreparedWorkspace, unsafe_path: str
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [b"../outside.py\0", b"/outside.py\0", b"C:/outside.py\0"],
+)
+def test_unsafe_nul_changed_path_is_git_workspace_002_failure(
+    prepared_workspace: PreparedWorkspace, unsafe_path: bytes
 ) -> None:
     harness = GitWorkspaceHarness(prepared_workspace)
     assert harness.run().status == "passed"
-    (harness.evidence_dir / "changed-files.txt").write_text(
-        f"{unsafe_path}\n", encoding="utf-8"
-    )
+    (harness.evidence_dir / "changed-files.nul").write_bytes(unsafe_path)
 
     report = harness.run()
 
@@ -511,7 +665,29 @@ def test_changed_path_outside_workspace_is_git_workspace_002_failure(
     assert _check(report, "GIT-WORKSPACE-002").status == "failed"
 
 
-def test_invalid_changed_files_encoding_is_git_workspace_002_failure(
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        b"safe.py",
+        b"safe.py\0\0",
+        b"z.py\0a.py\0",
+        b"same.py\0same.py\0",
+    ],
+)
+def test_malformed_changed_files_nul_is_git_workspace_002_failure(
+    prepared_workspace: PreparedWorkspace, malformed: bytes
+) -> None:
+    harness = GitWorkspaceHarness(prepared_workspace)
+    assert harness.run().status == "passed"
+    (harness.evidence_dir / "changed-files.nul").write_bytes(malformed)
+
+    report = harness.run()
+
+    assert report.status == "failed"
+    assert _check(report, "GIT-WORKSPACE-002").status == "failed"
+
+
+def test_changed_files_text_is_display_only(
     prepared_workspace: PreparedWorkspace,
 ) -> None:
     harness = GitWorkspaceHarness(prepared_workspace)
@@ -521,7 +697,27 @@ def test_invalid_changed_files_encoding_is_git_workspace_002_failure(
     report = harness.run()
 
     assert report.status == "failed"
-    assert _check(report, "GIT-WORKSPACE-002").status == "failed"
+    assert _check(report, "GIT-WORKSPACE-002").status == "passed"
+    assert _check(report, "GIT-WORKSPACE-003").status == "failed"
+
+
+def test_changed_files_nul_tampering_is_detected_by_freshness(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    (prepared_workspace.path / "new.py").write_text("new = True\n", encoding="utf-8")
+    harness = GitWorkspaceHarness(prepared_workspace)
+    assert harness.run().status == "passed"
+    original_evidence = _evidence_bytes(harness)
+    (harness.evidence_dir / "changed-files.nul").write_bytes(b"other.py\0")
+
+    report = harness.run()
+
+    assert report.status == "failed"
+    assert _check(report, "GIT-WORKSPACE-003").status == "failed"
+    assert "changed-files.nul" in _check(report, "GIT-WORKSPACE-003").message
+    expected_evidence = dict(original_evidence)
+    expected_evidence["changed-files.nul"] = b"other.py\0"
+    assert _evidence_bytes(harness) == expected_evidence
 
 
 def test_evidence_directory_escape_is_git_workspace_003_failure(

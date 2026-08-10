@@ -29,11 +29,12 @@ _EVIDENCE_NAMES = (
     "diff.patch",
     "diff-stat.txt",
     "changed-files.txt",
+    "changed-files.nul",
     "head.txt",
     "base.txt",
 )
 _HARNESS_NAME = "git_workspace"
-_HARNESS_VERSION = "1.3.0"
+_HARNESS_VERSION = "1.4.0"
 _SourceKind = Literal["remote-only", "local-bare", "local-worktree"]
 
 
@@ -137,15 +138,17 @@ class GitWorkspaceHarness:
         return report
 
     def _build_evidence(self) -> dict[str, str | bytes]:
-        tracked_paths = _split_nul(
-            self._run("diff", "--name-only", "-z", self._workspace.base_sha)
+        tracked_paths = _parse_git_changed_paths(
+            self._run_bytes(
+                "diff", "--name-only", "-z", self._workspace.base_sha
+            )
         )
-        untracked_paths = _split_nul(
-            self._run("ls-files", "--others", "--exclude-standard", "-z")
+        untracked_paths = _parse_git_changed_paths(
+            self._run_bytes(
+                "ls-files", "--others", "--exclude-standard", "-z"
+            )
         )
-        changed_paths = sorted(
-            {path for path in tracked_paths + untracked_paths if path}
-        )
+        changed_paths = tuple(sorted(set(tracked_paths + untracked_paths)))
         tracked_patch = self._run_bytes(
             "diff",
             "--binary",
@@ -169,10 +172,9 @@ class GitWorkspaceHarness:
                 "--no-textconv",
                 "--",
                 os.devnull,
-                path,
+                os.fsdecode(path),
             )
             for path in sorted(untracked_paths)
-            if path
         ]
         untracked_stats = [
             self._run(
@@ -183,18 +185,16 @@ class GitWorkspaceHarness:
                 "--no-textconv",
                 "--",
                 os.devnull,
-                path,
+                os.fsdecode(path),
             )
             for path in sorted(untracked_paths)
-            if path
         ]
         return {
             "status.txt": self._run("status", "--porcelain"),
             "diff.patch": _join_git_bytes(tracked_patch, *untracked_patches),
             "diff-stat.txt": _join_git_output(tracked_stat, *untracked_stats),
-            "changed-files.txt": (
-                "" if not changed_paths else "\n".join(changed_paths) + "\n"
-            ),
+            "changed-files.txt": _display_changed_paths(changed_paths),
+            "changed-files.nul": _serialize_changed_paths(changed_paths),
             "head.txt": self._run("rev-parse", "HEAD"),
             "base.txt": self._run("rev-parse", self._workspace.base_sha),
         }
@@ -251,25 +251,32 @@ class GitWorkspaceHarness:
         )
 
     def _check_changed_paths(self) -> tuple[list[str], HarnessCheck]:
-        path = self.evidence_dir / "changed-files.txt"
-        evidence_ref = self._evidence_ref("changed-files.txt")
+        path = self.evidence_dir / "changed-files.nul"
+        evidence_ref = self._evidence_ref("changed-files.nul")
         if not self._safe_evidence_file(path):
             return [], HarnessCheck(
                 id="GIT-WORKSPACE-002",
                 status=HarnessStatus.FAILED,
                 description="all changed paths remain inside the workspace",
-                message="changed paths evidence is missing or outside the evidence directory",
+                message=(
+                    "authoritative changed-files.nul evidence is missing or outside "
+                    "the evidence directory"
+                ),
                 suggestion="restore the original evidence bundle and run the harness again",
                 evidence_refs=[evidence_ref],
             )
         try:
-            changed_paths = path.read_text(encoding="utf-8").splitlines()
-        except (OSError, UnicodeDecodeError):
+            changed_path_bytes = _parse_changed_paths(path.read_bytes())
+            changed_paths = [os.fsdecode(value) for value in changed_path_bytes]
+        except (OSError, UnicodeError, ValueError):
             return [], HarnessCheck(
                 id="GIT-WORKSPACE-002",
                 status=HarnessStatus.FAILED,
                 description="all changed paths remain inside the workspace",
-                message="changed paths cannot be validated because their evidence is missing",
+                message=(
+                    "changed paths cannot be validated because changed-files.nul is "
+                    "missing or malformed"
+                ),
                 suggestion="restore the original evidence bundle and run the harness again",
                 evidence_refs=[evidence_ref],
             )
@@ -370,8 +377,14 @@ class GitWorkspaceHarness:
                 id="GIT-WORKSPACE-003",
                 status=HarnessStatus.FAILED,
                 description="the complete Git evidence bundle exists",
-                message=f"required Git evidence is missing: {', '.join(missing)}",
-                suggestion="preserve the incomplete bundle and collect evidence in a new run",
+                message=(
+                    "Git evidence bundle is incomplete or uses a legacy format; "
+                    f"required Git evidence is missing: {', '.join(missing)}; "
+                    "the original evidence was not overwritten"
+                ),
+                suggestion=(
+                    "preserve the incomplete bundle and collect evidence in a new run"
+                ),
                 evidence_refs=evidence_refs,
             )
         if stale:
@@ -383,7 +396,7 @@ class GitWorkspaceHarness:
                 ),
                 message=(
                     "Git evidence is stale and does not match the current workspace: "
-                    f"{', '.join(stale)}"
+                    f"{', '.join(stale)}; the original evidence was not overwritten"
                 ),
                 suggestion=(
                     "preserve the original evidence bundle for audit and collect evidence "
@@ -395,7 +408,7 @@ class GitWorkspaceHarness:
             id="GIT-WORKSPACE-003",
             status=HarnessStatus.PASSED,
             description="the complete Git evidence bundle matches the current workspace",
-            message="all six required Git evidence files match the current workspace",
+            message="all seven required Git evidence files match the current workspace",
             evidence_refs=evidence_refs,
         )
 
@@ -642,5 +655,46 @@ def _evidence_value_bytes(value: str | bytes) -> bytes:
     return value.replace("\n", os.linesep).encode("utf-8")
 
 
-def _split_nul(value: str) -> list[str]:
-    return [part for part in value.split("\0") if part]
+def _parse_git_changed_paths(value: bytes) -> tuple[bytes, ...]:
+    try:
+        return _parse_nul_paths(value, require_canonical=False)
+    except ValueError as error:
+        raise DomainError(
+            "GIT_FAILED", "git returned malformed NUL-delimited changed paths"
+        ) from error
+
+
+def _serialize_changed_paths(paths: tuple[bytes, ...]) -> bytes:
+    if not paths:
+        return b""
+    if (
+        any(not path or b"\0" in path for path in paths)
+        or paths != tuple(sorted(set(paths)))
+    ):
+        raise ValueError("changed paths are not canonical")
+    return b"\0".join(paths) + b"\0"
+
+
+def _parse_changed_paths(value: bytes) -> tuple[bytes, ...]:
+    return _parse_nul_paths(value, require_canonical=True)
+
+
+def _parse_nul_paths(
+    value: bytes, *, require_canonical: bool
+) -> tuple[bytes, ...]:
+    if not value:
+        return ()
+    if not value.endswith(b"\0"):
+        raise ValueError("non-empty changed paths must end with NUL")
+    paths = tuple(value[:-1].split(b"\0"))
+    if any(not path for path in paths):
+        raise ValueError("changed paths cannot contain an empty item")
+    if require_canonical and paths != tuple(sorted(set(paths))):
+        raise ValueError("changed paths are not sorted and unique")
+    return paths
+
+
+def _display_changed_paths(paths: tuple[bytes, ...]) -> str:
+    return "".join(
+        json.dumps(os.fsdecode(path), ensure_ascii=True) + "\n" for path in paths
+    )
