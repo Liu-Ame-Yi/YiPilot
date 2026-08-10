@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 import pytest
@@ -8,7 +7,11 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from yipilot.domain.errors import DomainError
-from yipilot.infrastructure.task_store import FileTaskStore, OperationRecord
+from yipilot.infrastructure.task_store import (
+    FileTaskStore,
+    OperationRecord,
+    _canonical_request,
+)
 
 JSON_SAFE_INTEGER = st.integers(min_value=-(2**63), max_value=2**63 - 1)
 
@@ -116,10 +119,14 @@ def test_operation_key_is_idempotent_but_not_reusable_for_new_payload(
     store.initialize_project()
     store.create_task("1001")
 
-    first = store.create_operation("1001", "task_init", "key-a", {"task_id": "1001"})
+    first = store.create_operation(
+        "1001", "task_init", "key-a", {"task_id": "1001", "force": False}
+    )
 
     assert (
-        store.create_operation("1001", "task_init", "key-a", {"task_id": "1001"})
+        store.create_operation(
+            "1001", "task_init", "key-a", {"force": False, "task_id": "1001"}
+        )
         == first
     )
     with pytest.raises(DomainError, match="OPERATION_CONFLICT"):
@@ -190,17 +197,10 @@ def test_operation_rejects_an_integer_outside_the_json_persistence_contract(
 
 
 @given(st.dictionaries(st.text(min_size=1, max_size=8), JSON_SAFE_INTEGER))
-def test_operation_replays_for_the_same_payload_regardless_of_mapping_order(
+def test_canonical_request_is_identical_regardless_of_mapping_order(
     payload: dict[str, int]
 ) -> None:
-    with TemporaryDirectory() as directory:
-        store = FileTaskStore(Path(directory))
-        store.initialize_project()
-        store.create_task("1001")
+    canonical = _canonical_request("task_init", payload)
+    reordered = _canonical_request("task_init", dict(reversed(payload.items())))
 
-        first = store.create_operation("1001", "task_init", "key-a", payload)
-        replay = store.create_operation(
-            "1001", "task_init", "key-a", dict(reversed(payload.items()))
-        )
-
-        assert replay.operation_id == first.operation_id
+    assert reordered == canonical
