@@ -1,12 +1,15 @@
+import hashlib
 import json
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from yipilot.application.repo_service import RepoService
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
+from yipilot.domain.errors import DomainError
 from yipilot.harness.git_workspace import GitWorkspaceHarness
 from yipilot.harness.models import HarnessCheck, HarnessReport
 from yipilot.infrastructure.git_runner import GitRunner
@@ -34,20 +37,50 @@ def _evidence_bytes(harness: GitWorkspaceHarness) -> dict[str, bytes]:
     }
 
 
+def _repository_state(repository: Path) -> tuple[str, str]:
+    return (
+        _git(repository, "rev-parse", "HEAD").stdout,
+        _git(
+            repository,
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+        ).stdout,
+    )
+
+
+def _retarget_source(
+    workspace: PreparedWorkspace, normalized_url: str
+) -> PreparedWorkspace:
+    repo_hash = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()
+    metadata_path = workspace.path.parent / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["normalized_url"] = normalized_url
+    metadata["url_hash"] = repo_hash
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    manifest_path = workspace.path.parent / "workspace-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["repo_hash"] = repo_hash
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    return replace(workspace, repo_hash=repo_hash)
+
+
 class _RecordingGitRunner(GitRunner):
     def __init__(self) -> None:
         self.argv: list[list[str]] = []
+        self.calls: list[tuple[list[str], Path]] = []
 
     def run(
         self, argv: list[str], *, cwd: Path, timeout: float = 60
     ) -> subprocess.CompletedProcess[str]:
         self.argv.append(argv)
+        self.calls.append((argv, cwd))
         return super().run(argv, cwd=cwd, timeout=timeout)
 
     def run_bytes(
         self, argv: list[str], *, cwd: Path, timeout: float = 60
     ) -> subprocess.CompletedProcess[bytes]:
         self.argv.append(argv)
+        self.calls.append((argv, cwd))
         return super().run_bytes(argv, cwd=cwd, timeout=timeout)
 
 
@@ -531,6 +564,141 @@ def test_source_checkout_status_is_unchanged(
 
     assert _git(source_repository, "status", "--porcelain").stdout == source_status_before
     assert _check(report, "GIT-WORKSPACE-004").status == "passed"
+
+
+def test_bare_local_source_is_accepted_without_mutating_refs_or_index(
+    tmp_path: Path, source_repository: Path
+) -> None:
+    bare_remote = tmp_path / "source.git"
+    _git(tmp_path, "clone", "--bare", str(source_repository), str(bare_remote))
+    project = tmp_path / "project"
+    project.mkdir()
+    store = FileTaskStore(project)
+    store.initialize_project()
+    store.create_task("1001")
+    git_runner = _RecordingGitRunner()
+    RepoService(project, git_runner).add_and_sync(
+        "1001", bare_remote.as_uri(), "sample"
+    )
+    workspace = WorkspaceService(project, git_runner).prepare(
+        "1001", "sample", "run-a"
+    )
+    source_before = _repository_state(bare_remote)
+    index_before = _git(workspace.path, "diff", "--cached", "--binary").stdout
+    git_runner.calls.clear()
+
+    report = GitWorkspaceHarness(workspace, git_runner).run()
+
+    assert _repository_state(bare_remote) == source_before
+    assert _git(workspace.path, "diff", "--cached", "--binary").stdout == index_before
+    source_check = _check(report, "GIT-WORKSPACE-004")
+    assert source_check.status == "passed", source_check.message
+    assert (
+        source_check.message
+        == "local source repository is bare and has no worktree to mutate"
+    )
+    source_input = next(item for item in report.inputs if item["kind"] == "source_checkout")
+    assert source_input["source_kind"] == "local-bare"
+    assert not any(
+        argv == ["git", "status", "--porcelain"] and cwd == bare_remote.resolve()
+        for argv, cwd in git_runner.calls
+    )
+    assert report.status == "passed"
+
+
+def test_linked_worktree_source_is_classified_as_local_worktree(
+    tmp_path: Path, source_repository: Path
+) -> None:
+    linked_source = tmp_path / "linked-source"
+    _git(
+        source_repository,
+        "worktree",
+        "add",
+        "--detach",
+        str(linked_source),
+        "HEAD",
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    store = FileTaskStore(project)
+    store.initialize_project()
+    store.create_task("1001")
+    git_runner = GitRunner()
+    RepoService(project, git_runner).add_and_sync(
+        "1001", linked_source.as_uri(), "sample"
+    )
+    workspace = WorkspaceService(project, git_runner).prepare(
+        "1001", "sample", "run-a"
+    )
+    source_status_before = _git(linked_source, "status", "--porcelain").stdout
+
+    report = GitWorkspaceHarness(workspace, git_runner).run()
+
+    assert _git(linked_source, "status", "--porcelain").stdout == source_status_before
+    assert _check(report, "GIT-WORKSPACE-004").status == "passed"
+    source_input = next(item for item in report.inputs if item["kind"] == "source_checkout")
+    assert source_input["source_kind"] == "local-worktree"
+    assert report.status == "passed"
+
+
+def test_remote_source_is_classified_as_remote_only(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    workspace = _retarget_source(
+        prepared_workspace, "https://example.invalid/repo.git"
+    )
+
+    report = GitWorkspaceHarness(workspace).run()
+
+    assert _check(report, "GIT-WORKSPACE-004").status == "passed"
+    source_input = next(item for item in report.inputs if item["kind"] == "source_checkout")
+    assert source_input["source_kind"] == "remote-only"
+    assert report.status == "passed"
+
+
+def test_non_git_local_source_is_git_workspace_004_failure(
+    tmp_path: Path, prepared_workspace: PreparedWorkspace
+) -> None:
+    ordinary_directory = tmp_path / "ordinary-directory"
+    ordinary_directory.mkdir()
+    workspace = _retarget_source(prepared_workspace, ordinary_directory.as_uri())
+
+    report = GitWorkspaceHarness(workspace).run()
+
+    source_check = _check(report, "GIT-WORKSPACE-004")
+    assert source_check.status == "failed"
+    assert "SOURCE_REPOSITORY_INVALID" in source_check.message
+    assert report.status == "failed"
+
+
+def test_source_classification_git_error_is_mapped_to_safe_failure(
+    prepared_workspace: PreparedWorkspace, source_repository: Path
+) -> None:
+    class SourceClassificationFailingGitRunner(GitRunner):
+        def run(
+            self,
+            argv: list[str],
+            *,
+            cwd: Path,
+            timeout: float = 60,
+        ) -> subprocess.CompletedProcess[str]:
+            if cwd == source_repository and argv == [
+                "git",
+                "rev-parse",
+                "--is-bare-repository",
+            ]:
+                raise DomainError("GIT_FAILED", "unsafe repository detail")
+            return super().run(argv, cwd=cwd, timeout=timeout)
+
+    report = GitWorkspaceHarness(
+        prepared_workspace, SourceClassificationFailingGitRunner()
+    ).run()
+
+    source_check = _check(report, "GIT-WORKSPACE-004")
+    assert source_check.status == "failed"
+    assert "SOURCE_REPOSITORY_INVALID" in source_check.message
+    assert "unsafe repository detail" not in source_check.message
+    assert report.status == "failed"
 
 
 def test_source_checkout_change_is_git_workspace_004_failure(

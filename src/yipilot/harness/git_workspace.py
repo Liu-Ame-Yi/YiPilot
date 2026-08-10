@@ -3,9 +3,10 @@
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
-from typing import cast
+from typing import Literal, cast
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 from uuid import uuid4
@@ -32,7 +33,15 @@ _EVIDENCE_NAMES = (
     "base.txt",
 )
 _HARNESS_NAME = "git_workspace"
-_HARNESS_VERSION = "1.2.0"
+_HARNESS_VERSION = "1.3.0"
+_SourceKind = Literal["remote-only", "local-bare", "local-worktree"]
+
+
+@dataclass(frozen=True)
+class _SourceRepository:
+    kind: _SourceKind | None
+    path: Path | None
+    resolution_error: str | None
 
 
 class GitWorkspaceHarness:
@@ -69,8 +78,8 @@ class GitWorkspaceHarness:
     def run(self) -> HarnessReport:
         """Build current evidence, preserving and validating the first bundle."""
         started_at = datetime.now(UTC)
-        source_checkout, source_resolution_error = self._source_checkout()
-        source_status_before, source_error_before = self._source_status(source_checkout)
+        source = self._source_repository()
+        source_status_before, source_error_before = self._source_status(source)
 
         current_evidence = self._build_evidence()
         if not self.evidence_dir.exists():
@@ -79,10 +88,9 @@ class GitWorkspaceHarness:
         manifest, manifest_check = self._check_manifest()
         changed_paths, paths_check = self._check_changed_paths()
         evidence, evidence_check = self._check_evidence(current_evidence)
-        source_status_after, source_error_after = self._source_status(source_checkout)
+        source_status_after, source_error_after = self._source_status(source)
         source_check = self._check_source_status(
-            source_checkout,
-            source_resolution_error,
+            source,
             source_status_before,
             source_status_after,
             source_error_before,
@@ -93,8 +101,7 @@ class GitWorkspaceHarness:
             manifest,
             changed_paths,
             evidence,
-            source_checkout is not None,
-            source_resolution_error,
+            source,
             source_status_before,
             source_status_after,
             source_error_before,
@@ -392,17 +399,17 @@ class GitWorkspaceHarness:
             evidence_refs=evidence_refs,
         )
 
-    def _source_checkout(self) -> tuple[Path | None, str | None]:
+    def _source_repository(self) -> _SourceRepository:
         metadata_path = self._workspace.path.parent / "metadata.json"
         try:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return None, "SOURCE_METADATA_INVALID"
+            return _SourceRepository(None, None, "SOURCE_METADATA_INVALID")
         if not isinstance(metadata, dict):
-            return None, "SOURCE_METADATA_INVALID"
+            return _SourceRepository(None, None, "SOURCE_METADATA_INVALID")
         normalized_url = metadata.get("normalized_url")
         if not isinstance(normalized_url, str):
-            return None, "SOURCE_METADATA_INVALID"
+            return _SourceRepository(None, None, "SOURCE_METADATA_INVALID")
         expected_identity = (
             self._workspace.task_id,
             self._workspace.repo_alias,
@@ -420,31 +427,56 @@ class GitWorkspaceHarness:
             actual_identity != expected_identity
             or normalized_url_hash != self._workspace.repo_hash
         ):
-            return None, "SOURCE_METADATA_MISMATCH"
+            return _SourceRepository(None, None, "SOURCE_METADATA_MISMATCH")
         parsed = urlsplit(normalized_url)
         if parsed.scheme.lower() != "file":
-            return None, None
+            return _SourceRepository("remote-only", None, None)
         converted = url2pathname(parsed.path)
         if os.name == "nt" and converted.startswith("/"):
             converted = converted[1:]
         if parsed.netloc:
             converted = f"//{parsed.netloc}/{converted.lstrip('/')}"
         candidate = Path(converted)
-        if not candidate.is_dir() or not (candidate / ".git").exists():
-            return None, "SOURCE_CHECKOUT_MISSING"
+        if not candidate.is_dir():
+            return _SourceRepository(None, None, "SOURCE_CHECKOUT_MISSING")
         try:
-            return candidate.resolve(strict=True), None
+            candidate = candidate.resolve(strict=True)
         except OSError:
-            return None, "SOURCE_CHECKOUT_MISSING"
+            return _SourceRepository(None, None, "SOURCE_CHECKOUT_MISSING")
+
+        try:
+            is_bare = self._git.run(
+                ["git", "rev-parse", "--is-bare-repository"], cwd=candidate
+            ).stdout.strip()
+            is_inside_worktree = self._git.run(
+                ["git", "rev-parse", "--is-inside-work-tree"], cwd=candidate
+            ).stdout.strip()
+            absolute_git_dir = self._git.run(
+                ["git", "rev-parse", "--absolute-git-dir"], cwd=candidate
+            ).stdout.strip()
+        except DomainError:
+            return _SourceRepository(None, None, "SOURCE_REPOSITORY_INVALID")
+
+        if not absolute_git_dir:
+            return _SourceRepository(None, None, "SOURCE_REPOSITORY_INVALID")
+        try:
+            Path(absolute_git_dir).resolve(strict=True)
+        except OSError:
+            return _SourceRepository(None, None, "SOURCE_REPOSITORY_INVALID")
+        if is_bare == "true" and is_inside_worktree == "false":
+            return _SourceRepository("local-bare", candidate, None)
+        if is_bare == "false" and is_inside_worktree == "true":
+            return _SourceRepository("local-worktree", candidate, None)
+        return _SourceRepository(None, None, "SOURCE_REPOSITORY_INVALID")
 
     def _source_status(
-        self, source_checkout: Path | None
+        self, source: _SourceRepository
     ) -> tuple[str | None, str | None]:
-        if source_checkout is None:
+        if source.kind != "local-worktree" or source.path is None:
             return None, None
         try:
             status = self._git.run(
-                ["git", "status", "--porcelain"], cwd=source_checkout
+                ["git", "status", "--porcelain"], cwd=source.path
             ).stdout
         except DomainError as error:
             return None, error.code
@@ -452,27 +484,38 @@ class GitWorkspaceHarness:
 
     @staticmethod
     def _check_source_status(
-        source_checkout: Path | None,
-        resolution_error: str | None,
+        source: _SourceRepository,
         before: str | None,
         after: str | None,
         error_before: str | None,
         error_after: str | None,
     ) -> HarnessCheck:
-        if resolution_error is not None:
+        if source.resolution_error is not None:
             return HarnessCheck(
                 id="GIT-WORKSPACE-004",
                 status=HarnessStatus.FAILED,
                 description="the source checkout status remains unchanged",
-                message=f"local source checkout could not be resolved ({resolution_error})",
+                message=(
+                    "local source checkout could not be resolved "
+                    f"({source.resolution_error})"
+                ),
                 suggestion="repair repository metadata before running the harness again",
             )
-        if source_checkout is None:
+        if source.kind == "remote-only":
             return HarnessCheck(
                 id="GIT-WORKSPACE-004",
                 status=HarnessStatus.PASSED,
                 description="the source checkout status remains unchanged",
                 message="no local source checkout is registered",
+            )
+        if source.kind == "local-bare":
+            return HarnessCheck(
+                id="GIT-WORKSPACE-004",
+                status=HarnessStatus.PASSED,
+                description="the source checkout status remains unchanged",
+                message=(
+                    "local source repository is bare and has no worktree to mutate"
+                ),
             )
         if error_before is not None or error_after is not None:
             return HarnessCheck(
@@ -502,8 +545,7 @@ class GitWorkspaceHarness:
         manifest: dict[str, JsonValue] | None,
         changed_paths: list[str],
         evidence: list[dict[str, JsonValue]],
-        has_local_source_checkout: bool,
-        source_resolution_error: str | None,
+        source: _SourceRepository,
         source_status_before: str | None,
         source_status_after: str | None,
         source_error_before: str | None,
@@ -529,8 +571,9 @@ class GitWorkspaceHarness:
             },
             {
                 "kind": "source_checkout",
-                "local": has_local_source_checkout,
-                "resolution_error": source_resolution_error,
+                "source_kind": source.kind,
+                "local": source.kind in {"local-bare", "local-worktree"},
+                "resolution_error": source.resolution_error,
                 "status_before": source_status_before,
                 "status_after": source_status_after,
                 "error_before": source_error_before,
