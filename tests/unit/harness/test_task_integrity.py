@@ -182,6 +182,139 @@ def test_registered_artifact_path_is_checked_without_event_artifact_refs(
     assert report.status == "failed"
 
 
+def test_invalid_artifact_record_is_reported_and_persisted(
+    tmp_path: Path,
+) -> None:
+    store, run = _seed_run(tmp_path)
+    run_root = store.event_journal_path(run.run_id).parent
+    artifact_path = run_root / "artifacts" / "result.json"
+    artifact_path.parent.mkdir()
+    artifact_path.write_text("{}\n", encoding="utf-8")
+    record = FileArtifactStore(store).register(
+        run.task_id,
+        run.run_id,
+        producer="unit-test",
+        relative_path="artifacts/result.json",
+        input_fingerprint="producer-input-v1",
+    )
+    record_path = (
+        run_root / "artifacts" / "records" / f"{record.artifact_id}.json"
+    )
+    record_path.write_text("{not-json\n", encoding="utf-8")
+
+    report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+
+    artifact_check = _check(report, "TASK-INTEGRITY-004")
+    report_path = run_root / "harness" / "task-integrity-report.json"
+    assert artifact_check.status == "failed"
+    assert artifact_check.blocking is True
+    assert "ARTIFACT_RECORD_INVALID" in artifact_check.message
+    assert artifact_check.suggestion == (
+        "repair or re-register the ArtifactRecord before continuing"
+    )
+    assert artifact_check.evidence_refs == ["artifacts/records"]
+    assert str(tmp_path) not in artifact_check.message
+    assert report.status == "failed"
+    assert report.harness_version == "1.1.1"
+    assert report_path.is_file()
+    assert HarnessReportStore(store).load(run.run_id) == report
+
+
+@pytest.mark.parametrize(
+    ("association", "tampered_value"),
+    [
+        ("task_id", "1002"),
+        ("run_id", "00000000-0000-0000-0000-000000000000"),
+        ("operation_id", "00000000-0000-0000-0000-000000000000"),
+    ],
+)
+def test_tampered_artifact_association_is_reported_and_persisted(
+    tmp_path: Path,
+    association: str,
+    tampered_value: str,
+) -> None:
+    store, run = _seed_run(tmp_path)
+    run_root = store.event_journal_path(run.run_id).parent
+    artifact_path = run_root / "artifacts" / "result.json"
+    artifact_path.parent.mkdir()
+    artifact_path.write_text("{}\n", encoding="utf-8")
+    record = FileArtifactStore(store).register(
+        run.task_id,
+        run.run_id,
+        producer="unit-test",
+        relative_path="artifacts/result.json",
+        input_fingerprint="producer-input-v1",
+    )
+    record_path = (
+        run_root / "artifacts" / "records" / f"{record.artifact_id}.json"
+    )
+    value = json.loads(record_path.read_text(encoding="utf-8"))
+    value[association] = tampered_value
+    record_path.write_text(json.dumps(value), encoding="utf-8")
+
+    report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+
+    artifact_check = _check(report, "TASK-INTEGRITY-004")
+    report_path = run_root / "harness" / "task-integrity-report.json"
+    assert artifact_check.status == "failed"
+    assert artifact_check.blocking is True
+    assert "ARTIFACT_ASSOCIATION_MISMATCH" in artifact_check.message
+    assert artifact_check.suggestion == (
+        "repair or re-register the ArtifactRecord before continuing"
+    )
+    assert artifact_check.evidence_refs == ["artifacts/records"]
+    assert str(tmp_path) not in artifact_check.message
+    assert report.status == "failed"
+    assert report_path.is_file()
+    assert HarnessReportStore(store).load(run.run_id) == report
+
+
+def test_unexpected_artifact_domain_error_is_reraised(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _store, run = _seed_run(tmp_path)
+
+    def raise_unexpected_artifact_failure(*_args: object) -> None:
+        raise DomainError(
+            "UNEXPECTED_ARTIFACT_FAILURE",
+            "unexpected artifact failure",
+        )
+
+    monkeypatch.setattr(FileArtifactStore, "list", raise_unexpected_artifact_failure)
+
+    with pytest.raises(DomainError) as raised:
+        TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+
+    assert raised.value.code == "UNEXPECTED_ARTIFACT_FAILURE"
+
+
+def test_missing_artifact_record_during_list_is_reported_and_persisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, run = _seed_run(tmp_path)
+
+    def raise_artifact_not_found(*_args: object) -> None:
+        raise DomainError("ARTIFACT_NOT_FOUND", "artifact record not found")
+
+    monkeypatch.setattr(FileArtifactStore, "list", raise_artifact_not_found)
+
+    report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
+
+    artifact_check = _check(report, "TASK-INTEGRITY-004")
+    assert artifact_check.status == "failed"
+    assert artifact_check.blocking is True
+    assert "ARTIFACT_NOT_FOUND" in artifact_check.message
+    assert artifact_check.suggestion == (
+        "repair or re-register the ArtifactRecord before continuing"
+    )
+    assert artifact_check.evidence_refs == ["artifacts/records"]
+    assert str(tmp_path) not in artifact_check.message
+    assert report.status == "failed"
+    assert HarnessReportStore(store).load(run.run_id) == report
+
+
 def test_report_fingerprint_contains_stable_artifact_record_summary(
     tmp_path: Path,
 ) -> None:
@@ -205,7 +338,7 @@ def test_report_fingerprint_contains_stable_artifact_record_summary(
         item for item in first.inputs if item["kind"] == "artifacts"
     )
 
-    assert first.harness_version == "1.1.0"
+    assert first.harness_version == "1.1.1"
     assert first.input_fingerprint == replay.input_fingerprint
     assert artifacts_input["records"] == [record.model_dump(mode="json")]
     assert artifacts_input["event_refs"] == []

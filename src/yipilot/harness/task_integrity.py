@@ -22,7 +22,15 @@ from yipilot.infrastructure.filesystem import project_path
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord, TaskRecord
 
 _HARNESS_NAME = "task_integrity"
-_HARNESS_VERSION = "1.1.0"
+_HARNESS_VERSION = "1.1.1"
+_ARTIFACT_INTEGRITY_ERROR_CODES = frozenset(
+    {
+        "PATH_DENIED",
+        "ARTIFACT_RECORD_INVALID",
+        "ARTIFACT_ASSOCIATION_MISMATCH",
+        "ARTIFACT_NOT_FOUND",
+    }
+)
 
 
 class TaskIntegrityHarness:
@@ -190,11 +198,14 @@ class TaskIntegrityHarness:
                 run.task_id, run.run_id
             )
         except DomainError as error:
-            if error.code != "PATH_DENIED":
+            if error.code not in _ARTIFACT_INTEGRITY_ERROR_CODES:
                 raise
             return [], [], _artifact_failure(
-                [],
-                "registered artifact reference is outside the run",
+                ["artifacts/records"],
+                f"registered artifact records are invalid ({error.code})",
+                suggestion=(
+                    "repair or re-register the ArtifactRecord before continuing"
+                ),
             )
         event_artifact_refs: list[str] = []
         for event in events:
@@ -286,14 +297,19 @@ class TaskIntegrityHarness:
         ]
 
 
-def _artifact_failure(evidence_refs: list[str], message: str) -> HarnessCheck:
+def _artifact_failure(
+    evidence_refs: list[str],
+    message: str,
+    *,
+    suggestion: str = "store artifact references as safe paths beneath the run directory",
+) -> HarnessCheck:
     return HarnessCheck(
         id="TASK-INTEGRITY-004",
         status=HarnessStatus.FAILED,
         blocking=True,
         description="artifact references are safe paths relative to the run",
         message=message,
-        suggestion="store artifact references as safe paths beneath the run directory",
+        suggestion=suggestion,
         evidence_refs=evidence_refs,
     )
 
