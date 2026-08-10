@@ -32,7 +32,7 @@ _EVIDENCE_NAMES = (
     "base.txt",
 )
 _HARNESS_NAME = "git_workspace"
-_HARNESS_VERSION = "1.1.0"
+_HARNESS_VERSION = "1.2.0"
 
 
 class GitWorkspaceHarness:
@@ -67,17 +67,18 @@ class GitWorkspaceHarness:
         )
 
     def run(self) -> HarnessReport:
-        """Collect once, then deterministically revalidate the stored bundle."""
+        """Build current evidence, preserving and validating the first bundle."""
         started_at = datetime.now(UTC)
         source_checkout, source_resolution_error = self._source_checkout()
         source_status_before, source_error_before = self._source_status(source_checkout)
 
+        current_evidence = self._build_evidence()
         if not self.evidence_dir.exists():
-            self._collect_evidence()
+            self._persist_evidence(current_evidence)
 
         manifest, manifest_check = self._check_manifest()
         changed_paths, paths_check = self._check_changed_paths()
-        evidence, evidence_check = self._check_evidence()
+        evidence, evidence_check = self._check_evidence(current_evidence)
         source_status_after, source_error_after = self._source_status(source_checkout)
         source_check = self._check_source_status(
             source_checkout,
@@ -128,7 +129,7 @@ class GitWorkspaceHarness:
         )
         return report
 
-    def _collect_evidence(self) -> None:
+    def _build_evidence(self) -> dict[str, str | bytes]:
         tracked_paths = _split_nul(
             self._run("diff", "--name-only", "-z", self._workspace.base_sha)
         )
@@ -180,7 +181,7 @@ class GitWorkspaceHarness:
             for path in sorted(untracked_paths)
             if path
         ]
-        evidence: dict[str, str | bytes] = {
+        return {
             "status.txt": self._run("status", "--porcelain"),
             "diff.patch": _join_git_bytes(tracked_patch, *untracked_patches),
             "diff-stat.txt": _join_git_output(tracked_stat, *untracked_stats),
@@ -190,6 +191,8 @@ class GitWorkspaceHarness:
             "head.txt": self._run("rev-parse", "HEAD"),
             "base.txt": self._run("rev-parse", self._workspace.base_sha),
         }
+
+    def _persist_evidence(self, evidence: dict[str, str | bytes]) -> None:
         self.evidence_dir.mkdir(parents=True, exist_ok=False)
         for name in _EVIDENCE_NAMES:
             value = evidence[name]
@@ -300,9 +303,12 @@ class GitWorkspaceHarness:
             evidence_refs=[evidence_ref],
         )
 
-    def _check_evidence(self) -> tuple[list[dict[str, JsonValue]], HarnessCheck]:
+    def _check_evidence(
+        self, current_evidence: dict[str, str | bytes]
+    ) -> tuple[list[dict[str, JsonValue]], HarnessCheck]:
         evidence: list[dict[str, JsonValue]] = []
         missing: list[str] = []
+        stale: list[str] = []
         try:
             evidence_root = self.evidence_dir.resolve(strict=True)
         except OSError:
@@ -322,12 +328,34 @@ class GitWorkspaceHarness:
             )
         for name in _EVIDENCE_NAMES:
             path = self.evidence_dir / name
+            current_bytes = _evidence_value_bytes(current_evidence[name])
+            current_digest = hashlib.sha256(current_bytes).hexdigest()
             if not self._safe_evidence_file(path):
                 missing.append(name)
-                evidence.append({"name": name, "present": False, "sha256": None})
+                evidence.append(
+                    {
+                        "name": name,
+                        "present": False,
+                        "sha256": None,
+                        "current_sha256": current_digest,
+                        "matches_current": False,
+                    }
+                )
                 continue
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            evidence.append({"name": name, "present": True, "sha256": digest})
+            saved_bytes = path.read_bytes()
+            digest = hashlib.sha256(saved_bytes).hexdigest()
+            matches_current = saved_bytes == current_bytes
+            if not matches_current:
+                stale.append(name)
+            evidence.append(
+                {
+                    "name": name,
+                    "present": True,
+                    "sha256": digest,
+                    "current_sha256": current_digest,
+                    "matches_current": matches_current,
+                }
+            )
 
         evidence_refs = [self._evidence_ref(name) for name in _EVIDENCE_NAMES]
         if missing:
@@ -339,11 +367,28 @@ class GitWorkspaceHarness:
                 suggestion="preserve the incomplete bundle and collect evidence in a new run",
                 evidence_refs=evidence_refs,
             )
+        if stale:
+            return evidence, HarnessCheck(
+                id="GIT-WORKSPACE-003",
+                status=HarnessStatus.FAILED,
+                description=(
+                    "the complete Git evidence bundle matches the current workspace"
+                ),
+                message=(
+                    "Git evidence is stale and does not match the current workspace: "
+                    f"{', '.join(stale)}"
+                ),
+                suggestion=(
+                    "preserve the original evidence bundle for audit and collect evidence "
+                    "in a new run"
+                ),
+                evidence_refs=evidence_refs,
+            )
         return evidence, HarnessCheck(
             id="GIT-WORKSPACE-003",
             status=HarnessStatus.PASSED,
-            description="the complete Git evidence bundle exists",
-            message="all six required Git evidence files exist",
+            description="the complete Git evidence bundle matches the current workspace",
+            message="all six required Git evidence files match the current workspace",
             evidence_refs=evidence_refs,
         )
 
@@ -546,6 +591,12 @@ def _join_git_output(*parts: str) -> str:
 
 def _join_git_bytes(*parts: bytes) -> bytes:
     return b"".join(part if not part or part.endswith(b"\n") else part + b"\n" for part in parts)
+
+
+def _evidence_value_bytes(value: str | bytes) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    return value.replace("\n", os.linesep).encode("utf-8")
 
 
 def _split_nul(value: str) -> list[str]:

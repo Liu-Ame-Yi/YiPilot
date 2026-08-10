@@ -28,6 +28,12 @@ def _check(report: HarnessReport, check_id: str) -> HarnessCheck:
     return next(check for check in report.checks if check.id == check_id)
 
 
+def _evidence_bytes(harness: GitWorkspaceHarness) -> dict[str, bytes]:
+    return {
+        path.name: path.read_bytes() for path in sorted(harness.evidence_dir.iterdir())
+    }
+
+
 class _RecordingGitRunner(GitRunner):
     def __init__(self) -> None:
         self.argv: list[list[str]] = []
@@ -108,6 +114,102 @@ def test_harness_reports_no_changes_as_passed(
     assert (harness.evidence_dir / "changed-files.txt").read_text(
         encoding="utf-8"
     ) == ""
+
+
+def test_clean_evidence_becomes_stale_after_untracked_file_is_added(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    harness = GitWorkspaceHarness(prepared_workspace)
+    first = harness.run()
+    original_evidence = _evidence_bytes(harness)
+    (prepared_workspace.path / "new.py").write_text("new = True\n", encoding="utf-8")
+    index_before = _git(
+        prepared_workspace.path, "diff", "--cached", "--binary"
+    ).stdout
+
+    second = harness.run()
+
+    assert first.status == "passed"
+    assert first.summary == "no_changes"
+    assert second.status == "failed"
+    assert second.summary != "no_changes"
+    assert _check(second, "GIT-WORKSPACE-003").status == "failed"
+    assert "stale" in _check(second, "GIT-WORKSPACE-003").message.lower()
+    assert _evidence_bytes(harness) == original_evidence
+    assert (
+        _git(prepared_workspace.path, "diff", "--cached", "--binary").stdout
+        == index_before
+    )
+
+
+def test_evidence_becomes_stale_when_tracked_file_changes_again_with_same_status(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    tracked = prepared_workspace.path / "tracked.py"
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    harness = GitWorkspaceHarness(prepared_workspace)
+    first = harness.run()
+    original_evidence = _evidence_bytes(harness)
+    status_before = _git(prepared_workspace.path, "status", "--porcelain").stdout
+    tracked.write_text("value = 3\n", encoding="utf-8")
+
+    second = harness.run()
+
+    assert first.status == "passed"
+    assert _git(prepared_workspace.path, "status", "--porcelain").stdout == status_before
+    assert second.status == "failed"
+    assert _check(second, "GIT-WORKSPACE-003").status == "failed"
+    assert "stale" in _check(second, "GIT-WORKSPACE-003").message.lower()
+    assert _evidence_bytes(harness) == original_evidence
+
+
+def test_precreated_empty_evidence_bundle_is_rejected(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    harness = GitWorkspaceHarness(prepared_workspace)
+    harness.evidence_dir.mkdir(parents=True)
+    for name in [
+        "status.txt",
+        "diff.patch",
+        "diff-stat.txt",
+        "changed-files.txt",
+        "head.txt",
+        "base.txt",
+    ]:
+        (harness.evidence_dir / name).touch()
+    original_evidence = _evidence_bytes(harness)
+
+    report = harness.run()
+
+    assert report.status == "failed"
+    assert _check(report, "GIT-WORKSPACE-003").status == "failed"
+    assert "stale" in _check(report, "GIT-WORKSPACE-003").message.lower()
+    assert _evidence_bytes(harness) == original_evidence
+
+
+def test_unchanged_clean_workspace_revalidation_is_repeatable(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    harness = GitWorkspaceHarness(prepared_workspace)
+
+    first = harness.run()
+    original_evidence = _evidence_bytes(harness)
+    index_before = _git(
+        prepared_workspace.path, "diff", "--cached", "--binary"
+    ).stdout
+    second = harness.run()
+
+    assert first.status == "passed"
+    assert first.summary == "no_changes"
+    assert second.status == "passed"
+    assert second.summary == "no_changes"
+    assert second.input_fingerprint == first.input_fingerprint
+    assert second.checks == first.checks
+    assert _evidence_bytes(harness) == original_evidence
+    assert (
+        _git(prepared_workspace.path, "diff", "--cached", "--binary").stdout
+        == index_before
+    )
 
 
 def test_changed_files_contains_tracked_and_untracked_paths(
