@@ -32,7 +32,7 @@ _EVIDENCE_NAMES = (
     "base.txt",
 )
 _HARNESS_NAME = "git_workspace"
-_HARNESS_VERSION = "1.0.0"
+_HARNESS_VERSION = "1.1.0"
 
 
 class GitWorkspaceHarness:
@@ -129,23 +129,61 @@ class GitWorkspaceHarness:
         return report
 
     def _collect_evidence(self) -> None:
-        tracked_paths = self._run(
-            "diff", "--name-only", self._workspace.base_sha
-        ).splitlines()
-        untracked_paths = self._run(
-            "ls-files", "--others", "--exclude-standard"
-        ).splitlines()
+        tracked_paths = _split_nul(
+            self._run("diff", "--name-only", "-z", self._workspace.base_sha)
+        )
+        untracked_paths = _split_nul(
+            self._run("ls-files", "--others", "--exclude-standard", "-z")
+        )
         changed_paths = sorted(
             {path for path in tracked_paths + untracked_paths if path}
         )
-        evidence = {
+        tracked_patch = self._run_bytes(
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            self._workspace.base_sha,
+        )
+        tracked_stat = self._run(
+            "diff",
+            "--stat",
+            "--no-ext-diff",
+            "--no-textconv",
+            self._workspace.base_sha,
+        )
+        untracked_patches = [
+            self._run_bytes(
+                "diff",
+                "--no-index",
+                "--binary",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--",
+                os.devnull,
+                path,
+            )
+            for path in sorted(untracked_paths)
+            if path
+        ]
+        untracked_stats = [
+            self._run(
+                "diff",
+                "--no-index",
+                "--stat",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--",
+                os.devnull,
+                path,
+            )
+            for path in sorted(untracked_paths)
+            if path
+        ]
+        evidence: dict[str, str | bytes] = {
             "status.txt": self._run("status", "--porcelain"),
-            "diff.patch": self._run(
-                "diff", "--binary", self._workspace.base_sha
-            ),
-            "diff-stat.txt": self._run(
-                "diff", "--stat", self._workspace.base_sha
-            ),
+            "diff.patch": _join_git_bytes(tracked_patch, *untracked_patches),
+            "diff-stat.txt": _join_git_output(tracked_stat, *untracked_stats),
             "changed-files.txt": (
                 "" if not changed_paths else "\n".join(changed_paths) + "\n"
             ),
@@ -154,7 +192,11 @@ class GitWorkspaceHarness:
         }
         self.evidence_dir.mkdir(parents=True, exist_ok=False)
         for name in _EVIDENCE_NAMES:
-            (self.evidence_dir / name).write_text(evidence[name], encoding="utf-8")
+            value = evidence[name]
+            if isinstance(value, bytes):
+                (self.evidence_dir / name).write_bytes(value)
+            else:
+                (self.evidence_dir / name).write_text(value, encoding="utf-8")
 
     def _check_manifest(self) -> tuple[dict[str, JsonValue] | None, HarnessCheck]:
         path = self._workspace.path.parent / "workspace-manifest.json"
@@ -468,6 +510,11 @@ class GitWorkspaceHarness:
             ["git", *arguments], cwd=self._workspace.path
         ).stdout
 
+    def _run_bytes(self, *arguments: str) -> bytes:
+        return self._git.run_bytes(
+            ["git", *arguments], cwd=self._workspace.path
+        ).stdout
+
     def _evidence_ref(self, name: str) -> str:
         return (
             f"tasks/{self._workspace.task_id}/runs/"
@@ -491,3 +538,15 @@ def _fingerprint(inputs: list[dict[str, JsonValue]]) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _join_git_output(*parts: str) -> str:
+    return "".join(part if not part or part.endswith("\n") else f"{part}\n" for part in parts)
+
+
+def _join_git_bytes(*parts: bytes) -> bytes:
+    return b"".join(part if not part or part.endswith(b"\n") else part + b"\n" for part in parts)
+
+
+def _split_nul(value: str) -> list[str]:
+    return [part for part in value.split("\0") if part]

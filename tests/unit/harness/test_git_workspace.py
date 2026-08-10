@@ -28,6 +28,23 @@ def _check(report: HarnessReport, check_id: str) -> HarnessCheck:
     return next(check for check in report.checks if check.id == check_id)
 
 
+class _RecordingGitRunner(GitRunner):
+    def __init__(self) -> None:
+        self.argv: list[list[str]] = []
+
+    def run(
+        self, argv: list[str], *, cwd: Path, timeout: float = 60
+    ) -> subprocess.CompletedProcess[str]:
+        self.argv.append(argv)
+        return super().run(argv, cwd=cwd, timeout=timeout)
+
+    def run_bytes(
+        self, argv: list[str], *, cwd: Path, timeout: float = 60
+    ) -> subprocess.CompletedProcess[bytes]:
+        self.argv.append(argv)
+        return super().run_bytes(argv, cwd=cwd, timeout=timeout)
+
+
 @pytest.fixture
 def source_repository(tmp_path: Path) -> Path:
     source = tmp_path / "source"
@@ -112,6 +129,155 @@ def test_changed_files_contains_tracked_and_untracked_paths(
         "GIT-WORKSPACE-003",
         "GIT-WORKSPACE-004",
     ]
+
+
+def test_untracked_text_is_appended_to_patch_without_index_side_effect(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    untracked = prepared_workspace.path / "new.py"
+    untracked.write_text("new = True\n", encoding="utf-8")
+    content_before = untracked.read_bytes()
+    status_before = _git(prepared_workspace.path, "status", "--porcelain").stdout
+    index_before = _git(prepared_workspace.path, "diff", "--cached", "--binary").stdout
+
+    harness = GitWorkspaceHarness(prepared_workspace)
+    report = harness.run()
+
+    patch = (harness.evidence_dir / "diff.patch").read_text(encoding="utf-8")
+    stat = (harness.evidence_dir / "diff-stat.txt").read_text(encoding="utf-8")
+    assert report.status == "passed"
+    assert "new.py" in patch
+    assert "+new = True" in patch
+    assert "new.py" in stat
+    assert _git(prepared_workspace.path, "status", "--porcelain").stdout == status_before
+    assert (
+        _git(prepared_workspace.path, "diff", "--cached", "--binary").stdout
+        == index_before
+    )
+    assert untracked.read_bytes() == content_before
+
+
+def test_untracked_binary_is_appended_as_git_binary_patch(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    (prepared_workspace.path / "image.bin").write_bytes(bytes(range(256)))
+
+    harness = GitWorkspaceHarness(prepared_workspace)
+    report = harness.run()
+
+    patch = (harness.evidence_dir / "diff.patch").read_text(encoding="utf-8")
+    assert report.status == "passed"
+    assert "image.bin" in patch
+    assert "GIT binary patch" in patch
+
+
+def test_untracked_empty_file_is_represented_in_patch(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    (prepared_workspace.path / "empty.txt").touch()
+
+    harness = GitWorkspaceHarness(prepared_workspace)
+    report = harness.run()
+
+    patch = (harness.evidence_dir / "diff.patch").read_text(encoding="utf-8")
+    assert report.status == "passed"
+    assert "empty.txt" in patch
+    assert "new file mode" in patch
+
+
+def test_untracked_patch_is_sorted_and_respects_git_ignores(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    (prepared_workspace.path / ".gitignore").write_text(
+        "ignored.log\n", encoding="utf-8"
+    )
+    (prepared_workspace.path / "z-last.py").write_text("z = 1\n", encoding="utf-8")
+    (prepared_workspace.path / "a-first.py").write_text("a = 1\n", encoding="utf-8")
+    (prepared_workspace.path / "ignored.log").write_text(
+        "secret = True\n", encoding="utf-8"
+    )
+
+    harness = GitWorkspaceHarness(prepared_workspace)
+    report = harness.run()
+
+    patch = (harness.evidence_dir / "diff.patch").read_text(encoding="utf-8")
+    changed_files = (harness.evidence_dir / "changed-files.txt").read_text(
+        encoding="utf-8"
+    )
+    assert report.status == "passed"
+    assert patch.index("a-first.py") < patch.index("z-last.py")
+    assert "diff --git a/ignored.log b/ignored.log" not in patch
+    assert "+secret = True" not in patch
+    assert "ignored.log" not in changed_files
+
+
+def test_untracked_unicode_path_is_captured_without_git_quoting(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    (prepared_workspace.path / "新文件.py").write_text(
+        "message = '你好'\n", encoding="utf-8"
+    )
+
+    harness = GitWorkspaceHarness(prepared_workspace)
+    report = harness.run()
+
+    patch = (harness.evidence_dir / "diff.patch").read_text(encoding="utf-8")
+    changed_files = (harness.evidence_dir / "changed-files.txt").read_text(
+        encoding="utf-8"
+    )
+    assert report.status == "passed"
+    assert "+message = '你好'" in patch
+    assert changed_files == "新文件.py\n"
+
+
+def test_patch_collection_disables_external_diff_and_textconv(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    (prepared_workspace.path / "new.py").write_text("new = True\n", encoding="utf-8")
+    git_runner = _RecordingGitRunner()
+
+    report = GitWorkspaceHarness(prepared_workspace, git_runner).run()
+
+    patch_commands = [
+        argv for argv in git_runner.argv if argv[1] == "diff" and "--binary" in argv
+    ]
+    assert report.status == "passed"
+    assert patch_commands
+    assert all("--no-ext-diff" in argv for argv in patch_commands)
+    assert all("--no-textconv" in argv for argv in patch_commands)
+
+
+def test_untracked_patch_passes_git_apply_check(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    untracked = prepared_workspace.path / "new.py"
+    untracked.write_text("new = True\n", encoding="utf-8")
+    harness = GitWorkspaceHarness(prepared_workspace)
+
+    report = harness.run()
+    untracked.unlink()
+    result = _git(
+        prepared_workspace.path,
+        "apply",
+        "--check",
+        str(harness.evidence_dir / "diff.patch"),
+    )
+
+    assert report.status == "passed"
+    assert result.returncode == 0
+
+
+def test_untracked_non_utf8_text_is_preserved_in_patch(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    (prepared_workspace.path / "legacy.txt").write_bytes(b"\x80\x81\n")
+    harness = GitWorkspaceHarness(prepared_workspace)
+
+    report = harness.run()
+
+    patch = (harness.evidence_dir / "diff.patch").read_bytes()
+    assert report.status == "passed"
+    assert b"+\x80\x81" in patch
 
 
 def test_changed_files_contains_staged_paths(

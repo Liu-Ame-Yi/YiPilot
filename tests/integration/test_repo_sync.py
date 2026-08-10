@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -68,6 +69,7 @@ def test_git_runner_uses_argv_without_a_shell(
     assert observed["shell"] is False
     assert observed["capture_output"] is True
     assert observed["text"] is True
+    assert observed["encoding"] == "utf-8"
     assert observed["cwd"] == tmp_path
     assert observed["timeout"] == 60
 
@@ -122,6 +124,64 @@ def test_git_runner_reports_a_stable_redacted_failure(
     assert raised.value.code == "GIT_FAILED"
     assert "fatal" in raised.value.message
     assert secret not in str(raised.value)
+
+
+def test_git_runner_accepts_no_index_difference_exit_code(tmp_path: Path) -> None:
+    untracked = tmp_path / "untracked.py"
+    untracked.write_text("value = 1\n", encoding="utf-8")
+
+    result = GitRunner().run(
+        ["git", "diff", "--no-index", "--binary", "--", os.devnull, str(untracked)],
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 1
+    assert "+value = 1" in result.stdout
+
+
+def test_git_runner_does_not_accept_exit_code_one_for_other_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="failed")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(DomainError, match="GIT_FAILED"):
+        GitRunner().run(["git", "diff", "HEAD"], cwd=tmp_path)
+
+
+def test_git_runner_rejects_no_index_exit_one_without_diff_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            argv,
+            1,
+            stdout="",
+            stderr="error: Could not access 'missing.py'",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(DomainError, match="GIT_FAILED"):
+        GitRunner().run(
+            ["git", "diff", "--no-index", "--", os.devnull, "missing.py"],
+            cwd=tmp_path,
+        )
+
+
+def test_git_runner_bytes_preserves_non_utf8_diff(tmp_path: Path) -> None:
+    non_utf8 = tmp_path / "legacy.txt"
+    non_utf8.write_bytes(b"\x80\x81\n")
+
+    result = GitRunner().run_bytes(
+        ["git", "diff", "--no-index", "--binary", "--", os.devnull, str(non_utf8)],
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 1
+    assert b"+\x80\x81" in result.stdout
 
 
 def test_sync_uses_sha256_cache_and_records_remote_head(
