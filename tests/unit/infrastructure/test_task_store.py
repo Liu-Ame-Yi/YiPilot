@@ -14,6 +14,24 @@ from yipilot.infrastructure.task_store import (
 )
 
 JSON_SAFE_INTEGER = st.integers(min_value=-(2**63), max_value=2**63 - 1)
+JSON_KEY_ALPHABET = st.sampled_from(
+    [
+        "a",
+        "A",
+        "0",
+        " ",
+        "_",
+        "-",
+        '"',
+        "\\",
+        "\n",
+        "\x00",
+        "é",
+        "中",
+        "🙂",
+        "\u0301",
+    ]
+)
 
 
 def _symlink_or_skip(link: Path, target: Path, *, is_directory: bool) -> None:
@@ -198,7 +216,9 @@ def test_operation_rejects_an_integer_outside_the_json_persistence_contract(
 
 @given(
     st.dictionaries(
-        st.text(min_size=1, max_size=8), JSON_SAFE_INTEGER, max_size=20
+        st.text(alphabet=JSON_KEY_ALPHABET, min_size=1, max_size=8),
+        JSON_SAFE_INTEGER,
+        max_size=20,
     )
 )
 def test_canonical_request_is_identical_regardless_of_mapping_order(
