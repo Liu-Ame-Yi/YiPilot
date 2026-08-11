@@ -3,9 +3,9 @@
 This matrix traces the accepted local-control-plane boundary to implementation,
 named tests, deterministic Harness evidence and the commit that introduced the
 capability. `—` means the requirement has no Harness because the named test is
-its executable evidence. Task 8's immutable commit hash is recorded in the
-delivery handoff after its final commit; a Git commit cannot contain its own
-future object ID without changing that ID.
+its executable evidence. The Task 8 feature implementation is
+`81ce51a5934fcb3513a05ef1e323ce7b5350bc75`; this documentation-fix commit
+completes its traceability record without changing the feature commit.
 
 | Requirement ID | Requirement | Implementation module | Exact test | Harness ID | Commit |
 | --- | --- | --- | --- | --- | --- |
@@ -22,5 +22,5 @@ future object ID without changing that ID.
 | M2-REPO-001 | URL-hashed repository cache and sync metadata | `src/yipilot/application/repo_service.py`, `infrastructure/git_runner.py` | `tests/integration/test_repo_sync.py::test_sync_uses_sha256_cache_and_records_remote_head`; `tests/integration/test_m0_m2_acceptance.py::test_m0_m2_acceptance_uses_local_cli_and_isolated_git_workspace` | — | `a31b9bfaad1f8a91917a176f3e3f988f2c303651` |
 | M2-WORKSPACE-001 | Per-task Git workspace is isolated from source checkout | `src/yipilot/application/workspace_service.py` | `tests/integration/test_workspace_isolation.py::test_task_worktrees_are_distinct_and_do_not_change_source_checkout`; `tests/integration/test_m0_m2_acceptance.py::test_m0_m2_acceptance_uses_local_cli_and_isolated_git_workspace` | GIT-WORKSPACE-001, GIT-WORKSPACE-004 | `a31b9bfaad1f8a91917a176f3e3f988f2c303651` |
 | M2-EVIDENCE-001 | Workspace diff evidence is collected and verified | `src/yipilot/harness/git_workspace.py` | `tests/unit/harness/test_git_workspace.py::test_harness_writes_all_git_evidence`; `tests/integration/test_m0_m2_acceptance.py::test_m0_m2_acceptance_uses_local_cli_and_isolated_git_workspace` | GIT-WORKSPACE-001, GIT-WORKSPACE-002, GIT-WORKSPACE-003, GIT-WORKSPACE-004 | `c6b572ad4472ff0ee1b334b19d3bb144e528c8bf` |
-| M2-EVENT-001 | `run watch` replays JSONL after cursor without stdout contamination | `src/yipilot/transport/cli/events.py`, `app.py` | `tests/integration/test_cli_run_watch.py::test_run_watch_replays_after_cursor_as_jsonl`; `tests/integration/test_cli_run_watch.py::test_run_watch_jsonl_is_one_machine_readable_event_per_line` | — | Task 8 final commit |
-| M2-EVENT-002 | Watch follows, times out and maps stable errors | `src/yipilot/transport/cli/events.py`, `app.py` | `tests/integration/test_cli_run_watch.py::test_run_watch_times_out_with_exit_code_four`; `tests/integration/test_cli_run_watch.py::test_run_watch_maps_unknown_run_and_corrupt_journal_to_stable_errors` | — | Task 8 final commit |
+| M2-EVENT-001 | `run watch` replays JSONL after cursor without stdout contamination | `src/yipilot/transport/cli/events.py`, `app.py` | `tests/integration/test_cli_run_watch.py::test_run_watch_replays_after_cursor_as_jsonl`; `tests/integration/test_cli_run_watch.py::test_run_watch_jsonl_is_one_machine_readable_event_per_line` | — | `81ce51a5934fcb3513a05ef1e323ce7b5350bc75` |
+| M2-EVENT-002 | Watch follows, times out and maps stable errors | `src/yipilot/transport/cli/events.py`, `app.py` | `tests/integration/test_cli_run_watch.py::test_run_watch_times_out_with_exit_code_four`; `tests/integration/test_cli_run_watch.py::test_run_watch_maps_unknown_run_and_corrupt_journal_to_stable_errors`; `tests/integration/test_cli_run_watch.py::test_run_watch_follows_events_appended_after_its_first_empty_poll`; `tests/integration/test_cli_run_watch.py::test_run_watch_sleep_is_limited_by_remaining_follow_timeout` | — | `81ce51a5934fcb3513a05ef1e323ce7b5350bc75` |

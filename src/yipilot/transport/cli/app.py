@@ -1,4 +1,5 @@
 import json
+import math
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -225,7 +226,7 @@ def _watch_timeout(value: str) -> float:
         raise DomainError(
             "FOLLOW_TIMEOUT_INVALID", "follow timeout must be a positive number"
         ) from error
-    if timeout <= 0:
+    if not math.isfinite(timeout) or timeout <= 0:
         raise DomainError(
             "FOLLOW_TIMEOUT_INVALID", "follow timeout must be a positive number"
         )
@@ -254,9 +255,10 @@ def _watch_journal(
             cursor = event.sequence
             if is_terminal_event(event):
                 return
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             raise typer.Exit(code=4)
-        time.sleep(0.1)
+        time.sleep(min(0.1, remaining))
 
 
 def _render_watch_error(output: str, error: DomainError) -> None:
