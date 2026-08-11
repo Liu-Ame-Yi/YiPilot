@@ -15,6 +15,19 @@ _BEARER = re.compile(r"(?i)(bearer\s+)\S+")
 _SECRET_PARAMETER = re.compile(
     r"(?i)(\b(?:access[_-]?token|api[_-]?key|password|secret|token)=)[^\s&]+"
 )
+_REPOSITORY_ENVIRONMENT_VARIABLES = frozenset(
+    {
+        "GIT_INDEX_FILE",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    }
+)
+_CONTROLLED_NO_INDEX_OPTIONS = frozenset(
+    {"--no-index", "--binary", "--stat", "--no-ext-diff", "--no-textconv"}
+)
 _Output = TypeVar("_Output", str, bytes)
 
 
@@ -27,7 +40,7 @@ class GitRunner:
         *,
         cwd: Path,
         timeout: float = 60,
-        env: Mapping[str, str] | None = None,
+        env: Mapping[str, str | None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         _validate_argv(argv)
 
@@ -57,7 +70,7 @@ class GitRunner:
         *,
         cwd: Path,
         timeout: float = 60,
-        env: Mapping[str, str] | None = None,
+        env: Mapping[str, str | None] | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         """Run Git while preserving stdout and stderr as exact bytes."""
         _validate_argv(argv)
@@ -94,31 +107,25 @@ def _validate_argv(argv: list[str]) -> None:
         )
 
 
-def _child_environment(env: Mapping[str, str] | None) -> dict[str, str] | None:
-    if env is None:
-        return None
+def _child_environment(env: Mapping[str, str | None] | None) -> dict[str, str]:
     merged = os.environ.copy()
-    merged.update(env)
+    for name in _REPOSITORY_ENVIRONMENT_VARIABLES:
+        merged.pop(name, None)
+    if env is not None:
+        for name, value in env.items():
+            if value is None:
+                merged.pop(name, None)
+            else:
+                merged[name] = value
     return merged
 
 
 def _check_returncode(
     argv: list[str], completed: subprocess.CompletedProcess[_Output]
 ) -> None:
-    try:
-        separator = argv.index("--")
-    except ValueError:
-        separator = -1
-    try:
-        diff_index = argv.index("diff")
-    except ValueError:
-        diff_index = -1
     no_index_difference = (
         completed.returncode == 1
-        and diff_index >= 1
-        and argv[diff_index + 1 : diff_index + 2] == ["--no-index"]
-        and separator > diff_index
-        and len(argv[separator + 1 :]) == 2
+        and _is_controlled_no_index_evidence(argv)
         and bool(completed.stdout)
     )
     if completed.returncode == 0 or no_index_difference:
@@ -134,6 +141,37 @@ def _check_returncode(
     if summary:
         message = f"{message}: {summary}"
     raise DomainError("GIT_FAILED", message)
+
+
+def _is_controlled_no_index_evidence(argv: list[str]) -> bool:
+    command_index = _git_subcommand_index(argv)
+    if command_index is None or argv[command_index] != "diff":
+        return False
+    try:
+        separator = argv.index("--", command_index + 1)
+    except ValueError:
+        return False
+    options = argv[command_index + 1 : separator]
+    return (
+        len(argv[separator + 1 :]) == 2
+        and options.count("--no-index") == 1
+        and all(option in _CONTROLLED_NO_INDEX_OPTIONS for option in options)
+    )
+
+
+def _git_subcommand_index(argv: list[str]) -> int | None:
+    index = 1
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--no-optional-locks":
+            index += 1
+        elif argument == "-c":
+            index += 2
+        elif argument.startswith("-c") and len(argument) > 2:
+            index += 1
+        else:
+            return index
+    return None
 
 
 def _safe_stderr_summary(stderr: str) -> str:

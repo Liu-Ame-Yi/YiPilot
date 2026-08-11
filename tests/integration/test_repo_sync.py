@@ -74,6 +74,64 @@ def test_git_runner_uses_argv_without_a_shell(
     assert observed["timeout"] == 60
 
 
+def test_git_runner_removes_host_repository_environment_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
+
+    for name in (
+        "GIT_INDEX_FILE",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ):
+        monkeypatch.setenv(name, f"host-{name.lower()}")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    GitRunner().run(["git", "status", "--porcelain"], cwd=tmp_path)
+
+    environment = observed["env"]
+    assert isinstance(environment, dict)
+    assert not any(name in environment for name in (
+        "GIT_INDEX_FILE",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ))
+
+
+def test_git_runner_explicit_environment_overrides_host_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setenv("GIT_INDEX_FILE", "host-index")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    GitRunner().run(
+        ["git", "status", "--porcelain"],
+        cwd=tmp_path,
+        env={"GIT_INDEX_FILE": "harness-index", "GIT_DIR": None},
+    )
+
+    environment = observed["env"]
+    assert isinstance(environment, dict)
+    assert environment["GIT_INDEX_FILE"] == "harness-index"
+    assert "GIT_DIR" not in environment
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -137,6 +195,69 @@ def test_git_runner_accepts_no_index_difference_exit_code(tmp_path: Path) -> Non
 
     assert result.returncode == 1
     assert "+value = 1" in result.stdout
+
+
+@pytest.mark.parametrize("method", ["run", "run_bytes"])
+def test_git_runner_accepts_controlled_no_index_with_global_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[object]:
+        stdout: str | bytes = b"diff" if not kwargs["text"] else "diff"
+        stderr: str | bytes = b"" if not kwargs["text"] else ""
+        return subprocess.CompletedProcess(argv, 1, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = getattr(GitRunner(), method)(
+        [
+            "git",
+            "--no-optional-locks",
+            "-c",
+            "core.quotePath=true",
+            "diff",
+            "--no-index",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--",
+            "left",
+            "right",
+        ],
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 1
+
+
+@pytest.mark.parametrize("method", ["run", "run_bytes"])
+@pytest.mark.parametrize(
+    ("argv", "returncode", "stdout"),
+    [
+        (["git", "show", "diff", "--no-index", "--", "left", "right"], 1, "diff"),
+        (["git", "diff", "--no-index", "--", "left", "right", "third"], 1, "diff"),
+        (["git", "diff", "--no-index", "--", "left", "right"], 1, ""),
+        (["git", "diff", "--no-index", "--", "left", "right"], 2, "diff"),
+    ],
+)
+def test_git_runner_rejects_uncontrolled_no_index_exit_codes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    argv: list[str],
+    returncode: int,
+    stdout: str,
+) -> None:
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[object]:
+        output: str | bytes = stdout.encode() if not kwargs["text"] else stdout
+        stderr: str | bytes = b"failed" if not kwargs["text"] else "failed"
+        return subprocess.CompletedProcess(
+            command, returncode, stdout=output, stderr=stderr
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(DomainError, match="GIT_FAILED"):
+        getattr(GitRunner(), method)(argv, cwd=tmp_path)
 
 
 def test_git_runner_does_not_accept_exit_code_one_for_other_commands(

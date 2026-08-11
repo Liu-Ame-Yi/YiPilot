@@ -222,6 +222,47 @@ def test_harness_does_not_refresh_workspace_index_when_only_mtime_changes(
     assert hashlib.sha256(index_path.read_bytes()).hexdigest() == index_before
 
 
+def test_harness_ignores_host_git_index_file(
+    prepared_workspace: PreparedWorkspace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    external = tmp_path / "external"
+    external.mkdir()
+    _git(external, "init", "--initial-branch=main")
+    _git(external, "config", "user.name", "Yipilot Tests")
+    _git(external, "config", "user.email", "tests@yipilot.invalid")
+    (external / "external-only.py").write_text("external = True\n", encoding="utf-8")
+    _git(external, "add", "external-only.py")
+    _git(external, "commit", "-m", "external")
+    external_index = external / ".git" / "index"
+    external_before = hashlib.sha256(external_index.read_bytes()).hexdigest()
+    external_head = _git(external, "rev-parse", "HEAD").stdout
+
+    workspace_index = Path(
+        _git(prepared_workspace.path, "rev-parse", "--absolute-git-dir").stdout.strip()
+    ) / "index"
+    tracked = prepared_workspace.path / "tracked.py"
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    _git(prepared_workspace.path, "add", "tracked.py")
+    tracked.write_text("value = 3\n", encoding="utf-8")
+    (prepared_workspace.path / "new.py").write_text("new = True\n", encoding="utf-8")
+    workspace_before = hashlib.sha256(workspace_index.read_bytes()).hexdigest()
+    monkeypatch.setenv("GIT_INDEX_FILE", str(external_index))
+
+    harness = GitWorkspaceHarness(prepared_workspace)
+    report = harness.run()
+
+    assert report.status == "passed"
+    assert (harness.evidence_dir / "changed-files.nul").read_bytes() == (
+        b"new.py\0tracked.py\0"
+    )
+    assert (harness.evidence_dir / "head.txt").read_text(encoding="utf-8") != external_head
+    assert b"external-only.py" not in (harness.evidence_dir / "diff.patch").read_bytes()
+    assert hashlib.sha256(workspace_index.read_bytes()).hexdigest() == workspace_before
+    assert hashlib.sha256(external_index.read_bytes()).hexdigest() == external_before
+
+
 def test_harness_captures_racy_tracked_change_without_refreshing_index(
     prepared_workspace: PreparedWorkspace,
 ) -> None:
