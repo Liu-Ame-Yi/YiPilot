@@ -11,6 +11,16 @@ from yipilot.domain.errors import DomainError
 from yipilot.infrastructure.git_runner import GitRunner
 from yipilot.infrastructure.task_store import FileTaskStore
 
+_HOST_REPOSITORY_ENVIRONMENT_VARIABLES = (
+    "GIT_INDEX_FILE",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+)
+
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -83,29 +93,19 @@ def test_git_runner_removes_host_repository_environment_variables(
         observed.update(kwargs)
         return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
 
-    for name in (
-        "GIT_INDEX_FILE",
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    ):
+    for name in _HOST_REPOSITORY_ENVIRONMENT_VARIABLES:
         monkeypatch.setenv(name, f"host-{name.lower()}")
+    monkeypatch.setenv("SSH_AUTH_SOCK", "fake-ssh-auth-sock")
+    monkeypatch.setenv("GIT_ASKPASS", "fake-git-askpass")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     GitRunner().run(["git", "status", "--porcelain"], cwd=tmp_path)
 
     environment = observed["env"]
     assert isinstance(environment, dict)
-    assert not any(name in environment for name in (
-        "GIT_INDEX_FILE",
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    ))
+    assert not any(name in environment for name in _HOST_REPOSITORY_ENVIRONMENT_VARIABLES)
+    assert environment["SSH_AUTH_SOCK"] == "fake-ssh-auth-sock"
+    assert environment["GIT_ASKPASS"] == "fake-git-askpass"
 
 
 def test_git_runner_explicit_environment_overrides_host_cleanup(
@@ -118,18 +118,52 @@ def test_git_runner_explicit_environment_overrides_host_cleanup(
         return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
 
     monkeypatch.setenv("GIT_INDEX_FILE", "host-index")
+    monkeypatch.setenv("GIT_NAMESPACE", "host-namespace")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     GitRunner().run(
         ["git", "status", "--porcelain"],
         cwd=tmp_path,
-        env={"GIT_INDEX_FILE": "harness-index", "GIT_DIR": None},
+        env={
+            "GIT_INDEX_FILE": "harness-index",
+            "GIT_DIR": None,
+            "GIT_NAMESPACE": "harness-namespace",
+        },
     )
 
     environment = observed["env"]
     assert isinstance(environment, dict)
     assert environment["GIT_INDEX_FILE"] == "harness-index"
+    assert environment["GIT_NAMESPACE"] == "harness-namespace"
     assert "GIT_DIR" not in environment
+
+
+def test_git_runner_and_repo_service_ignore_host_namespace(
+    project: Path, local_remote: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source_head = _git(local_remote, "rev-parse", "HEAD").stdout.strip()
+    source_index = hashlib.sha256((local_remote / ".git" / "index").read_bytes()).hexdigest()
+    source_refs = _git(
+        local_remote, "for-each-ref", "--format=%(refname) %(objectname)"
+    ).stdout
+    source_status = _git(local_remote, "status", "--porcelain").stdout
+    monkeypatch.setenv("GIT_NAMESPACE", "host-namespace-that-does-not-exist")
+
+    listed = GitRunner().run(
+        ["git", "ls-remote", str(local_remote), "HEAD"], cwd=project
+    )
+    metadata = RepoService(project, GitRunner()).add_and_sync(
+        "1001", str(local_remote), "sample"
+    )
+
+    assert listed.stdout == f"{source_head}\tHEAD\n"
+    assert metadata.head_sha == source_head
+    assert hashlib.sha256((local_remote / ".git" / "index").read_bytes()).hexdigest() == source_index
+    assert (
+        _git(local_remote, "for-each-ref", "--format=%(refname) %(objectname)").stdout
+        == source_refs
+    )
+    assert _git(local_remote, "status", "--porcelain").stdout == source_status
 
 
 @pytest.mark.parametrize(
