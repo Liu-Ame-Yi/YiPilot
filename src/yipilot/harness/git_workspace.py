@@ -3,6 +3,10 @@
 import hashlib
 import json
 import os
+import shutil
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
@@ -34,7 +38,7 @@ _EVIDENCE_NAMES = (
     "base.txt",
 )
 _HARNESS_NAME = "git_workspace"
-_HARNESS_VERSION = "1.4.0"
+_HARNESS_VERSION = "1.5.0"
 _SourceKind = Literal["remote-only", "local-bare", "local-worktree"]
 
 
@@ -55,6 +59,7 @@ class GitWorkspaceHarness:
     ) -> None:
         self._workspace = workspace
         self._git = git_runner or GitRunner()
+        self._workspace_git_env: dict[str, str] | None = None
         self._project_root = workspace.path.parents[5].resolve(strict=True)
         self.evidence_dir = project_path(
             self._project_root,
@@ -138,6 +143,10 @@ class GitWorkspaceHarness:
         return report
 
     def _build_evidence(self) -> dict[str, str | bytes]:
+        with self._workspace_index_snapshot():
+            return self._build_evidence_from_index_snapshot()
+
+    def _build_evidence_from_index_snapshot(self) -> dict[str, str | bytes]:
         tracked_paths = _parse_git_changed_paths(
             self._run_bytes(
                 "diff", "--name-only", "-z", self._workspace.base_sha
@@ -199,6 +208,30 @@ class GitWorkspaceHarness:
             "base.txt": self._run("rev-parse", self._workspace.base_sha),
         }
 
+    @contextmanager
+    def _workspace_index_snapshot(self) -> Iterator[None]:
+        """Run workspace reads against a disposable index copy."""
+        index_value = self._git.run(
+            _git_read_argv("rev-parse", "--git-path", "index"),
+            cwd=self._workspace.path,
+        ).stdout.strip()
+        index_path = Path(index_value)
+        if not index_path.is_absolute():
+            index_path = self._workspace.path / index_path
+        try:
+            with tempfile.TemporaryDirectory(prefix="yipilot-git-index-") as temporary:
+                snapshot = Path(temporary) / "index"
+                shutil.copy2(index_path, snapshot)
+                self._workspace_git_env = {"GIT_INDEX_FILE": str(snapshot)}
+                try:
+                    yield
+                finally:
+                    self._workspace_git_env = None
+        except OSError as error:
+            raise DomainError(
+                "GIT_FAILED", "workspace index could not be safely read"
+            ) from error
+
     def _persist_evidence(self, evidence: dict[str, str | bytes]) -> None:
         self.evidence_dir.mkdir(parents=True, exist_ok=False)
         for name in _EVIDENCE_NAMES:
@@ -250,11 +283,11 @@ class GitWorkspaceHarness:
             evidence_refs=[evidence_ref],
         )
 
-    def _check_changed_paths(self) -> tuple[list[str], HarnessCheck]:
+    def _check_changed_paths(self) -> tuple[tuple[bytes, ...], HarnessCheck]:
         path = self.evidence_dir / "changed-files.nul"
         evidence_ref = self._evidence_ref("changed-files.nul")
         if not self._safe_evidence_file(path):
-            return [], HarnessCheck(
+            return (), HarnessCheck(
                 id="GIT-WORKSPACE-002",
                 status=HarnessStatus.FAILED,
                 description="all changed paths remain inside the workspace",
@@ -266,10 +299,9 @@ class GitWorkspaceHarness:
                 evidence_refs=[evidence_ref],
             )
         try:
-            changed_path_bytes = _parse_changed_paths(path.read_bytes())
-            changed_paths = [os.fsdecode(value) for value in changed_path_bytes]
+            changed_paths = _parse_changed_paths(path.read_bytes())
         except (OSError, UnicodeError, ValueError):
-            return [], HarnessCheck(
+            return (), HarnessCheck(
                 id="GIT-WORKSPACE-002",
                 status=HarnessStatus.FAILED,
                 description="all changed paths remain inside the workspace",
@@ -282,7 +314,8 @@ class GitWorkspaceHarness:
             )
 
         workspace_root = self._workspace.path.resolve(strict=True)
-        for changed_path in changed_paths:
+        for changed_path_bytes in changed_paths:
+            changed_path = os.fsdecode(changed_path_bytes)
             path_value = Path(changed_path)
             windows_path = PureWindowsPath(changed_path)
             try:
@@ -304,7 +337,10 @@ class GitWorkspaceHarness:
                     id="GIT-WORKSPACE-002",
                     status=HarnessStatus.FAILED,
                     description="all changed paths remain inside the workspace",
-                    message=f"changed path is outside the workspace: {changed_path}",
+                    message=(
+                        "changed path is outside the workspace: "
+                        f"{_json_safe_path(changed_path)}"
+                    ),
                     suggestion="remove unsafe changed paths and recollect the evidence bundle",
                     evidence_refs=[evidence_ref],
                 )
@@ -459,13 +495,13 @@ class GitWorkspaceHarness:
 
         try:
             is_bare = self._git.run(
-                ["git", "rev-parse", "--is-bare-repository"], cwd=candidate
+                _git_read_argv("rev-parse", "--is-bare-repository"), cwd=candidate
             ).stdout.strip()
             is_inside_worktree = self._git.run(
-                ["git", "rev-parse", "--is-inside-work-tree"], cwd=candidate
+                _git_read_argv("rev-parse", "--is-inside-work-tree"), cwd=candidate
             ).stdout.strip()
             absolute_git_dir = self._git.run(
-                ["git", "rev-parse", "--absolute-git-dir"], cwd=candidate
+                _git_read_argv("rev-parse", "--absolute-git-dir"), cwd=candidate
             ).stdout.strip()
         except DomainError:
             return _SourceRepository(None, None, "SOURCE_REPOSITORY_INVALID")
@@ -489,7 +525,7 @@ class GitWorkspaceHarness:
             return None, None
         try:
             status = self._git.run(
-                ["git", "status", "--porcelain"], cwd=source.path
+                _git_read_argv("status", "--porcelain"), cwd=source.path
             ).stdout
         except DomainError as error:
             return None, error.code
@@ -556,7 +592,7 @@ class GitWorkspaceHarness:
     def _input_summary(
         self,
         manifest: dict[str, JsonValue] | None,
-        changed_paths: list[str],
+        changed_paths: tuple[bytes, ...],
         evidence: list[dict[str, JsonValue]],
         source: _SourceRepository,
         source_status_before: str | None,
@@ -573,7 +609,10 @@ class GitWorkspaceHarness:
             },
             {
                 "kind": "changed_paths",
-                "paths": cast(list[JsonValue], changed_paths),
+                "paths": cast(
+                    list[JsonValue],
+                    [_json_safe_path(path) for path in changed_paths],
+                ),
                 "check_status": checks[1].status.value,
             },
             {
@@ -608,12 +647,16 @@ class GitWorkspaceHarness:
 
     def _run(self, *arguments: str) -> str:
         return self._git.run(
-            ["git", *arguments], cwd=self._workspace.path
+            _git_read_argv(*arguments),
+            cwd=self._workspace.path,
+            env=self._workspace_git_env,
         ).stdout
 
     def _run_bytes(self, *arguments: str) -> bytes:
         return self._git.run_bytes(
-            ["git", *arguments], cwd=self._workspace.path
+            _git_read_argv(*arguments),
+            cwd=self._workspace.path,
+            env=self._workspace_git_env,
         ).stdout
 
     def _evidence_ref(self, name: str) -> str:
@@ -634,7 +677,7 @@ def _json_mapping(value: object) -> dict[str, JsonValue] | None:
 def _fingerprint(inputs: list[dict[str, JsonValue]]) -> str:
     encoded = json.dumps(
         inputs,
-        ensure_ascii=False,
+        ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
@@ -695,6 +738,21 @@ def _parse_nul_paths(
 
 
 def _display_changed_paths(paths: tuple[bytes, ...]) -> str:
-    return "".join(
-        json.dumps(os.fsdecode(path), ensure_ascii=True) + "\n" for path in paths
-    )
+    return "".join(_json_safe_path(path) + "\n" for path in paths)
+
+
+def _json_safe_path(path: bytes | str) -> str:
+    """Return an injective JSON-safe display form without retaining surrogates."""
+    decoded = os.fsdecode(path) if isinstance(path, bytes) else path
+    return json.dumps(decoded, ensure_ascii=True)
+
+
+def _git_read_argv(*arguments: str) -> list[str]:
+    """Build a Git read command that cannot acquire optional write locks."""
+    return [
+        "git",
+        "--no-optional-locks",
+        "-c",
+        "core.quotePath=true",
+        *arguments,
+    ]

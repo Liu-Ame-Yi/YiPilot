@@ -1,7 +1,9 @@
 """Controlled argv-only execution for Git commands."""
 
+import os
 import re
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TypeVar
 
@@ -25,6 +27,7 @@ class GitRunner:
         *,
         cwd: Path,
         timeout: float = 60,
+        env: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         _validate_argv(argv)
 
@@ -37,6 +40,7 @@ class GitRunner:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                env=_child_environment(env),
                 check=False,
             )
         except subprocess.TimeoutExpired as error:
@@ -53,6 +57,7 @@ class GitRunner:
         *,
         cwd: Path,
         timeout: float = 60,
+        env: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         """Run Git while preserving stdout and stderr as exact bytes."""
         _validate_argv(argv)
@@ -64,6 +69,7 @@ class GitRunner:
                 shell=False,
                 capture_output=True,
                 text=False,
+                env=_child_environment(env),
                 check=False,
             )
         except subprocess.TimeoutExpired as error:
@@ -88,6 +94,14 @@ def _validate_argv(argv: list[str]) -> None:
         )
 
 
+def _child_environment(env: Mapping[str, str] | None) -> dict[str, str] | None:
+    if env is None:
+        return None
+    merged = os.environ.copy()
+    merged.update(env)
+    return merged
+
+
 def _check_returncode(
     argv: list[str], completed: subprocess.CompletedProcess[_Output]
 ) -> None:
@@ -95,10 +109,15 @@ def _check_returncode(
         separator = argv.index("--")
     except ValueError:
         separator = -1
+    try:
+        diff_index = argv.index("diff")
+    except ValueError:
+        diff_index = -1
     no_index_difference = (
         completed.returncode == 1
-        and argv[1:3] == ["diff", "--no-index"]
-        and separator >= 3
+        and diff_index >= 1
+        and argv[diff_index + 1 : diff_index + 2] == ["--no-index"]
+        and separator > diff_index
         and len(argv[separator + 1 :]) == 2
         and bool(completed.stdout)
     )

@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import subprocess
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -73,20 +74,30 @@ class _RecordingGitRunner(GitRunner):
         self.calls: list[tuple[list[str], Path]] = []
 
     def run(
-        self, argv: list[str], *, cwd: Path, timeout: float = 60
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        timeout: float = 60,
+        env: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         self.argv.append(argv)
         self.text_argv.append(argv)
         self.calls.append((argv, cwd))
-        return super().run(argv, cwd=cwd, timeout=timeout)
+        return super().run(argv, cwd=cwd, timeout=timeout, env=env)
 
     def run_bytes(
-        self, argv: list[str], *, cwd: Path, timeout: float = 60
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        timeout: float = 60,
+        env: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         self.argv.append(argv)
         self.bytes_argv.append(argv)
         self.calls.append((argv, cwd))
-        return super().run_bytes(argv, cwd=cwd, timeout=timeout)
+        return super().run_bytes(argv, cwd=cwd, timeout=timeout, env=env)
 
 
 @pytest.fixture
@@ -182,6 +193,71 @@ def test_changed_files_display_escapes_all_control_bytes() -> None:
     assert "\\u007f" in display
 
 
+def test_surrogate_path_display_and_fingerprint_are_json_safe() -> None:
+    path = "legacy-\udcff.py"
+    display = git_workspace_module._json_safe_path(path)
+
+    assert display == '"legacy-\\udcff.py"'
+    assert git_workspace_module._fingerprint(
+        [{"kind": "changed_paths", "paths": [path]}]
+    ) == git_workspace_module._fingerprint(
+        [{"kind": "changed_paths", "paths": [path]}]
+    )
+
+
+def test_harness_does_not_refresh_workspace_index_when_only_mtime_changes(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    tracked = prepared_workspace.path / "tracked.py"
+    index_path = Path(
+        _git(prepared_workspace.path, "rev-parse", "--absolute-git-dir").stdout.strip()
+    ) / "index"
+    index_before = hashlib.sha256(index_path.read_bytes()).hexdigest()
+    stat = tracked.stat()
+    os.utime(tracked, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
+
+    report = GitWorkspaceHarness(prepared_workspace).run()
+
+    assert report.status == "passed"
+    assert hashlib.sha256(index_path.read_bytes()).hexdigest() == index_before
+
+
+def test_harness_captures_racy_tracked_change_without_refreshing_index(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    tracked = prepared_workspace.path / "tracked.py"
+    index_path = Path(
+        _git(prepared_workspace.path, "rev-parse", "--absolute-git-dir").stdout.strip()
+    ) / "index"
+    index_before = hashlib.sha256(index_path.read_bytes()).hexdigest()
+    index_mtime = index_path.stat().st_mtime_ns
+    _git(prepared_workspace.path, "config", "core.trustctime", "false")
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    os.utime(tracked, ns=(index_mtime, index_mtime))
+
+    report = GitWorkspaceHarness(prepared_workspace).run()
+
+    assert report.status == "passed"
+    assert (GitWorkspaceHarness(prepared_workspace).evidence_dir / "changed-files.nul").read_bytes() == (
+        b"tracked.py\0"
+    )
+    assert hashlib.sha256(index_path.read_bytes()).hexdigest() == index_before
+
+
+def test_workspace_index_snapshot_preserves_original_timestamp(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    index_path = Path(
+        _git(prepared_workspace.path, "rev-parse", "--absolute-git-dir").stdout.strip()
+    ) / "index"
+    harness = GitWorkspaceHarness(prepared_workspace)
+
+    with harness._workspace_index_snapshot():
+        assert harness._workspace_git_env is not None
+        snapshot = Path(harness._workspace_git_env["GIT_INDEX_FILE"])
+        assert snapshot.stat().st_mtime_ns == index_path.stat().st_mtime_ns
+
+
 def test_changed_path_commands_preserve_nul_delimited_bytes(
     prepared_workspace: PreparedWorkspace,
 ) -> None:
@@ -193,6 +269,9 @@ def test_changed_path_commands_preserve_nul_delimited_bytes(
     assert report.status == "passed"
     assert [
         "git",
+        "--no-optional-locks",
+        "-c",
+        "core.quotePath=true",
         "diff",
         "--name-only",
         "-z",
@@ -200,6 +279,9 @@ def test_changed_path_commands_preserve_nul_delimited_bytes(
     ] in git_runner.bytes_argv
     assert [
         "git",
+        "--no-optional-locks",
+        "-c",
+        "core.quotePath=true",
         "ls-files",
         "--others",
         "--exclude-standard",
@@ -430,6 +512,58 @@ def test_untracked_unicode_path_is_captured_without_git_quoting(
 
 @pytest.mark.skipif(
     os.name == "nt",
+    reason="POSIX-only: Windows cannot create non-UTF-8 byte filenames",
+)
+def test_posix_non_utf8_filename_persists_json_safe_report_and_stays_stale(
+    prepared_workspace: PreparedWorkspace,
+) -> None:
+    relative_path = b"legacy-\xff.py"
+    absolute_path = os.fsencode(prepared_workspace.path) + b"/" + relative_path
+    descriptor = os.open(
+        absolute_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode=0o600
+    )
+    try:
+        os.write(descriptor, b"value = 1\n")
+    finally:
+        os.close(descriptor)
+    harness = GitWorkspaceHarness(prepared_workspace)
+
+    first = harness.run()
+    original_evidence = _evidence_bytes(harness)
+    persisted = HarnessReport.model_validate_json(
+        harness.report_path.read_text(encoding="utf-8")
+    )
+    second = harness.run()
+
+    display_path = json.dumps(os.fsdecode(relative_path), ensure_ascii=True)
+    assert first.status == "passed"
+    assert persisted == first
+    assert second.status == "passed"
+    assert second.input_fingerprint == first.input_fingerprint
+    assert (harness.evidence_dir / "changed-files.nul").read_bytes() == (
+        relative_path + b"\0"
+    )
+    assert (harness.evidence_dir / "changed-files.txt").read_text(
+        encoding="utf-8"
+    ) == display_path + "\n"
+    assert second.inputs[1]["paths"] == [display_path]
+    assert _evidence_bytes(harness) == original_evidence
+
+    descriptor = os.open(absolute_path, os.O_WRONLY | os.O_TRUNC)
+    try:
+        os.write(descriptor, b"value = 2\n")
+    finally:
+        os.close(descriptor)
+    stale = harness.run()
+
+    assert stale.status == "failed"
+    assert _check(stale, "GIT-WORKSPACE-003").status == "failed"
+    assert "stale" in _check(stale, "GIT-WORKSPACE-003").message.lower()
+    assert _evidence_bytes(harness) == original_evidence
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
     reason="Windows filenames cannot contain an embedded newline",
 )
 def test_posix_newline_path_is_one_nul_evidence_item(
@@ -526,7 +660,7 @@ def test_patch_collection_disables_external_diff_and_textconv(
     report = GitWorkspaceHarness(prepared_workspace, git_runner).run()
 
     patch_commands = [
-        argv for argv in git_runner.argv if argv[1] == "diff" and "--binary" in argv
+        argv for argv in git_runner.argv if "diff" in argv and "--binary" in argv
     ]
     assert report.status == "passed"
     assert patch_commands
@@ -796,7 +930,16 @@ def test_bare_local_source_is_accepted_without_mutating_refs_or_index(
     source_input = next(item for item in report.inputs if item["kind"] == "source_checkout")
     assert source_input["source_kind"] == "local-bare"
     assert not any(
-        argv == ["git", "status", "--porcelain"] and cwd == bare_remote.resolve()
+        argv
+        == [
+            "git",
+            "--no-optional-locks",
+            "-c",
+            "core.quotePath=true",
+            "status",
+            "--porcelain",
+        ]
+        and cwd == bare_remote.resolve()
         for argv, cwd in git_runner.calls
     )
     assert report.status == "passed"
@@ -877,14 +1020,18 @@ def test_source_classification_git_error_is_mapped_to_safe_failure(
             *,
             cwd: Path,
             timeout: float = 60,
+            env: Mapping[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             if cwd == source_repository and argv == [
                 "git",
+                "--no-optional-locks",
+                "-c",
+                "core.quotePath=true",
                 "rev-parse",
                 "--is-bare-repository",
             ]:
                 raise DomainError("GIT_FAILED", "unsafe repository detail")
-            return super().run(argv, cwd=cwd, timeout=timeout)
+            return super().run(argv, cwd=cwd, timeout=timeout, env=env)
 
     report = GitWorkspaceHarness(
         prepared_workspace, SourceClassificationFailingGitRunner()
@@ -909,13 +1056,14 @@ def test_source_checkout_change_is_git_workspace_004_failure(
             *,
             cwd: Path,
             timeout: float = 60,
+            env: Mapping[str, str] | None = None,
         ) -> subprocess.CompletedProcess[str]:
             if cwd == prepared_workspace.path and not self.changed_source:
                 (source_repository / "unexpected.py").write_text(
                     "changed = True\n", encoding="utf-8"
                 )
                 self.changed_source = True
-            return super().run(argv, cwd=cwd, timeout=timeout)
+            return super().run(argv, cwd=cwd, timeout=timeout, env=env)
 
     report = GitWorkspaceHarness(
         prepared_workspace, SourceMutatingGitRunner()
