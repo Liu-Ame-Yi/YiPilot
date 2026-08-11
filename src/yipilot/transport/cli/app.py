@@ -1,4 +1,5 @@
 import json
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, TypeVar
@@ -8,13 +9,27 @@ from pydantic import BaseModel
 
 from yipilot import __version__
 from yipilot.application.project_service import ProjectService
+from yipilot.application.repo_service import RepoMetadata, RepoService
+from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
+from yipilot.infrastructure.event_journal import JsonlEventJournal
+from yipilot.infrastructure.git_runner import GitRunner
+from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.transport.cli.events import (
+    HumanEventRenderer,
+    JsonlEventRenderer,
+    is_terminal_event,
+)
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, invoke_without_command=True)
 task_app = typer.Typer(no_args_is_help=True)
 run_app = typer.Typer(no_args_is_help=True)
+repo_app = typer.Typer(no_args_is_help=True)
+workspace_app = typer.Typer(no_args_is_help=True)
 app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
+task_app.add_typer(repo_app, name="repo")
+task_app.add_typer(workspace_app, name="workspace")
 
 Result = TypeVar("Result")
 _DEFAULT_PROJECT = Path(".")
@@ -70,6 +85,70 @@ def task_show(
         _render(output, record, f"Task {record.task_id}.")
 
 
+@repo_app.command("add")
+def repo_add(
+    task_id: Annotated[str, typer.Option("--taskid")],
+    url: Annotated[str, typer.Option("--url")],
+    alias: Annotated[str, typer.Option("--alias")],
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    sync: Annotated[bool, typer.Option("--sync")] = False,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    """Register a repository and synchronize it into the task-local cache."""
+    del sync  # M0-M2 only supports the safe add-and-sync operation.
+    metadata = _invoke(
+        output,
+        lambda: RepoService(project, GitRunner()).add_and_sync(task_id, url, alias),
+    )
+    if metadata is not None:
+        _render_value(
+            output,
+            _repo_value(metadata),
+            f"Synchronized repository {metadata.alias} for task {metadata.task_id}.",
+        )
+
+
+@repo_app.command("sync")
+def repo_sync(
+    task_id: Annotated[str, typer.Option("--taskid")],
+    alias: Annotated[str, typer.Option("--alias")],
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    """Synchronize an already registered repository."""
+    metadata = _invoke(
+        output,
+        lambda: _sync_registered_repository(project, task_id, alias),
+    )
+    if metadata is not None:
+        _render_value(
+            output,
+            _repo_value(metadata),
+            f"Synchronized repository {metadata.alias} for task {metadata.task_id}.",
+        )
+
+
+@workspace_app.command("prepare")
+def workspace_prepare(
+    task_id: Annotated[str, typer.Option("--taskid")],
+    alias: Annotated[str, typer.Option("--alias")],
+    run_id: Annotated[str, typer.Option("--run-id")],
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    """Prepare an isolated Git worktree for one task and run."""
+    workspace = _invoke(
+        output,
+        lambda: WorkspaceService(project, GitRunner()).prepare(task_id, alias, run_id),
+    )
+    if workspace is not None:
+        _render_value(
+            output,
+            _workspace_value(workspace),
+            f"Prepared workspace {workspace.path}.",
+        )
+
+
 @run_app.command("list")
 def run_list(
     task_id: Annotated[str, typer.Option("--taskid")],
@@ -100,8 +179,134 @@ def run_show(
         _render(output, record, f"Run {record.run_id} is {record.status}.")
 
 
+@run_app.command("watch")
+def run_watch(
+    run_id: Annotated[str, typer.Option("--run-id")],
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    after_sequence: Annotated[str, typer.Option("--after-sequence")] = "0",
+    output: Annotated[str, typer.Option("--output")] = "human",
+    follow_timeout_seconds: Annotated[
+        str, typer.Option("--follow-timeout-seconds")
+    ] = "30",
+) -> None:
+    """Replay a durable event journal and poll until its terminal event."""
+    try:
+        cursor = _watch_cursor(after_sequence)
+        timeout = _watch_timeout(follow_timeout_seconds)
+        renderer = _event_renderer(output)
+        store = FileTaskStore(project)
+        run = store.find_run(run_id)
+        journal = JsonlEventJournal(
+            store.event_journal_path(run.run_id),
+            task_id=run.task_id,
+            run_id=run.run_id,
+            stage=run.stage,
+        )
+        _watch_journal(journal, cursor, timeout, renderer)
+    except DomainError as error:
+        _render_watch_error(output, error)
+        raise typer.Exit(code=1) from error
+
+
+def _watch_cursor(value: str) -> int:
+    try:
+        cursor = int(value)
+    except ValueError as error:
+        raise DomainError("EVENT_CURSOR_INVALID", "event cursor must be an integer") from error
+    if cursor < 0:
+        raise DomainError("EVENT_CURSOR_INVALID", "event cursor must be non-negative")
+    return cursor
+
+
+def _watch_timeout(value: str) -> float:
+    try:
+        timeout = float(value)
+    except ValueError as error:
+        raise DomainError(
+            "FOLLOW_TIMEOUT_INVALID", "follow timeout must be a positive number"
+        ) from error
+    if timeout <= 0:
+        raise DomainError(
+            "FOLLOW_TIMEOUT_INVALID", "follow timeout must be a positive number"
+        )
+    return timeout
+
+
+def _event_renderer(output: str) -> JsonlEventRenderer | HumanEventRenderer:
+    if output == "jsonl":
+        return JsonlEventRenderer()
+    if output == "human":
+        return HumanEventRenderer()
+    raise DomainError("OUTPUT_INVALID", "output must be either 'human' or 'jsonl'")
+
+
+def _watch_journal(
+    journal: JsonlEventJournal,
+    cursor: int,
+    timeout: float,
+    renderer: JsonlEventRenderer | HumanEventRenderer,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        events = journal.read_after(cursor)
+        for event in events:
+            renderer.render(event)
+            cursor = event.sequence
+            if is_terminal_event(event):
+                return
+        if time.monotonic() >= deadline:
+            raise typer.Exit(code=4)
+        time.sleep(0.1)
+
+
+def _render_watch_error(output: str, error: DomainError) -> None:
+    value = json.dumps(
+        {"code": error.code, "message": error.message},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if output == "jsonl":
+        typer.echo(value, err=True)
+    else:
+        typer.echo(str(error), err=True)
+
+
 def _project_service(project: Path) -> ProjectService:
     return ProjectService(project)
+
+
+def _sync_registered_repository(project: Path, task_id: str, alias: str) -> RepoMetadata:
+    service = RepoService(project, GitRunner())
+    metadata = service.get_metadata(task_id, alias)
+    return service.add_and_sync(task_id, metadata.normalized_url, alias)
+
+
+def _repo_value(metadata: RepoMetadata) -> dict[str, object]:
+    return {
+        "alias": metadata.alias,
+        "cache_path": str(metadata.cache_path),
+        "head_sha": metadata.head_sha,
+        "normalized_url": metadata.normalized_url,
+        "schema_version": metadata.schema_version,
+        "synced_at": metadata.synced_at,
+        "task_id": metadata.task_id,
+        "url_hash": metadata.url_hash,
+    }
+
+
+def _workspace_value(workspace: PreparedWorkspace) -> dict[str, object]:
+    return {
+        "base_sha": workspace.base_sha,
+        "branch": workspace.branch,
+        "created_at": workspace.created_at,
+        "path": str(workspace.path),
+        "repo_alias": workspace.repo_alias,
+        "repo_hash": workspace.repo_hash,
+        "run_id": workspace.run_id,
+        "schema_version": workspace.schema_version,
+        "task_id": workspace.task_id,
+    }
 
 
 def _invoke(
