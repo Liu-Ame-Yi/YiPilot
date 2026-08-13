@@ -71,19 +71,19 @@ Yipilot 是新的产品、Python 包、CLI 和运行目录名称：`yipilot`、`
 
 公司依赖暂时均为 `disabled` 或 `recorded_replay`。Git 本地命令和本地 Python/CLI 执行器可作为 MVP 的 production Adapter，但仍需路径与审批控制。
 
-### 3.3 可借鉴但不直接复用的公开项目
+### 3.3 自主 Agent 的设计原则
 
-- Pi 提供 agent runtime、工具调用、模型统一接口和交互 CLI；其默认不包含文件、进程、网络、凭据权限边界，因此 Yipilot 不应把它视为安全控制面。
-- OpenHands 表明 agent backend、worktree 隔离和本地/远程执行环境可解耦；本项目采用同样的 `ExecutorPort` 思路，但不引入其完整 UI/服务平台。
-- SWE-agent 的 Issue→代码修复闭环可作为 Bugfix 的参考；本项目额外要求持久 Task、审批与阶段工件。
-- LangGraph 的 checkpoint/interrupt 模式可用于阶段内部图，但不替代 Application 层的 Operation、Run、事件与审计事实源。
+- Agent Runtime、计划、工具调用、工作区隔离、事件和 Harness 证据均由 Yipilot 自己维护。
+- `ExecutorPort` 只表示内建 Runtime 调用受控本地工具或 `fake` 的边界，不是其他 Agent 的适配层。
+- 阶段内部可采用 checkpoint/interrupt 模式，但不能替代 Application 层的 Operation、Run、事件与审计事实源。
 
-参考链接：
+### 3.4 Agent 自主性边界（强制约束）
 
-- <https://github.com/earendil-works/pi>
-- <https://github.com/OpenHands/OpenHands>
-- <https://github.com/SWE-agent/SWE-agent>
-- <https://docs.langchain.com/oss/python/langgraph/persistence>
+Yipilot 本身是独立 Agent，而不是用于编排、包装或转发其他 Agent CLI 的控制台。它必须自己拥有 Agent Runtime：接收用户任务，调用通过 `ModelPort` 配置的模型，维护计划与 Run 状态，选择并调用受控工具，在 Task 专属 workspace 中执行动作，并将事件、工件和 Harness 证据写入自己的事实源。
+
+大模型 provider 只是推理模型的来源（例如兼容 API 或本地模型服务），不是另一个 Agent。任何外部 Agent CLI 或类似产品都不是 Yipilot 的运行时依赖、默认 Executor、必经适配器或完成定义的一部分，也不列入未来的集成计划。不得以启动、委托或解析外部 Agent 的方式替代 Yipilot 自己的 Agent Loop。
+
+为隔离风险，Yipilot 的工具执行仍须经过自身的 `ToolRegistry`、`ExecutorPort`、PathGuard、审批和 Harness gate。`ExecutorPort` 是 Yipilot 内建 Runtime 调用本地受控工具或 fake 的边界，不是第三方 Agent 的适配点。
 
 ## 4. 总体架构
 
@@ -324,9 +324,9 @@ Runner 只读取 `HarnessContext` 允许访问的工件和目录；它不直接�
 
 ### 8.3 ExecutorPort
 
-`ExecutorPort.execute(request) -> ExecutorResult` 支持 `codex_cli`、未来 `pi`、未来 `claude_code` 和 `fake`。request 必须含 workspace、任务上下文摘要、允许工具、超时、预算、输入 artifact refs；result 必须含 argv/provider、开始/结束、退出码、stdout/stderr refs、取消状态、可解析的变更摘要。
+`ExecutorPort.execute(request) -> ExecutorResult` 是 Yipilot 内建 Agent Runtime 调用受控本地工具或 `fake` 的边界；它不启动、委托或依赖任何外部 Agent。request 必须含 workspace、任务上下文摘要、允许工具、超时、预算、输入 artifact refs；result 必须含 argv/provider、开始/结束、退出码、stdout/stderr refs、取消状态、可解析的变更摘要。
 
-Executor 的信任级别必须随每次 Run 持久化：`fake`、`sandboxed`、`host_trusted`。只有 `sandboxed`（容器或可验证 OS sandbox，白名单挂载 workspace、网络和凭据）可宣称最小权限。未沙箱化的 Codex/Pi/Claude Code 只能以显式 `--risk-accept host_trusted` 启动，报告必须标记它拥有启动用户的潜在权限；运行目录和环境变量白名单只能降低风险，不能构成安全隔离。M3 的默认自动化测试只使用 fake；真实宿主执行是用户手动 opt-in 的试验能力。
+Executor 的信任级别必须随每次 Run 持久化：`fake`、`sandboxed`、`host_trusted`。只有 `sandboxed`（容器或可验证 OS sandbox，白名单挂载 workspace、网络和凭据）可宣称最小权限。未沙箱化的 Yipilot 本机工具执行只能以显式 `--risk-accept host_trusted` 启动，报告必须标记它拥有启动用户的潜在权限；运行目录和环境变量白名单只能降低风险，不能构成安全隔离。M3 的默认自动化测试只使用 fake；真实宿主执行是用户手动 opt-in 的试验能力。
 
 ### 8.4 Apply
 
@@ -377,7 +377,7 @@ yipilot run list --taskid <id>
 yipilot run show --taskid <id> --run-id <id>
 yipilot srs generate --taskid <id> [--source file]
 yipilot sdd generate --taskid <id>
-yipilot code generate --taskid <id> --executor fake|codex_cli
+yipilot code generate --taskid <id> --executor fake|local
 yipilot harness run --taskid <id> --stage <stage>
 yipilot harness show --taskid <id> --run-id <id>
 yipilot code apply --taskid <id> --prepare-only
@@ -423,7 +423,7 @@ yipilot run watch --run-id <id> --after-sequence <n>
 
 ### 10.3 模型提供商设置与密钥管理
 
-Yipilot 不绑定 Codex CLI 或单一厂商。`ModelPort` 接收统一的流式文本请求，向 Run Event Stream 产生 `model.delta`/`model.message_completed`；provider profile 决定请求发往哪个大模型服务。M4 的首个 production Adapter 是 `openai_compatible`，以 `base_url`、模型名和 Bearer API key 调用兼容的流式聊天接口。OpenAI、兼容网关或本地服务可分别建 profile；协议不兼容的厂商以后以独立 Adapter 接入，不能用模糊的配置开关伪装兼容。
+Yipilot 的 `ModelPort` 只连接推理模型服务，不连接其他 Agent。它接收统一的流式文本请求，向 Run Event Stream 产生 `model.delta`/`model.message_completed`；provider profile 决定请求发往哪个大模型服务。M4 的首个 production Adapter 是 `openai_compatible`，以 `base_url`、模型名和 Bearer API key 调用兼容的流式聊天接口。OpenAI、兼容网关或本地服务可分别建 profile；协议不兼容的厂商以后以独立 Adapter 接入，不能用模糊的配置开关伪装兼容。
 
 全局 provider profile 的非敏感 schema：
 
@@ -500,7 +500,7 @@ HTTP/SSE、ACP、服务端认证、Postgres/Redis lease、多 worker、凭据轮
 
 ### M3：受控 Agent 执行（约 7 项）
 
-- ExecutorPort、fake executor、codex adapter（可选启用）。
+- Yipilot 内建 Agent Runtime、ToolRegistry、ExecutorPort 与 fake executor；不依赖外部 Agent CLI。
 - tool-run record、审批模型、PathGuard、CodeHarness。
 - 基于明确开发指令的 `code generate` 与 prepare-only Apply 交接包；它不依赖尚未生成的 SDD。
 
@@ -514,7 +514,7 @@ HTTP/SSE、ACP、服务端认证、Postgres/Redis lease、多 worker、凭据轮
 
 ## 14. 决策与待确认项
 
-1. 首个真实 executor 选 Codex CLI；Pi/Claude Code 以后以同一 Port 接入。
+1. M3 的首个真实执行能力由 Yipilot 内建 Agent Runtime 通过受控本地工具实现；任何外部 Agent CLI 都不接入为 executor 或运行时依赖。
 2. 当前 CLI 项目采用文件 Store；Postgres/Redis 不在本规格的评估范围内。
 3. M4 的 SDD 语义检查以 feature flag 发布，避免伪称与 Go 行为相同。
 4. `apply` 在未明确提供远端仓库、用户身份和审批策略前固定为 `--prepare-only`。
@@ -550,6 +550,14 @@ ACP 只能映射到既有 Operation/Run/Event；不可建立第二状态机。Hu
 ### 16.3 企业 Adapter 与 Bugfix
 
 Git provider、MCP、Wiki、BugTask、企业身份系统均通过 Port 接入。它们必须先具备脱敏 schema、fake、recorded replay、disabled 状态和生产授权，再被添加为独立 stage；任何缺少这些输入的集成都保持 disabled。
+
+### 16.4 中心化服务与持久化（未来独立里程碑）
+
+当前 `.yipilot/` 的 JSON/YAML/JSONL 文件仍是单机 CLI 的唯一业务事实源；本节不改变 M0–M4 的文件布局、部署方式或完成定义。若未来需要多用户、跨机器协作、多 worker 调度、集中权限管理或长期服务 API，可另立中心化服务里程碑。该里程碑应将数据按职责拆分：关系数据库保存租户、用户/权限、Project/Task/Operation/Run 元数据、幂等键、审批、索引与审计查询；项目工件、Git 证据和较大的日志继续保留在受控 workspace、持久卷或对象存储中，并以内容 hash 和相对路径引用。不得把数据库当作任意文件内容的无约束替代品。
+
+首选评估 PostgreSQL 作为中心化元数据数据库；不承诺 MySQL，也不在未做兼容性、迁移和运维评估前绑定任何具体数据库。Redis 或同类组件只能承担队列、短期 lease、取消信号和流式发布订阅等易失协调职责，不能成为 Task/Operation/Run/Event 的唯一事实源。无论采用何种后端，Application service、领域状态机、`Idempotency-Key`、事件 sequence、Harness 证据和 Approval 绑定规则必须保持不变；HTTP/ACP 不得建立第二套状态机。
+
+中心化实施前必须新增独立设计、schema migration、租户与授权边界、备份/保留策略、数据导入导出和故障恢复方案，并以多进程/多 worker 并发、重复请求、网络中断、数据库故障和恢复后的审计一致性测试验收。现有本地项目迁移或同步必须由用户显式发起、可审计且可回滚，禁止后台静默上传 `.yipilot/` 内容或密钥。
 
 ## 17. 框架决策
 
