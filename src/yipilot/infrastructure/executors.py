@@ -1,0 +1,313 @@
+"""Deterministic and host-trusted executors for policy-approved local tools."""
+
+import subprocess
+import threading
+import time
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from pathlib import Path
+from threading import Event
+from typing import BinaryIO
+from uuid import uuid4
+
+from yipilot.domain.errors import DomainError
+from yipilot.domain.execution import (
+    ArtifactRef,
+    ExecutionTrustLevel,
+    ToolChangeSummary,
+    ToolKind,
+    ToolPolicy,
+    ToolRequest,
+    ToolResult,
+    ToolRunStatus,
+    is_generic_python_executable,
+)
+from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
+from yipilot.infrastructure.event_journal import JsonlEventJournal
+
+_CHUNK_SIZE = 64 * 1024
+_OUTPUT_LIMIT_DIAGNOSTIC = b"YIPILOT_OUTPUT_LIMIT_EXCEEDED\n"
+
+
+class FakeExecutor:
+    """Return test-provided output without creating a subprocess."""
+
+    def __init__(
+        self,
+        artifact_store: FileArtifactStore,
+        journal: JsonlEventJournal,
+        *,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        exit_code: int | None = 0,
+        status: ToolRunStatus | None = None,
+    ) -> None:
+        self._artifact_store = artifact_store
+        self._journal = journal
+        self._stdout = stdout
+        self._stderr = stderr
+        self._exit_code = exit_code
+        self._status = status
+
+    def execute(
+        self,
+        request: ToolRequest,
+        tool: ToolPolicy,
+        *,
+        cwd: Path,
+        environment: Mapping[str, str] | None = None,
+        cancel_event: Event | None = None,
+    ) -> ToolResult:
+        del tool, cwd, environment
+        started_at = datetime.now(UTC)
+        tool_run_id = str(uuid4())
+        _started(self._journal, tool_run_id, request.tool_id)
+        status = self._status or (
+            ToolRunStatus.CANCELLED
+            if cancel_event is not None and cancel_event.is_set()
+            else ToolRunStatus.SUCCEEDED
+            if self._exit_code == 0
+            else ToolRunStatus.FAILED
+        )
+        stdout, stderr, exceeded = _limit_output(
+            self._stdout, self._stderr, request.output_budget_bytes
+        )
+        if exceeded:
+            status = ToolRunStatus.FAILED
+            stderr += _OUTPUT_LIMIT_DIAGNOSTIC
+        result = _result(
+            self._artifact_store,
+            tool_run_id,
+            request,
+            started_at,
+            status,
+            self._exit_code,
+            stdout,
+            stderr,
+            ExecutionTrustLevel.FAKE,
+        )
+        _completed(self._journal, result, request.tool_id)
+        return result
+
+
+class LocalCommandRunner:
+    """Run one already-approved argv with bounded stream collection."""
+
+    def __init__(
+        self, artifact_store: FileArtifactStore, journal: JsonlEventJournal
+    ) -> None:
+        self._artifact_store = artifact_store
+        self._journal = journal
+
+    def execute(
+        self,
+        request: ToolRequest,
+        tool: ToolPolicy,
+        *,
+        cwd: Path,
+        environment: Mapping[str, str] | None = None,
+        cancel_event: Event | None = None,
+    ) -> ToolResult:
+        tool.validate_request(request)
+        if tool.kind is not ToolKind.READ_ONLY:
+            raise DomainError(
+                "TOOL_KIND_DENIED", "only read-only tools may be executed in Task 10"
+            )
+        if is_generic_python_executable(tool.executable):
+            raise DomainError(
+                "TOOL_EXECUTABLE_DENIED",
+                "generic Python interpreters are not Task 10 tools",
+            )
+        environment = environment or {}
+        missing = set(request.env_names).difference(environment)
+        if missing:
+            raise DomainError("TOOL_ENV_VALUE_MISSING", "approved environment value is missing")
+        env = {name: environment[name] for name in request.env_names}
+        started_at = datetime.now(UTC)
+        tool_run_id = str(uuid4())
+        process = subprocess.Popen(
+            list(request.argv),
+            cwd=str(cwd),
+            env=env,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        _started(self._journal, tool_run_id, request.tool_id)
+        stdout, stderr, exceeded, readers = _read_streams(
+            process, request.output_budget_bytes
+        )
+        status = _wait_for_process(process, request.timeout_seconds, cancel_event)
+        for reader in readers:
+            reader.join()
+        if exceeded.is_set():
+            _terminate(process)
+            status = ToolRunStatus.FAILED
+            stderr += _OUTPUT_LIMIT_DIAGNOSTIC
+        exit_code = process.returncode
+        if status is ToolRunStatus.SUCCEEDED and exit_code != 0:
+            status = ToolRunStatus.FAILED
+        result = _result(
+            self._artifact_store,
+            tool_run_id,
+            request,
+            started_at,
+            status,
+            exit_code,
+            stdout,
+            stderr,
+            ExecutionTrustLevel.HOST_TRUSTED,
+        )
+        _completed(self._journal, result, request.tool_id)
+        return result
+
+
+def _read_streams(
+    process: subprocess.Popen[bytes], output_budget_bytes: int
+) -> tuple[bytearray, bytearray, threading.Event, list[threading.Thread]]:
+    stdout = bytearray()
+    stderr = bytearray()
+    exceeded = threading.Event()
+    remaining = output_budget_bytes
+    lock = threading.Lock()
+
+    def read_stream(stream: BinaryIO, destination: bytearray) -> None:
+        nonlocal remaining
+        while True:
+            chunk = stream.read(_CHUNK_SIZE)
+            if not chunk:
+                return
+            with lock:
+                allowed = min(len(chunk), max(remaining, 0))
+                destination.extend(chunk[:allowed])
+                remaining -= allowed
+                if allowed != len(chunk):
+                    exceeded.set()
+                    _terminate(process)
+                    return
+
+    assert process.stdout is not None and process.stderr is not None
+    readers = [
+        threading.Thread(target=read_stream, args=(process.stdout, stdout)),
+        threading.Thread(target=read_stream, args=(process.stderr, stderr)),
+    ]
+    for reader in readers:
+        reader.start()
+    return stdout, stderr, exceeded, readers
+
+
+def _limit_output(stdout: bytes, stderr: bytes, budget: int) -> tuple[bytes, bytes, bool]:
+    if len(stdout) + len(stderr) <= budget:
+        return stdout, stderr, False
+    kept_stdout = stdout[:budget]
+    kept_stderr = stderr[: max(budget - len(kept_stdout), 0)]
+    return kept_stdout, kept_stderr, True
+
+
+def _started(journal: JsonlEventJournal, tool_run_id: str, tool_id: str) -> None:
+    journal.append("tool.started", {"tool_run_id": tool_run_id, "tool_id": tool_id})
+
+
+def _completed(
+    journal: JsonlEventJournal, result: ToolResult, tool_id: str
+) -> None:
+    journal.append(
+        "tool.completed",
+        {
+            "tool_run_id": result.tool_run_id,
+            "tool_id": tool_id,
+            "status": result.status.value,
+            "exit_code": result.exit_code,
+            "stdout_artifact_ref": result.stdout_artifact_ref.model_dump(mode="json"),
+            "stderr_artifact_ref": result.stderr_artifact_ref.model_dump(mode="json"),
+        },
+    )
+
+
+def _result(
+    artifact_store: FileArtifactStore,
+    tool_run_id: str,
+    request: ToolRequest,
+    started_at: datetime,
+    status: ToolRunStatus,
+    exit_code: int | None,
+    stdout: bytes,
+    stderr: bytes,
+    trust_level: ExecutionTrustLevel,
+) -> ToolResult:
+    stdout_ref = _artifact_ref(
+        artifact_store.write_bytes(
+            request.task_id,
+            request.run_id,
+            producer="tool_executor",
+            relative_path=f"artifacts/tool-runs/{tool_run_id}/stdout.bin",
+            content=stdout,
+            input_fingerprint=request.fingerprint,
+            operation_id=request.operation_id,
+        )
+    )
+    stderr_ref = _artifact_ref(
+        artifact_store.write_bytes(
+            request.task_id,
+            request.run_id,
+            producer="tool_executor",
+            relative_path=f"artifacts/tool-runs/{tool_run_id}/stderr.bin",
+            content=stderr,
+            input_fingerprint=request.fingerprint,
+            operation_id=request.operation_id,
+        )
+    )
+    return ToolResult(
+        tool_run_id=tool_run_id,
+        task_id=request.task_id,
+        operation_id=request.operation_id,
+        run_id=request.run_id,
+        request_fingerprint=request.fingerprint,
+        argv=request.argv,
+        status=status,
+        started_at=started_at,
+        ended_at=datetime.now(UTC),
+        exit_code=exit_code,
+        stdout_artifact_ref=stdout_ref,
+        stderr_artifact_ref=stderr_ref,
+        change_summary=ToolChangeSummary(changed_file_count=0),
+        trust_level=trust_level,
+    )
+
+
+def _wait_for_process(
+    process: subprocess.Popen[bytes], timeout_seconds: float, cancel_event: Event | None
+) -> ToolRunStatus:
+    deadline = time.monotonic() + timeout_seconds
+    while process.poll() is None:
+        if cancel_event is not None and cancel_event.is_set():
+            _terminate(process)
+            return ToolRunStatus.CANCELLED
+        if time.monotonic() >= deadline:
+            _terminate(process)
+            return ToolRunStatus.TIMED_OUT
+        time.sleep(0.01)
+    return ToolRunStatus.SUCCEEDED
+
+
+def _terminate(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _artifact_ref(record: ArtifactRecord) -> ArtifactRef:
+    return ArtifactRef(
+        artifact_id=record.artifact_id,
+        task_id=record.task_id,
+        operation_id=record.operation_id,
+        run_id=record.run_id,
+        relative_path=record.relative_path,
+        sha256=record.sha256,
+    )

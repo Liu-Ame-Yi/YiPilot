@@ -39,6 +39,29 @@ def atomic_write_json(
     _validate_record(loaded, validator)
 
 
+def atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Atomically write opaque artifact content."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            "wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def atomic_write_yaml(
     path: Path, value: Record, validator: RecordValidator | None = None
 ) -> None:

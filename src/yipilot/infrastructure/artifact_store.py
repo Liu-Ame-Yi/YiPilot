@@ -9,7 +9,11 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from yipilot.domain.errors import DomainError
-from yipilot.infrastructure.filesystem import atomic_write_json, project_path
+from yipilot.infrastructure.filesystem import (
+    atomic_write_bytes,
+    atomic_write_json,
+    project_path,
+)
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
 
 
@@ -47,11 +51,7 @@ class FileArtifactStore:
         operation_id: str | None = None,
     ) -> ArtifactRecord:
         run, run_root = self._run_context(task_id, run_id)
-        if operation_id is not None and operation_id != run.operation_id:
-            raise DomainError(
-                "ARTIFACT_ASSOCIATION_MISMATCH",
-                "artifact operation does not belong to the persisted run",
-            )
+        self._require_operation(run, operation_id)
         artifact_path = _artifact_path(run_root, relative_path)
         unresolved_path = run_root.joinpath(relative_path)
         if not artifact_path.is_file() or unresolved_path.is_symlink():
@@ -74,6 +74,30 @@ class FileArtifactStore:
             ArtifactRecord.model_validate,
         )
         return self.get(task_id, run_id, record.artifact_id)
+
+    def write_bytes(
+        self,
+        task_id: str,
+        run_id: str,
+        *,
+        producer: str,
+        relative_path: str,
+        content: bytes,
+        input_fingerprint: str,
+        operation_id: str | None = None,
+    ) -> ArtifactRecord:
+        """Atomically persist and register one run-scoped binary artifact."""
+        run, run_root = self._run_context(task_id, run_id)
+        self._require_operation(run, operation_id)
+        atomic_write_bytes(_artifact_path(run_root, relative_path), content)
+        return self.register(
+            task_id,
+            run_id,
+            producer=producer,
+            relative_path=relative_path,
+            input_fingerprint=input_fingerprint,
+            operation_id=operation_id,
+        )
 
     def get(self, task_id: str, run_id: str, artifact_id: str) -> ArtifactRecord:
         run, run_root = self._run_context(task_id, run_id)
@@ -118,6 +142,14 @@ class FileArtifactStore:
         self._task_store.get_operation(task_id, run.operation_id)
         run_root = self._task_store.event_journal_path(run.run_id).parent
         return run, run_root
+
+    @staticmethod
+    def _require_operation(run: RunRecord, operation_id: str | None) -> None:
+        if operation_id is not None and operation_id != run.operation_id:
+            raise DomainError(
+                "ARTIFACT_ASSOCIATION_MISMATCH",
+                "artifact operation does not belong to the persisted run",
+            )
 
     @staticmethod
     def _record_path(run_root: Path, artifact_id: str) -> Path:

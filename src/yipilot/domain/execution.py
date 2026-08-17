@@ -350,6 +350,32 @@ class ToolPolicy(BaseModel):
     def validate_allowed_env_names(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return _environment_names(value)
 
+    def validate_request(self, request: ToolRequest) -> Self:
+        if request.argv[0] != self.executable:
+            raise DomainError(
+                "TOOL_EXECUTABLE_DENIED",
+                "argv executable does not match tool policy",
+            )
+        arguments = request.argv[1:]
+        if len(arguments) != len(self.argv_schema) or any(
+            not rule.accepts(token)
+            for rule, token in zip(self.argv_schema, arguments, strict=True)
+        ):
+            raise DomainError("TOOL_ARGV_DENIED", "argv does not match tool schema")
+        if not set(request.env_names).issubset(self.allowed_env_names):
+            raise DomainError(
+                "TOOL_ENV_DENIED", "environment name is not allowed by tool policy"
+            )
+        if request.output_budget_bytes > self.max_output_bytes:
+            raise DomainError(
+                "TOOL_BUDGET_DENIED", "output budget exceeds tool policy"
+            )
+        if request.timeout_seconds > self.max_timeout_seconds:
+            raise DomainError(
+                "TOOL_TIMEOUT_DENIED", "timeout exceeds tool policy"
+            )
+        return self
+
 
 class ExecutionPolicy(BaseModel):
     """Versioned deny-by-default constraints for local execution."""
@@ -387,30 +413,7 @@ class ExecutionPolicy(BaseModel):
             raise DomainError(
                 "TOOL_DENIED", "tool ID is not allowed by execution policy"
             )
-        if request.argv[0] != tool.executable:
-            raise DomainError(
-                "TOOL_EXECUTABLE_DENIED",
-                "argv executable does not match tool policy",
-            )
-        arguments = request.argv[1:]
-        if len(arguments) != len(tool.argv_schema) or any(
-            not rule.accepts(token)
-            for rule, token in zip(tool.argv_schema, arguments, strict=True)
-        ):
-            raise DomainError("TOOL_ARGV_DENIED", "argv does not match tool schema")
-        if not set(request.env_names).issubset(tool.allowed_env_names):
-            raise DomainError(
-                "TOOL_ENV_DENIED", "environment name is not allowed by tool policy"
-            )
-        if request.output_budget_bytes > tool.max_output_bytes:
-            raise DomainError(
-                "TOOL_BUDGET_DENIED", "output budget exceeds tool policy"
-            )
-        if request.timeout_seconds > tool.max_timeout_seconds:
-            raise DomainError(
-                "TOOL_TIMEOUT_DENIED", "timeout exceeds tool policy"
-            )
-        return tool
+        return tool.validate_request(request)
 
 
 def _relative_path(value: str, *, label: str) -> str:
@@ -438,6 +441,16 @@ def _environment_names(value: tuple[str, ...]) -> tuple[str, ...]:
     ):
         raise ValueError("environment names must be unique identifiers")
     return value
+
+
+def is_generic_python_executable(executable: str) -> bool:
+    """Identify interpreter entry points that Task 10 must not execute."""
+    name = PureWindowsPath(executable).name.casefold()
+    return (
+        "python" in name
+        or "pypy" in name
+        or re.fullmatch(r"py[0-9.]*(?:\.exe)?", name) is not None
+    )
 
 
 def _fingerprint_model(model: BaseModel) -> str:
