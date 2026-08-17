@@ -30,7 +30,7 @@ def _request(**overrides: object) -> ToolRequest:
         "task_id": "1001",
         "operation_id": "operation-1",
         "run_id": "run-1",
-        "workspace_relative_path": ".",
+        "workspace_relative_path": ".yipilot/tasks/1001/repos/sample/workspace",
         "tool_id": "python-tests",
         "tool_kind": ToolKind.TEST,
         "argv": ("python", "-m", "pytest"),
@@ -103,7 +103,7 @@ def test_tool_request_rejects_invalid_or_out_of_range_limits(
         "task_id": "1001",
         "operation_id": "operation-1",
         "run_id": "run-1",
-        "workspace_relative_path": ".",
+        "workspace_relative_path": ".yipilot/tasks/1001/repos/sample/workspace",
         "tool_id": "python-tests",
         "tool_kind": ToolKind.TEST,
         "argv": ("python", "-m", "pytest"),
@@ -152,6 +152,21 @@ def test_tool_request_rejects_workspace_escape_paths(
         )
 
 
+@pytest.mark.parametrize(
+    "workspace_relative_path",
+    [
+        "src",
+        ".yipilot/tasks/1002/repos/sample/workspace",
+        ".yipilot/tasks/1001/repos/sample/not-workspace",
+    ],
+)
+def test_tool_request_requires_its_task_owned_workspace(
+    workspace_relative_path: str,
+) -> None:
+    with pytest.raises(ValidationError, match="Task workspace"):
+        _request(workspace_relative_path=workspace_relative_path)
+
+
 def test_tool_request_rejects_cross_run_artifact_reference() -> None:
     foreign_artifact = ArtifactRef(
         artifact_id="artifact-1",
@@ -167,7 +182,7 @@ def test_tool_request_rejects_cross_run_artifact_reference() -> None:
             task_id="1001",
             operation_id="operation-1",
             run_id="run-1",
-            workspace_relative_path=".",
+            workspace_relative_path=".yipilot/tasks/1001/repos/sample/workspace",
             tool_id="python-tests",
             tool_kind=ToolKind.TEST,
             argv=("python", "-m", "pytest"),
@@ -270,7 +285,6 @@ def test_execution_policy_rejects_duplicate_tool_ids() -> None:
     [
         ({"timeout_seconds": 121}, "TOOL_TIMEOUT_DENIED"),
         ({"output_budget_bytes": 4097}, "TOOL_BUDGET_DENIED"),
-        ({"workspace_relative_path": "src"}, "TOOL_CWD_DENIED"),
         ({"env_names": ("SECRET",)}, "TOOL_ENV_DENIED"),
     ],
 )
@@ -281,44 +295,57 @@ def test_execution_policy_rejects_requests_outside_declared_limits(
         _policy().validate_request(_request(**request_change))
 
 
+def test_execution_policy_rejects_non_workspace_root_cwd() -> None:
+    with pytest.raises(ValidationError, match="workspace root"):
+        _policy(allowed_cwds=("src",))
+
+
 @given(
-    st.lists(
-        st.sampled_from(["src", "tests", "nested", "safe"]),
-        min_size=0,
-        max_size=5,
-    )
+    st.sampled_from(["sample", "repo-a", "repo_2"]),
 )
-def test_valid_policy_request_cwd_never_resolves_outside_workspace(
-    segments: list[str],
+def test_valid_policy_request_cwd_is_its_workspace(
+    repo_alias: str,
 ) -> None:
-    relative_cwd = "/".join(segments) or "."
-    policy = _policy(allowed_cwds=(relative_cwd,))
-    request = _request(workspace_relative_path=relative_cwd)
+    policy = _policy()
+    request = _request(
+        workspace_relative_path=(
+            f".yipilot/tasks/1001/repos/{repo_alias}/workspace"
+        )
+    )
 
     with TemporaryDirectory() as directory:
-        workspace_root = Path(directory).resolve()
-        resolved = policy.resolve_cwd(workspace_root, request)
+        project_root = Path(directory).resolve()
+        workspace_root = project_root / request.workspace_relative_path
+        workspace_root.mkdir(parents=True)
+        resolved = policy.resolve_cwd(project_root, request)
 
-    assert resolved == workspace_root or workspace_root in resolved.parents
+    assert resolved == workspace_root
 
 
-def test_policy_cwd_resolution_rejects_symlink_workspace_escape(
-    tmp_path: Path,
-) -> None:
-    workspace_root = tmp_path / "workspace"
-    workspace_root.mkdir()
+def test_policy_rejects_workspace_symlink_escape(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    link = workspace_root / "linked"
+    workspace_link = (
+        project_root
+        / ".yipilot"
+        / "tasks"
+        / "1001"
+        / "repos"
+        / "sample"
+        / "workspace"
+    )
+    workspace_link.parent.mkdir(parents=True)
     try:
-        link.symlink_to(outside, target_is_directory=True)
+        workspace_link.symlink_to(outside, target_is_directory=True)
     except OSError as error:
         pytest.skip(f"symbolic links are unavailable: {error}")
 
     with pytest.raises(DomainError, match="^PATH_DENIED:"):
-        _policy(allowed_cwds=("linked",)).resolve_cwd(
-            workspace_root,
-            _request(workspace_relative_path="linked"),
+        _policy().resolve_cwd(
+            project_root,
+            _request(),
         )
 
 
@@ -332,12 +359,21 @@ def test_tool_result_uses_artifact_refs_instead_of_inline_output() -> None:
         relative_path="tool-runs/tool-run-1/stdout.txt",
         sha256="b" * 64,
     )
+    stderr_ref = ArtifactRef(
+        artifact_id="stderr-1",
+        task_id="1001",
+        operation_id="operation-1",
+        run_id="run-1",
+        relative_path="tool-runs/tool-run-1/stderr.txt",
+        sha256="d" * 64,
+    )
     result = ToolResult(
         tool_run_id="tool-run-1",
         task_id="1001",
         operation_id="operation-1",
         run_id="run-1",
         request_fingerprint="c" * 64,
+        argv=("python", "-m", "pytest"),
         status=ToolRunStatus.SUCCEEDED,
         started_at=started_at,
         ended_at=started_at + timedelta(seconds=2),
@@ -345,7 +381,7 @@ def test_tool_result_uses_artifact_refs_instead_of_inline_output() -> None:
         timed_out=False,
         cancelled=False,
         stdout_artifact_ref=stdout_ref,
-        stderr_artifact_ref=None,
+        stderr_artifact_ref=stderr_ref,
         change_summary=ToolChangeSummary(changed_file_count=0),
         trust_level=ExecutionTrustLevel.FAKE,
     )
@@ -353,9 +389,51 @@ def test_tool_result_uses_artifact_refs_instead_of_inline_output() -> None:
     payload = result.model_dump(mode="json")
 
     assert payload["stdout_artifact_ref"]["artifact_id"] == "stdout-1"
+    assert payload["stderr_artifact_ref"]["artifact_id"] == "stderr-1"
+    assert payload["argv"] == ["python", "-m", "pytest"]
     assert "stdout" not in payload
     with pytest.raises(ValidationError):
         ToolResult.model_validate({**payload, "stdout": "x" * 1_000_000})
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["argv", "stdout_artifact_ref", "stderr_artifact_ref"],
+)
+def test_tool_result_requires_execution_provenance_and_stream_artifacts(
+    missing_field: str,
+) -> None:
+    started_at = datetime(2026, 8, 13, 8, 0, tzinfo=UTC)
+    artifact = ArtifactRef(
+        artifact_id="stream-1",
+        task_id="1001",
+        operation_id="operation-1",
+        run_id="run-1",
+        relative_path="tool-runs/tool-run-1/stream.txt",
+        sha256="b" * 64,
+    )
+    payload: dict[str, object] = {
+        "tool_run_id": "tool-run-1",
+        "task_id": "1001",
+        "operation_id": "operation-1",
+        "run_id": "run-1",
+        "request_fingerprint": "c" * 64,
+        "argv": ("python", "-m", "pytest"),
+        "status": ToolRunStatus.SUCCEEDED,
+        "started_at": started_at,
+        "ended_at": started_at + timedelta(seconds=2),
+        "exit_code": 0,
+        "timed_out": False,
+        "cancelled": False,
+        "stdout_artifact_ref": artifact,
+        "stderr_artifact_ref": artifact,
+        "change_summary": ToolChangeSummary(changed_file_count=0),
+        "trust_level": ExecutionTrustLevel.FAKE,
+    }
+    del payload[missing_field]
+
+    with pytest.raises(ValidationError):
+        ToolResult.model_validate(payload)
 
 
 @pytest.mark.parametrize(
@@ -376,12 +454,29 @@ def test_tool_result_expresses_timeout_and_cancellation_as_terminal_states(
         operation_id="operation-1",
         run_id="run-1",
         request_fingerprint="c" * 64,
+        argv=("python", "-m", "pytest"),
         status=status,
         started_at=started_at,
         ended_at=started_at + timedelta(seconds=2),
         exit_code=None,
         timed_out=timed_out,
         cancelled=cancelled,
+        stdout_artifact_ref=ArtifactRef(
+            artifact_id="stdout-1",
+            task_id="1001",
+            operation_id="operation-1",
+            run_id="run-1",
+            relative_path="tool-runs/tool-run-1/stdout.txt",
+            sha256="b" * 64,
+        ),
+        stderr_artifact_ref=ArtifactRef(
+            artifact_id="stderr-1",
+            task_id="1001",
+            operation_id="operation-1",
+            run_id="run-1",
+            relative_path="tool-runs/tool-run-1/stderr.txt",
+            sha256="d" * 64,
+        ),
         change_summary=ToolChangeSummary(changed_file_count=0),
         trust_level=ExecutionTrustLevel.FAKE,
     )
@@ -409,6 +504,7 @@ def test_tool_result_rejects_cross_run_output_artifact_reference() -> None:
             operation_id="operation-1",
             run_id="run-1",
             request_fingerprint="c" * 64,
+            argv=("python", "-m", "pytest"),
             status=ToolRunStatus.FAILED,
             started_at=started_at,
             ended_at=started_at + timedelta(seconds=2),
@@ -416,6 +512,7 @@ def test_tool_result_rejects_cross_run_output_artifact_reference() -> None:
             timed_out=False,
             cancelled=False,
             stdout_artifact_ref=foreign_stdout,
+            stderr_artifact_ref=foreign_stdout,
             change_summary=ToolChangeSummary(changed_file_count=0),
             trust_level=ExecutionTrustLevel.FAKE,
         )
@@ -435,6 +532,8 @@ def test_approval_is_stale_after_target_policy_or_run_changes() -> None:
     )
 
     assert approval.require_fresh(
+        task_id="1001",
+        operation_id="operation-1",
         action_type="workspace_write",
         target_fingerprint="a" * 64,
         policy_revision="policy-v1",
@@ -442,6 +541,8 @@ def test_approval_is_stale_after_target_policy_or_run_changes() -> None:
     ) is approval
 
     stale_inputs = [
+        {"task_id": "1002"},
+        {"operation_id": "operation-2"},
         {"target_fingerprint": "b" * 64},
         {"policy_revision": "policy-v2"},
         {"run_id": "run-2"},
@@ -449,6 +550,8 @@ def test_approval_is_stale_after_target_policy_or_run_changes() -> None:
     ]
     for changed in stale_inputs:
         context = {
+            "task_id": "1001",
+            "operation_id": "operation-1",
             "action_type": "workspace_write",
             "target_fingerprint": "a" * 64,
             "policy_revision": "policy-v1",

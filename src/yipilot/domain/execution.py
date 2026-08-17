@@ -72,18 +72,24 @@ class ApprovalRecord(BaseModel):
     def require_fresh(
         self,
         *,
+        task_id: str,
+        operation_id: str,
         action_type: str,
         target_fingerprint: str,
         policy_revision: str,
         run_id: str,
     ) -> Self:
         expected = (
+            task_id,
+            operation_id,
             action_type,
             target_fingerprint,
             policy_revision,
             run_id,
         )
         actual = (
+            self.task_id,
+            self.operation_id,
             self.action_type,
             self.target_fingerprint,
             self.policy_revision,
@@ -160,6 +166,20 @@ class ToolRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_artifact_associations(self) -> Self:
+        workspace_parts = PurePosixPath(self.workspace_relative_path).parts
+        expected_workspace_prefix = (
+            ".yipilot",
+            "tasks",
+            self.task_id,
+            "repos",
+        )
+        if (
+            len(workspace_parts) != 6
+            or workspace_parts[:4] != expected_workspace_prefix
+            or not workspace_parts[4]
+            or workspace_parts[5] != "workspace"
+        ):
+            raise ValueError("workspace path must identify its Task workspace")
         association = (self.task_id, self.operation_id, self.run_id)
         if any(
             (ref.task_id, ref.operation_id, ref.run_id) != association
@@ -199,14 +219,15 @@ class ToolResult(BaseModel):
     operation_id: NonEmptyString
     run_id: NonEmptyString
     request_fingerprint: Sha256
+    argv: tuple[str, ...] = Field(min_length=1)
     status: ToolRunStatus
     started_at: datetime
     ended_at: datetime
     exit_code: int | None
     timed_out: bool
     cancelled: bool
-    stdout_artifact_ref: ArtifactRef | None = None
-    stderr_artifact_ref: ArtifactRef | None = None
+    stdout_artifact_ref: ArtifactRef
+    stderr_artifact_ref: ArtifactRef
     change_summary: ToolChangeSummary
     trust_level: ExecutionTrustLevel
 
@@ -231,16 +252,20 @@ class ToolResult(BaseModel):
         if self.status is ToolRunStatus.SUCCEEDED and self.exit_code != 0:
             raise ValueError("successful tool result requires exit code zero")
         association = (self.task_id, self.operation_id, self.run_id)
-        refs = [
-            self.stdout_artifact_ref,
-            self.stderr_artifact_ref,
-            self.change_summary.changed_paths_artifact_ref,
-        ]
+        refs = (self.stdout_artifact_ref, self.stderr_artifact_ref)
         if any(
-            ref is not None
-            and (ref.task_id, ref.operation_id, ref.run_id) != association
+            (ref.task_id, ref.operation_id, ref.run_id) != association
             for ref in refs
         ):
+            raise ValueError(
+                "result artifacts must belong to the same Task, Operation and Run"
+            )
+        changed_paths_ref = self.change_summary.changed_paths_artifact_ref
+        if changed_paths_ref is not None and (
+            changed_paths_ref.task_id,
+            changed_paths_ref.operation_id,
+            changed_paths_ref.run_id,
+        ) != association:
             raise ValueError(
                 "result artifacts must belong to the same Task, Operation and Run"
             )
@@ -331,7 +356,10 @@ class ToolPolicy(BaseModel):
     @field_validator("allowed_cwds")
     @classmethod
     def validate_allowed_cwds(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(_relative_path(item, label="allowed cwd") for item in value)
+        paths = tuple(_relative_path(item, label="allowed cwd") for item in value)
+        if paths != (".",):
+            raise ValueError("allowed cwd must be the workspace root")
+        return paths
 
     @field_validator("allowed_env_names")
     @classmethod
@@ -359,13 +387,13 @@ class ExecutionPolicy(BaseModel):
     def fingerprint(self) -> str:
         return _fingerprint_model(self)
 
-    def resolve_cwd(self, workspace_root: Path, request: ToolRequest) -> Path:
+    def resolve_cwd(self, project_root: Path, request: ToolRequest) -> Path:
         self.validate_request(request)
-        root = workspace_root.resolve(strict=True)
-        candidate = root.joinpath(request.workspace_relative_path).resolve(strict=False)
-        if candidate != root and root not in candidate.parents:
-            raise DomainError("PATH_DENIED", "cwd escapes workspace root")
-        return candidate
+        root = project_root.resolve(strict=True)
+        workspace = root.joinpath(request.workspace_relative_path).resolve(strict=False)
+        if workspace != root and root not in workspace.parents:
+            raise DomainError("PATH_DENIED", "workspace escapes project root")
+        return workspace
 
     def validate_request(self, request: ToolRequest) -> ToolPolicy:
         for tool in self.tools:
@@ -388,7 +416,7 @@ class ExecutionPolicy(BaseModel):
             for rule, token in zip(tool.argv_schema, arguments, strict=True)
         ):
             raise DomainError("TOOL_ARGV_DENIED", "argv does not match tool schema")
-        if request.workspace_relative_path not in tool.allowed_cwds:
+        if "." not in tool.allowed_cwds:
             raise DomainError("TOOL_CWD_DENIED", "cwd is not allowed by tool policy")
         if not set(request.env_names).issubset(tool.allowed_env_names):
             raise DomainError(
