@@ -135,7 +135,6 @@ class ToolRequest(BaseModel):
     run_id: NonEmptyString
     workspace_relative_path: NonEmptyString
     tool_id: NonEmptyString
-    tool_kind: ToolKind
     argv: tuple[str, ...] = Field(min_length=1)
     timeout_seconds: float = Field(
         gt=0,
@@ -224,8 +223,6 @@ class ToolResult(BaseModel):
     started_at: datetime
     ended_at: datetime
     exit_code: int | None
-    timed_out: bool
-    cancelled: bool
     stdout_artifact_ref: ArtifactRef
     stderr_artifact_ref: ArtifactRef
     change_summary: ToolChangeSummary
@@ -245,10 +242,6 @@ class ToolResult(BaseModel):
         }
         if self.status not in terminal:
             raise ValueError("tool result status must be terminal")
-        if self.timed_out != (self.status is ToolRunStatus.TIMED_OUT):
-            raise ValueError("timed_out must match tool result status")
-        if self.cancelled != (self.status is ToolRunStatus.CANCELLED):
-            raise ValueError("cancelled must match tool result status")
         if self.status is ToolRunStatus.SUCCEEDED and self.exit_code != 0:
             raise ValueError("successful tool result requires exit code zero")
         association = (self.task_id, self.operation_id, self.run_id)
@@ -316,7 +309,6 @@ class ToolPolicy(BaseModel):
     kind: ToolKind
     executable: NonEmptyString
     argv_schema: tuple[ArgvRule, ...]
-    allowed_cwds: tuple[str, ...] = Field(min_length=1)
     allowed_env_names: tuple[str, ...] = ()
     max_output_bytes: int = Field(gt=0, le=MAX_TOOL_OUTPUT_BYTES)
     max_timeout_seconds: float = Field(
@@ -352,14 +344,6 @@ class ToolPolicy(BaseModel):
         ):
             raise ValueError("executable must be one controlled non-shell token")
         return value
-
-    @field_validator("allowed_cwds")
-    @classmethod
-    def validate_allowed_cwds(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        paths = tuple(_relative_path(item, label="allowed cwd") for item in value)
-        if paths != (".",):
-            raise ValueError("allowed cwd must be the workspace root")
-        return paths
 
     @field_validator("allowed_env_names")
     @classmethod
@@ -403,8 +387,6 @@ class ExecutionPolicy(BaseModel):
             raise DomainError(
                 "TOOL_DENIED", "tool ID is not allowed by execution policy"
             )
-        if request.tool_kind is not tool.kind:
-            raise DomainError("TOOL_KIND_DENIED", "tool kind does not match policy")
         if request.argv[0] != tool.executable:
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
@@ -416,8 +398,6 @@ class ExecutionPolicy(BaseModel):
             for rule, token in zip(tool.argv_schema, arguments, strict=True)
         ):
             raise DomainError("TOOL_ARGV_DENIED", "argv does not match tool schema")
-        if "." not in tool.allowed_cwds:
-            raise DomainError("TOOL_CWD_DENIED", "cwd is not allowed by tool policy")
         if not set(request.env_names).issubset(tool.allowed_env_names):
             raise DomainError(
                 "TOOL_ENV_DENIED", "environment name is not allowed by tool policy"

@@ -60,9 +60,9 @@ Task 9–13 是 M3。它们先以 fake/replay planner 验证 Yipilot 的执行�
 
 - 在 Domain 中定义受控枚举和 Pydantic 模型：`ToolKind`、`ToolRunStatus`、`ExecutionTrustLevel`、`ToolRequest`、`ToolResult`、`ApprovalDecision`、`ApprovalRecord`、`ExecutionPolicy`。
 - `ToolRequest` 最少绑定 `task_id`、`operation_id`、`run_id`、workspace 相对路径、允许的工具 ID、argv、超时、预算、输入 Artifact refs 与输入 fingerprint。
-- `ToolResult` 最少保存开始/结束时间、退出码、取消/超时状态、stdout/stderr Artifact refs、变更摘要与执行信任级别；禁止把大输出直接塞进 Task JSON。
+- `ToolResult` 最少保存开始/结束时间、退出码、由终态枚举表示的取消/超时结果、stdout/stderr Artifact refs、变更摘要与执行信任级别；禁止把大输出直接塞进 Task JSON。
 - `ApprovalRecord` 必须绑定 action type、目标 fingerprint、policy revision、发起 Run 与决定时间；目标或 policy 变化即拒绝复用旧 Approval。
-- 定义受控工具 policy：默认 deny；工具 ID、可执行文件、argv schema、允许 cwd、允许环境变量名、输出上限、超时上限均显式声明。
+- 定义受控工具 policy：默认 deny；工具 ID、工具类型、可执行文件、argv schema、允许环境变量名、输出上限、超时上限均显式声明；cwd 固定为 Task workspace 根目录，不提供可配置 allowlist。
 
 **非目标**：不执行子进程、不调用模型、不提供 CLI、不写真实 approval 文件。
 

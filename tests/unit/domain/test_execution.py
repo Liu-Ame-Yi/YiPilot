@@ -32,7 +32,6 @@ def _request(**overrides: object) -> ToolRequest:
         "run_id": "run-1",
         "workspace_relative_path": ".yipilot/tasks/1001/repos/sample/workspace",
         "tool_id": "python-tests",
-        "tool_kind": ToolKind.TEST,
         "argv": ("python", "-m", "pytest"),
         "timeout_seconds": 60,
         "output_budget_bytes": 1024,
@@ -52,7 +51,6 @@ def _policy(**tool_overrides: object) -> ExecutionPolicy:
             ArgvRule(literal="-m"),
             ArgvRule(literal="pytest"),
         ),
-        "allowed_cwds": (".",),
         "allowed_env_names": ("PYTHONUTF8",),
         "max_output_bytes": 4096,
         "max_timeout_seconds": 120,
@@ -105,7 +103,6 @@ def test_tool_request_rejects_invalid_or_out_of_range_limits(
         "run_id": "run-1",
         "workspace_relative_path": ".yipilot/tasks/1001/repos/sample/workspace",
         "tool_id": "python-tests",
-        "tool_kind": ToolKind.TEST,
         "argv": ("python", "-m", "pytest"),
         "timeout_seconds": 60,
         "output_budget_bytes": 1024,
@@ -122,6 +119,11 @@ def test_tool_request_rejects_invalid_or_out_of_range_limits(
 def test_tool_request_preserves_canonical_task_id_invariant(task_id: str) -> None:
     with pytest.raises(ValidationError):
         _request(task_id=task_id)
+
+
+def test_tool_request_rejects_redundant_tool_kind() -> None:
+    with pytest.raises(ValidationError, match="tool_kind"):
+        _request(tool_kind=ToolKind.TEST)
 
 
 @pytest.mark.parametrize(
@@ -144,7 +146,6 @@ def test_tool_request_rejects_workspace_escape_paths(
             run_id="run-1",
             workspace_relative_path=workspace_relative_path,
             tool_id="python-tests",
-            tool_kind=ToolKind.TEST,
             argv=("python", "-m", "pytest"),
             timeout_seconds=60,
             output_budget_bytes=1024,
@@ -184,7 +185,6 @@ def test_tool_request_rejects_cross_run_artifact_reference() -> None:
             run_id="run-1",
             workspace_relative_path=".yipilot/tasks/1001/repos/sample/workspace",
             tool_id="python-tests",
-            tool_kind=ToolKind.TEST,
             argv=("python", "-m", "pytest"),
             timeout_seconds=60,
             output_budget_bytes=1024,
@@ -215,6 +215,7 @@ def test_execution_policy_accepts_only_declared_argv_schema() -> None:
     allowed = policy.validate_request(_request(env_names=("PYTHONUTF8",)))
 
     assert allowed.executable == "python"
+    assert allowed.kind is ToolKind.TEST
     with pytest.raises(DomainError, match="^TOOL_ARGV_DENIED:"):
         policy.validate_request(_request(argv=("python", "-m", "unittest")))
 
@@ -295,9 +296,9 @@ def test_execution_policy_rejects_requests_outside_declared_limits(
         _policy().validate_request(_request(**request_change))
 
 
-def test_execution_policy_rejects_non_workspace_root_cwd() -> None:
-    with pytest.raises(ValidationError, match="workspace root"):
-        _policy(allowed_cwds=("src",))
+def test_tool_policy_rejects_removed_allowed_cwds_field() -> None:
+    with pytest.raises(ValidationError, match="allowed_cwds"):
+        _policy(allowed_cwds=(".",))
 
 
 @given(
@@ -378,8 +379,6 @@ def test_tool_result_uses_artifact_refs_instead_of_inline_output() -> None:
         started_at=started_at,
         ended_at=started_at + timedelta(seconds=2),
         exit_code=0,
-        timed_out=False,
-        cancelled=False,
         stdout_artifact_ref=stdout_ref,
         stderr_artifact_ref=stderr_ref,
         change_summary=ToolChangeSummary(changed_file_count=0),
@@ -391,7 +390,13 @@ def test_tool_result_uses_artifact_refs_instead_of_inline_output() -> None:
     assert payload["stdout_artifact_ref"]["artifact_id"] == "stdout-1"
     assert payload["stderr_artifact_ref"]["artifact_id"] == "stderr-1"
     assert payload["argv"] == ["python", "-m", "pytest"]
+    assert "timed_out" not in payload
+    assert "cancelled" not in payload
     assert "stdout" not in payload
+    assert ToolResult.model_validate_json(result.model_dump_json()) == result
+    for removed_field in ("timed_out", "cancelled"):
+        with pytest.raises(ValidationError, match=removed_field):
+            ToolResult.model_validate({**payload, removed_field: False})
     with pytest.raises(ValidationError):
         ToolResult.model_validate({**payload, "stdout": "x" * 1_000_000})
 
@@ -423,8 +428,6 @@ def test_tool_result_requires_execution_provenance_and_stream_artifacts(
         "started_at": started_at,
         "ended_at": started_at + timedelta(seconds=2),
         "exit_code": 0,
-        "timed_out": False,
-        "cancelled": False,
         "stdout_artifact_ref": artifact,
         "stderr_artifact_ref": artifact,
         "change_summary": ToolChangeSummary(changed_file_count=0),
@@ -437,14 +440,16 @@ def test_tool_result_requires_execution_provenance_and_stream_artifacts(
 
 
 @pytest.mark.parametrize(
-    ("status", "timed_out", "cancelled"),
+    ("status", "exit_code"),
     [
-        (ToolRunStatus.TIMED_OUT, True, False),
-        (ToolRunStatus.CANCELLED, False, True),
+        (ToolRunStatus.SUCCEEDED, 0),
+        (ToolRunStatus.FAILED, 1),
+        (ToolRunStatus.TIMED_OUT, None),
+        (ToolRunStatus.CANCELLED, None),
     ],
 )
-def test_tool_result_expresses_timeout_and_cancellation_as_terminal_states(
-    status: ToolRunStatus, timed_out: bool, cancelled: bool
+def test_tool_result_expresses_terminal_outcomes_by_status(
+    status: ToolRunStatus, exit_code: int | None
 ) -> None:
     started_at = datetime(2026, 8, 13, 8, 0, tzinfo=UTC)
 
@@ -458,9 +463,7 @@ def test_tool_result_expresses_timeout_and_cancellation_as_terminal_states(
         status=status,
         started_at=started_at,
         ended_at=started_at + timedelta(seconds=2),
-        exit_code=None,
-        timed_out=timed_out,
-        cancelled=cancelled,
+        exit_code=exit_code,
         stdout_artifact_ref=ArtifactRef(
             artifact_id="stdout-1",
             task_id="1001",
@@ -482,8 +485,9 @@ def test_tool_result_expresses_timeout_and_cancellation_as_terminal_states(
     )
 
     assert result.status is status
-    assert result.timed_out is timed_out
-    assert result.cancelled is cancelled
+    assert result.exit_code == exit_code
+    assert "timed_out" not in result.model_dump()
+    assert "cancelled" not in result.model_dump()
 
 
 def test_tool_result_rejects_cross_run_output_artifact_reference() -> None:
@@ -509,8 +513,6 @@ def test_tool_result_rejects_cross_run_output_artifact_reference() -> None:
             started_at=started_at,
             ended_at=started_at + timedelta(seconds=2),
             exit_code=1,
-            timed_out=False,
-            cancelled=False,
             stdout_artifact_ref=foreign_stdout,
             stderr_artifact_ref=foreign_stdout,
             change_summary=ToolChangeSummary(changed_file_count=0),
