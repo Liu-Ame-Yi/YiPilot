@@ -10,6 +10,7 @@ from yipilot.infrastructure.filesystem import atomic_write_json, project_path
 from yipilot.infrastructure.task_store import FileTaskStore
 
 TASK_INTEGRITY_REPORT_NAME = "task-integrity-report.json"
+CODE_HARNESS_REPORT_NAME = "code-harness-report.json"
 
 
 class HarnessReportStore:
@@ -18,17 +19,21 @@ class HarnessReportStore:
     def __init__(self, task_store: FileTaskStore) -> None:
         self._task_store = task_store
 
-    def report_path(self, run_id: str) -> Path:
+    def report_path(
+        self, run_id: str, report_name: str = TASK_INTEGRITY_REPORT_NAME
+    ) -> Path:
         run_root = self._task_store.event_journal_path(run_id).parent
         return project_path(
             run_root,
             "harness",
-            TASK_INTEGRITY_REPORT_NAME,
+            report_name,
         )
 
-    def save(self, report: HarnessReport) -> Path:
+    def save(
+        self, report: HarnessReport, report_name: str = TASK_INTEGRITY_REPORT_NAME
+    ) -> Path:
         self._validate_run_association(report)
-        path = self.report_path(report.run_id)
+        path = self.report_path(report.run_id, report_name)
         atomic_write_json(
             path,
             report.model_dump(mode="json"),
@@ -36,8 +41,10 @@ class HarnessReportStore:
         )
         return path
 
-    def load(self, run_id: str) -> HarnessReport:
-        path = self.report_path(run_id)
+    def load(
+        self, run_id: str, report_name: str = TASK_INTEGRITY_REPORT_NAME
+    ) -> HarnessReport:
+        path = self.report_path(run_id, report_name)
         if not path.is_file():
             raise DomainError("HARNESS_REPORT_NOT_FOUND", "report not found")
         try:

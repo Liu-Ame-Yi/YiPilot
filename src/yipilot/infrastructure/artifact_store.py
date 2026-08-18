@@ -40,6 +40,10 @@ class FileArtifactStore:
     def __init__(self, task_store: FileTaskStore) -> None:
         self._task_store = task_store
 
+    @property
+    def task_store(self) -> FileTaskStore:
+        return self._task_store
+
     def register(
         self,
         task_id: str,
@@ -136,6 +140,15 @@ class FileArtifactStore:
             for path in records_root.glob("*.json")
         ]
         return sorted(records, key=lambda record: (record.created_at, record.artifact_id))
+
+    def verify(self, task_id: str, run_id: str, artifact_id: str) -> ArtifactRecord:
+        """Load one record and verify its registered content remains intact."""
+        record = self.get(task_id, run_id, artifact_id)
+        _, run_root = self._run_context(task_id, run_id)
+        path = _artifact_path(run_root, record.relative_path)
+        if not path.is_file() or path.is_symlink() or _sha256(path) != record.sha256:
+            raise DomainError("ARTIFACT_STALE", "artifact content is missing or has changed")
+        return record
 
     def _run_context(self, task_id: str, run_id: str) -> tuple[RunRecord, Path]:
         run = self._task_store.get_run(task_id, run_id)

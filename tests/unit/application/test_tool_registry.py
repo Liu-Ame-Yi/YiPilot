@@ -2,20 +2,26 @@ import hashlib
 import io
 import subprocess
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from yipilot.application.approval import ApprovalGate, approval_action_type
 from yipilot.application.tool_registry import ToolRegistry
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
+    ApprovalDecision,
+    ApprovalRecord,
     ArgvRule,
     ExecutionPolicy,
+    ExecutionTrustLevel,
     ToolKind,
     ToolPolicy,
     ToolRequest,
     ToolRunStatus,
 )
+from yipilot.infrastructure.approval_store import FileApprovalStore
 from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.executors import FakeExecutor, LocalCommandRunner
@@ -93,6 +99,23 @@ def _policy(
     return ExecutionPolicy(revision="task-10", tools=(ToolPolicy(**values),))
 
 
+def _approved_registry(
+    store: FileTaskStore, policy: ExecutionPolicy, runner: LocalCommandRunner,
+    request: ToolRequest,
+) -> tuple[ToolRegistry, str]:
+    tool = policy.validate_request(request)
+    approval = ApprovalRecord(
+        approval_id="approval-1", task_id=request.task_id, operation_id=request.operation_id,
+        run_id=request.run_id,
+        action_type=approval_action_type(tool, ExecutionTrustLevel.HOST_TRUSTED),
+        target_fingerprint=request.fingerprint, policy_revision=policy.revision,
+        decision=ApprovalDecision.APPROVED, decided_at=datetime.now(UTC),
+    )
+    approvals = FileApprovalStore(store)
+    approvals.save(approval)
+    return ToolRegistry(policy, runner, ApprovalGate(approvals)), approval.approval_id
+
+
 @pytest.mark.parametrize(
     ("request_changes", "policy_changes", "error_code"),
     [
@@ -133,7 +156,7 @@ def test_registry_rejects_non_read_only_before_starting_a_process(
     argv = ("diagnostic", "--version")
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("Popen"))
 
-    with pytest.raises(DomainError, match="^TOOL_KIND_DENIED:"):
+    with pytest.raises(DomainError, match="^APPROVAL_REQUIRED:"):
         ToolRegistry(_policy(argv, kind=kind), LocalCommandRunner(FileArtifactStore(store), journal)).execute(
             tmp_path, _request(run, argv)
         )
@@ -170,8 +193,10 @@ def test_local_runner_uses_approved_argv_shell_false_and_workspace_cwd(
         return process
 
     monkeypatch.setattr(subprocess, "Popen", record)
-    result = ToolRegistry(_policy(argv), LocalCommandRunner(FileArtifactStore(store), journal)).execute(
-        tmp_path, _request(run, argv)
+    request = _request(run, argv)
+    registry, approval_id = _approved_registry(store, _policy(argv), LocalCommandRunner(FileArtifactStore(store), journal), request)
+    result = registry.execute(
+        tmp_path, request, approval_id=approval_id, confirm_token=request.fingerprint
     )
 
     assert result.status is ToolRunStatus.SUCCEEDED
@@ -214,8 +239,9 @@ def test_local_runner_terminates_timeout_and_cancelled_processes(
     if cancel:
         signal.set()
     request = _request(run, argv, timeout_seconds=timeout_seconds)
-    result = ToolRegistry(_policy(argv), LocalCommandRunner(FileArtifactStore(store), journal)).execute(
-        tmp_path, request, cancel_event=signal
+    registry, approval_id = _approved_registry(store, _policy(argv), LocalCommandRunner(FileArtifactStore(store), journal), request)
+    result = registry.execute(
+        tmp_path, request, cancel_event=signal, approval_id=approval_id, confirm_token=request.fingerprint
     )
 
     assert result.status is expected
@@ -235,8 +261,9 @@ def test_local_runner_bounds_output_and_keeps_secrets_out_of_events(
         ),
     )
     request = _request(run, argv, output_budget_bytes=32)
-    result = ToolRegistry(_policy(argv), LocalCommandRunner(FileArtifactStore(store), journal)).execute(
-        tmp_path, request
+    registry, approval_id = _approved_registry(store, _policy(argv), LocalCommandRunner(FileArtifactStore(store), journal), request)
+    result = registry.execute(
+        tmp_path, request, approval_id=approval_id, confirm_token=request.fingerprint
     )
 
     assert result.status is ToolRunStatus.FAILED
@@ -262,11 +289,11 @@ def test_registry_rejects_generic_python_and_direct_non_read_only_runner(
         ToolRegistry(_policy(python_argv), LocalCommandRunner(FileArtifactStore(store), journal)).execute(
             tmp_path, _request(run, python_argv)
         )
-    with pytest.raises(DomainError, match="^TOOL_KIND_DENIED:"):
-        LocalCommandRunner(FileArtifactStore(store), journal).execute(
-            _request(run, ("where.exe", "where.exe")),
-            _policy(("where.exe", "where.exe"), kind=ToolKind.TEST).tools[0],
-            cwd=workspace,
+    request = _request(run, ("where.exe", "where.exe"))
+    policy = _policy(("where.exe", "where.exe"), kind=ToolKind.TEST)
+    with pytest.raises(DomainError, match="^APPROVAL_REQUIRED:"):
+        ToolRegistry(policy, LocalCommandRunner(FileArtifactStore(store), journal)).execute(
+            tmp_path, request
         )
     with pytest.raises(DomainError, match="^TOOL_EXECUTABLE_DENIED:"):
         LocalCommandRunner(FileArtifactStore(store), journal).execute(

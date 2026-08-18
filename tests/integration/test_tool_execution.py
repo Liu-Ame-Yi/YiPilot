@@ -2,19 +2,25 @@ import io
 import os
 import subprocess
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from yipilot.application.approval import ApprovalGate, approval_action_type
 from yipilot.application.tool_registry import ToolRegistry
 from yipilot.domain.execution import (
+    ApprovalDecision,
+    ApprovalRecord,
     ArgvRule,
     ExecutionPolicy,
+    ExecutionTrustLevel,
     ToolKind,
     ToolPolicy,
     ToolRequest,
     ToolRunStatus,
 )
+from yipilot.infrastructure.approval_store import FileApprovalStore
 from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.executors import FakeExecutor, LocalCommandRunner
@@ -86,8 +92,19 @@ def test_fake_and_local_execution_persist_run_scoped_evidence(
         policy, FakeExecutor(artifacts, journal, stdout=b"fake stdout\n")
     ).execute(tmp_path, request)
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: _CompletedProcess())
-    local_result = ToolRegistry(policy, LocalCommandRunner(artifacts, journal)).execute(
-        tmp_path, request
+    approval = ApprovalRecord(
+        approval_id="approval-1", task_id=run.task_id, operation_id=run.operation_id,
+        run_id=run.run_id,
+        action_type=approval_action_type(policy.tools[0], ExecutionTrustLevel.HOST_TRUSTED),
+        target_fingerprint=request.fingerprint, policy_revision=policy.revision,
+        decision=ApprovalDecision.APPROVED, decided_at=datetime.now(UTC),
+    )
+    approvals = FileApprovalStore(store)
+    approvals.save(approval)
+    local_result = ToolRegistry(
+        policy, LocalCommandRunner(artifacts, journal), ApprovalGate(approvals)
+    ).execute(
+        tmp_path, request, approval_id=approval.approval_id, confirm_token=request.fingerprint
     )
 
     run_root = store.event_journal_path(run.run_id).parent
@@ -159,8 +176,20 @@ def test_windows_local_runner_terminates_real_read_only_diagnostic(
         store.event_journal_path(run.run_id), task_id=run.task_id, run_id=run.run_id
     )
 
-    result = ToolRegistry(policy, LocalCommandRunner(FileArtifactStore(store), journal)).execute(
-        tmp_path, request, cancel_event=signal
+    approvals = FileApprovalStore(store)
+    approval = ApprovalRecord(
+        approval_id="approval-1", task_id=run.task_id, operation_id=run.operation_id,
+        run_id=run.run_id,
+        action_type=approval_action_type(policy.tools[0], ExecutionTrustLevel.HOST_TRUSTED),
+        target_fingerprint=request.fingerprint, policy_revision=policy.revision,
+        decision=ApprovalDecision.APPROVED, decided_at=datetime.now(UTC),
+    )
+    approvals.save(approval)
+    result = ToolRegistry(
+        policy, LocalCommandRunner(FileArtifactStore(store), journal), ApprovalGate(approvals)
+    ).execute(
+        tmp_path, request, cancel_event=signal, approval_id=approval.approval_id,
+        confirm_token=request.fingerprint
     )
 
     assert result.status is expected

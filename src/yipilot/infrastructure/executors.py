@@ -15,7 +15,6 @@ from yipilot.domain.execution import (
     ArtifactRef,
     ExecutionTrustLevel,
     ToolChangeSummary,
-    ToolKind,
     ToolPolicy,
     ToolRequest,
     ToolResult,
@@ -24,6 +23,7 @@ from yipilot.domain.execution import (
 )
 from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
+from yipilot.infrastructure.tool_run_store import FileToolRunStore
 
 _CHUNK_SIZE = 64 * 1024
 _OUTPUT_LIMIT_DIAGNOSTIC = b"YIPILOT_OUTPUT_LIMIT_EXCEEDED\n"
@@ -31,6 +31,8 @@ _OUTPUT_LIMIT_DIAGNOSTIC = b"YIPILOT_OUTPUT_LIMIT_EXCEEDED\n"
 
 class FakeExecutor:
     """Return test-provided output without creating a subprocess."""
+
+    trust_level = ExecutionTrustLevel.FAKE
 
     def __init__(
         self,
@@ -43,6 +45,7 @@ class FakeExecutor:
         status: ToolRunStatus | None = None,
     ) -> None:
         self._artifact_store = artifact_store
+        self._tool_runs = FileToolRunStore(artifact_store.task_store)
         self._journal = journal
         self._stdout = stdout
         self._stderr = stderr
@@ -86,6 +89,7 @@ class FakeExecutor:
             stderr,
             ExecutionTrustLevel.FAKE,
         )
+        self._tool_runs.save(result)
         _completed(self._journal, result, request.tool_id)
         return result
 
@@ -93,10 +97,13 @@ class FakeExecutor:
 class LocalCommandRunner:
     """Run one already-approved argv with bounded stream collection."""
 
+    trust_level = ExecutionTrustLevel.HOST_TRUSTED
+
     def __init__(
         self, artifact_store: FileArtifactStore, journal: JsonlEventJournal
     ) -> None:
         self._artifact_store = artifact_store
+        self._tool_runs = FileToolRunStore(artifact_store.task_store)
         self._journal = journal
 
     def execute(
@@ -109,10 +116,6 @@ class LocalCommandRunner:
         cancel_event: Event | None = None,
     ) -> ToolResult:
         tool.validate_request(request)
-        if tool.kind is not ToolKind.READ_ONLY:
-            raise DomainError(
-                "TOOL_KIND_DENIED", "only read-only tools may be executed in Task 10"
-            )
         if is_generic_python_executable(tool.executable):
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
@@ -159,6 +162,7 @@ class LocalCommandRunner:
             stderr,
             ExecutionTrustLevel.HOST_TRUSTED,
         )
+        self._tool_runs.save(result)
         _completed(self._journal, result, request.tool_id)
         return result
 
