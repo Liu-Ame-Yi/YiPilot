@@ -18,6 +18,7 @@ MAX_EVENT_PAYLOAD_BYTES = 16_384
 
 _EVENT_TYPES = {
     "run.started",
+    "plan.created",
     "stage.progress",
     "model.delta",
     "model.message_completed",

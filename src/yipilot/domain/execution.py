@@ -194,6 +194,46 @@ class ToolRequest(BaseModel):
         return _fingerprint_model(self)
 
 
+class PlanStep(BaseModel):
+    """One ordered, already-structured action in an Agent plan."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    step_id: int = Field(ge=1)
+    summary: Annotated[str, Field(min_length=1, max_length=1024)]
+    tool_request: ToolRequest
+
+
+class AgentPlan(BaseModel):
+    """An immutable run-scoped plan; it deliberately contains no raw instruction."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    task_id: TaskId
+    operation_id: NonEmptyString
+    run_id: NonEmptyString
+    instruction_fingerprint: Sha256
+    steps: tuple[PlanStep, ...]
+
+    @model_validator(mode="after")
+    def validate_steps(self) -> Self:
+        association = (self.task_id, self.operation_id, self.run_id)
+        if any(
+            (
+                step.tool_request.task_id,
+                step.tool_request.operation_id,
+                step.tool_request.run_id,
+            )
+            != association
+            for step in self.steps
+        ):
+            raise ValueError("plan requests must belong to the same Task, Operation and Run")
+        if [step.step_id for step in self.steps] != list(range(1, len(self.steps) + 1)):
+            raise ValueError("plan step IDs must be unique and ordered from one")
+        return self
+
+
 class ToolChangeSummary(BaseModel):
     """Bounded metadata about workspace changes; paths remain an Artifact."""
 
