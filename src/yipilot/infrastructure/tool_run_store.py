@@ -7,7 +7,11 @@ from pydantic import ValidationError
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import ArtifactRef, ToolResult
 from yipilot.infrastructure.artifact_store import FileArtifactStore
-from yipilot.infrastructure.filesystem import atomic_write_json, project_path
+from yipilot.infrastructure.filesystem import (
+    atomic_write_json,
+    project_path,
+    safe_path_component,
+)
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
 
 
@@ -25,6 +29,7 @@ class FileToolRunStore:
         return path
 
     def get(self, task_id: str, run_id: str, tool_run_id: str) -> ToolResult:
+        safe_path_component(tool_run_id)
         run = self._validate_run(task_id, None, run_id)
         root = self._root(run_id)
         if not root.is_dir():
@@ -90,13 +95,8 @@ class FileToolRunStore:
         return project_path(self._task_store.event_journal_path(run_id).parent, "tool-runs")
 
     def _path(self, run_id: str, tool_run_id: str, *, create: bool = False) -> Path:
-        _safe_id(tool_run_id)
+        safe_path_component(tool_run_id)
         root = self._root(run_id)
         if create:
             root.mkdir(exist_ok=True)
         return project_path(root, f"{tool_run_id}.json")
-
-
-def _safe_id(value: str) -> None:
-    if not value or Path(value).name != value or value in {".", ".."}:
-        raise DomainError("PATH_DENIED", "record identifier is not a safe path component")

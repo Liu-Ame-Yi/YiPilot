@@ -6,7 +6,11 @@ from pydantic import ValidationError
 
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import ApprovalRecord
-from yipilot.infrastructure.filesystem import atomic_write_json, project_path
+from yipilot.infrastructure.filesystem import (
+    atomic_write_json,
+    project_path,
+    safe_path_component,
+)
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
 
 
@@ -23,6 +27,7 @@ class FileApprovalStore:
         return path
 
     def get(self, task_id: str, run_id: str, approval_id: str) -> ApprovalRecord:
+        safe_path_component(approval_id)
         run = self._validate_run(task_id, None, run_id)
         root = self._root(run_id)
         if not root.is_dir():
@@ -69,13 +74,8 @@ class FileApprovalStore:
         return project_path(self._task_store.event_journal_path(run_id).parent, "approvals")
 
     def _path(self, run_id: str, approval_id: str, *, create: bool = False) -> Path:
-        _safe_id(approval_id)
+        safe_path_component(approval_id)
         root = self._root(run_id)
         if create:
             root.mkdir(exist_ok=True)
         return project_path(root, f"{approval_id}.json")
-
-
-def _safe_id(value: str) -> None:
-    if not value or Path(value).name != value or value in {".", ".."}:
-        raise DomainError("PATH_DENIED", "record identifier is not a safe path component")

@@ -15,6 +15,7 @@ from yipilot.domain.execution import (
     ArtifactRef,
     ExecutionTrustLevel,
     ToolChangeSummary,
+    ToolKind,
     ToolPolicy,
     ToolRequest,
     ToolResult,
@@ -23,6 +24,7 @@ from yipilot.domain.execution import (
 )
 from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
+from yipilot.infrastructure.filesystem import atomic_write_bytes
 from yipilot.infrastructure.tool_run_store import FileToolRunStore
 
 _CHUNK_SIZE = 64 * 1024
@@ -167,6 +169,54 @@ class LocalCommandRunner:
         return result
 
 
+class ControlledWorkspaceWriter:
+    """Perform the one fixed Task 11 workspace write without a shell."""
+
+    trust_level = ExecutionTrustLevel.SANDBOXED
+
+    def __init__(
+        self, artifact_store: FileArtifactStore, journal: JsonlEventJournal
+    ) -> None:
+        self._artifact_store = artifact_store
+        self._tool_runs = FileToolRunStore(artifact_store.task_store)
+        self._journal = journal
+
+    def execute(
+        self,
+        request: ToolRequest,
+        tool: ToolPolicy,
+        *,
+        cwd: Path,
+        environment: Mapping[str, str] | None = None,
+        cancel_event: Event | None = None,
+    ) -> ToolResult:
+        del environment, cancel_event
+        tool.validate_request(request)
+        if tool.kind is not ToolKind.WORKSPACE_WRITE or request.argv != (
+            "yipilot.write-file", "approval-marker.txt", "approved"
+        ):
+            raise DomainError("TOOL_WRITE_DENIED", "workspace write is not Task 11's fixed action")
+        started_at = datetime.now(UTC)
+        tool_run_id = str(uuid4())
+        _started(self._journal, tool_run_id, request.tool_id)
+        atomic_write_bytes(cwd / "approval-marker.txt", b"approved\n")
+        result = _result(
+            self._artifact_store,
+            tool_run_id,
+            request,
+            started_at,
+            ToolRunStatus.SUCCEEDED,
+            0,
+            b"",
+            b"",
+            ExecutionTrustLevel.SANDBOXED,
+            ("approval-marker.txt",),
+        )
+        self._tool_runs.save(result)
+        _completed(self._journal, result, request.tool_id)
+        return result
+
+
 def _read_streams(
     process: subprocess.Popen[bytes], output_budget_bytes: int
 ) -> tuple[bytearray, bytearray, threading.Event, list[threading.Thread]]:
@@ -239,6 +289,7 @@ def _result(
     stdout: bytes,
     stderr: bytes,
     trust_level: ExecutionTrustLevel,
+    changed_paths: tuple[str, ...] = (),
 ) -> ToolResult:
     stdout_ref = _artifact_ref(
         artifact_store.write_bytes(
@@ -262,6 +313,19 @@ def _result(
             operation_id=request.operation_id,
         )
     )
+    changed_paths_ref = None
+    if changed_paths:
+        changed_paths_ref = _artifact_ref(
+            artifact_store.write_bytes(
+                request.task_id,
+                request.run_id,
+                producer="tool_executor",
+                relative_path=f"artifacts/tool-runs/{tool_run_id}/changed-paths.nul",
+                content="\0".join(changed_paths).encode("utf-8") + b"\0",
+                input_fingerprint=request.fingerprint,
+                operation_id=request.operation_id,
+            )
+        )
     return ToolResult(
         tool_run_id=tool_run_id,
         task_id=request.task_id,
@@ -275,7 +339,10 @@ def _result(
         exit_code=exit_code,
         stdout_artifact_ref=stdout_ref,
         stderr_artifact_ref=stderr_ref,
-        change_summary=ToolChangeSummary(changed_file_count=0),
+        change_summary=ToolChangeSummary(
+            changed_file_count=len(changed_paths),
+            changed_paths_artifact_ref=changed_paths_ref,
+        ),
         trust_level=trust_level,
     )
 

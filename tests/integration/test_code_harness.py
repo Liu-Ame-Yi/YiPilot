@@ -4,9 +4,12 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-from yipilot.application.approval import approval_action_type
+import pytest
+
+from yipilot.application.approval import ApprovalGate, approval_action_type
 from yipilot.application.tool_registry import ToolRegistry
 from yipilot.application.workspace_service import PreparedWorkspace
+from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     ApprovalDecision,
     ApprovalRecord,
@@ -21,7 +24,7 @@ from yipilot.harness.code import CodeHarness
 from yipilot.infrastructure.approval_store import FileApprovalStore
 from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
-from yipilot.infrastructure.executors import FakeExecutor
+from yipilot.infrastructure.executors import ControlledWorkspaceWriter
 from yipilot.infrastructure.task_store import FileTaskStore
 
 
@@ -73,32 +76,41 @@ def test_code_harness_persists_independent_report_and_blocks_stale_git_evidence(
         repo_alias="sample", repo_hash=repo_hash, branch="main", base_sha=base_sha,
         created_at=datetime.now(UTC).isoformat(),
     )
-    (workspace.path / "created.txt").write_text("evidence\n", encoding="utf-8")
-
     request = ToolRequest(
         task_id=run.task_id, operation_id=run.operation_id, run_id=run.run_id,
         workspace_relative_path=".yipilot/tasks/1001/repos/sample/workspace",
-        tool_id="diagnostic", argv=("diagnostic", "--version"), timeout_seconds=1,
+        tool_id="write-marker", argv=("yipilot.write-file", "approval-marker.txt", "approved"), timeout_seconds=1,
         output_budget_bytes=1024, input_fingerprint="a" * 64,
     )
     policy = ExecutionPolicy(
         revision="policy-v1",
         tools=(ToolPolicy(
-            tool_id="diagnostic", kind=ToolKind.READ_ONLY, executable="diagnostic",
-            argv_schema=(ArgvRule(literal="--version"),), max_output_bytes=1024,
+            tool_id="write-marker", kind=ToolKind.WORKSPACE_WRITE,
+            executable="yipilot.write-file",
+            argv_schema=(ArgvRule(literal="approval-marker.txt"), ArgvRule(literal="approved")), max_output_bytes=1024,
             max_timeout_seconds=1,
         ),),
     )
     journal = JsonlEventJournal(store.event_journal_path(run.run_id), task_id=run.task_id, run_id=run.run_id)
-    ToolRegistry(policy, FakeExecutor(FileArtifactStore(store), journal)).execute(project, request)
     approval = ApprovalRecord(
         approval_id="approval-1", task_id=run.task_id, operation_id=run.operation_id,
         run_id=run.run_id,
-        action_type=approval_action_type(policy.tools[0], ExecutionTrustLevel.FAKE),
+        action_type=approval_action_type(policy.tools[0], ExecutionTrustLevel.SANDBOXED),
         target_fingerprint=request.fingerprint, policy_revision=policy.revision,
         decision=ApprovalDecision.APPROVED, decided_at=datetime.now(UTC),
     )
-    FileApprovalStore(store).save(approval)
+    approvals = FileApprovalStore(store)
+    approvals.save(approval)
+    result = ToolRegistry(
+        policy,
+        ControlledWorkspaceWriter(FileArtifactStore(store), journal),
+        ApprovalGate(approvals),
+    ).execute(
+        project,
+        request,
+        approval_id=approval.approval_id,
+        confirm_token=request.fingerprint,
+    )
     harness = CodeHarness(
         project, run.task_id, run.run_id, workspace, policy, approval_id=approval.approval_id,
         action_type=approval.action_type, target_fingerprint=request.fingerprint,
@@ -107,8 +119,11 @@ def test_code_harness_persists_independent_report_and_blocks_stale_git_evidence(
     report = harness.run()
 
     assert report.status == "passed"
+    assert result.change_summary.changed_file_count == 1
+    assert (workspace.path / "approval-marker.txt").read_text(encoding="utf-8") == "approved\n"
     assert (store.event_journal_path(run.run_id).parent / "harness/code-harness-report.json").is_file()
     assert (store.event_journal_path(run.run_id).parent / "harness/task-integrity-report.json").is_file()
-    assert harness.require_passed() == report
-    (workspace.path / "created.txt").write_text("stale\n", encoding="utf-8")
-    assert harness.run().status == "failed"
+    assert harness.require_passed().status == "passed"
+    (workspace.path / "approval-marker.txt").write_text("stale\n", encoding="utf-8")
+    with pytest.raises(DomainError, match="^CODE_HARNESS_FAILED:"):
+        harness.require_passed()

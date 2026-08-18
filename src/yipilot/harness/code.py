@@ -66,9 +66,7 @@ class CodeHarness:
         workspace_check = _derived_check(
             "CODE-WORKSPACE-001", git_report, "GIT-WORKSPACE-001", "workspace manifest matches Task and Run"
         )
-        git_check = _derived_check(
-            "CODE-GIT-EVIDENCE-001", git_report, "GIT-WORKSPACE-003", "Git evidence is complete, current and reviewable"
-        )
+        git_check = _git_check(git_report)
         integrity_report = TaskIntegrityHarness(
             self._project_root, self._task_id, self._run_id
         ).run()
@@ -98,7 +96,7 @@ class CodeHarness:
         return report
 
     def require_passed(self) -> HarnessReport:
-        report = self._reports.load(self._run_id, CODE_HARNESS_REPORT_NAME)
+        report = self.run()
         if not self._gate_policy.accepts(report.status):
             raise DomainError("CODE_HARNESS_FAILED", "code harness has not passed")
         return report
@@ -140,6 +138,17 @@ class CodeHarness:
                 description="ToolResult has complete Run and Artifact associations", message="no persisted ToolResult exists",
                 evidence_refs=["tool-runs"],
             )
+        if not any(
+            result.request_fingerprint == self._target_fingerprint
+            and self._action_type.endswith(f":{result.trust_level.value}")
+            for result in results
+        ):
+            return HarnessCheck(
+                id="CODE-TOOLRUN-001", status=HarnessStatus.FAILED,
+                description="ToolResult has complete Run and Artifact associations",
+                message="no ToolResult matches the approved target and trust level",
+                evidence_refs=[f"tool-runs/{result.tool_run_id}.json" for result in results],
+            )
         return HarnessCheck(
             id="CODE-TOOLRUN-001", status=HarnessStatus.PASSED,
             description="ToolResult has complete Run and Artifact associations", message="all persisted ToolResults are intact",
@@ -161,3 +170,13 @@ def _derived_check(
 def _fingerprint(inputs: list[dict[str, JsonValue]]) -> str:
     encoded = json.dumps(inputs, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _git_check(report: HarnessReport) -> HarnessCheck:
+    return HarnessCheck(
+        id="CODE-GIT-EVIDENCE-001",
+        status=(HarnessStatus.PASSED if report.status is HarnessStatus.PASSED else HarnessStatus.FAILED),
+        description="Git evidence is complete, current and reviewable",
+        message=f"Git workspace status is {report.status}",
+        evidence_refs=[ref for check in report.checks for ref in check.evidence_refs],
+    )

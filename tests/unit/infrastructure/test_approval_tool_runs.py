@@ -1,3 +1,4 @@
+import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -115,3 +116,39 @@ def test_approval_store_rejects_unsafe_identifier(tmp_path: Path) -> None:
 
     with pytest.raises(DomainError, match="^PATH_DENIED:"):
         FileApprovalStore(store).save(approval)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("corrupt", "TOOL_RUN_INVALID"),
+        ("operation", "TOOL_RUN_INVALID"),
+        ("artifact", "TOOL_RUN_ARTIFACT_MISMATCH"),
+    ],
+)
+def test_tool_run_store_rejects_tampered_records(
+    tmp_path: Path, mutation: str, expected: str
+) -> None:
+    store, _run, request, policy = _context(tmp_path, ToolKind.READ_ONLY)
+    journal = JsonlEventJournal(store.event_journal_path(request.run_id), task_id=request.task_id, run_id=request.run_id)
+    result = ToolRegistry(policy, FakeExecutor(FileArtifactStore(store), journal)).execute(tmp_path, request)
+    path = store.event_journal_path(request.run_id).parent / "tool-runs" / f"{result.tool_run_id}.json"
+    if mutation == "corrupt":
+        path.write_text("{not-json", encoding="utf-8")
+    else:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if mutation == "operation":
+            record["operation_id"] = "00000000-0000-0000-0000-000000000000"
+        else:
+            record["stdout_artifact_ref"]["sha256"] = "b" * 64
+        path.write_text(json.dumps(record), encoding="utf-8")
+
+    with pytest.raises(DomainError, match=rf"^{expected}:"):
+        FileToolRunStore(store).get(request.task_id, request.run_id, result.tool_run_id)
+
+
+def test_tool_run_store_rejects_unsafe_identifier(tmp_path: Path) -> None:
+    store, _run, request, _policy = _context(tmp_path)
+
+    with pytest.raises(DomainError, match="^PATH_DENIED:"):
+        FileToolRunStore(store).get(request.task_id, request.run_id, "../outside")

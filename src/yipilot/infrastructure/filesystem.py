@@ -28,6 +28,12 @@ def project_path(root: Path, *parts: str) -> Path:
     return candidate
 
 
+def safe_path_component(value: str) -> None:
+    """Reject identifiers that cannot safely name one storage file."""
+    if not value or Path(value).name != value or value in {".", ".."}:
+        raise DomainError("PATH_DENIED", "record identifier is not a safe path component")
+
+
 def atomic_write_json(
     path: Path, value: Record, validator: RecordValidator | None = None
 ) -> None:
