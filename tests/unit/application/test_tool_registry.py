@@ -297,7 +297,7 @@ def test_registry_rejects_generic_python_and_direct_non_read_only_runner(
         )
     with pytest.raises(DomainError, match="^APPROVAL_REQUIRED:"):
         LocalCommandRunner(FileArtifactStore(store), journal).execute(
-            request, policy.tools[0], cwd=workspace
+            request, policy.tools[0], cwd=workspace, project_root=tmp_path
         )
     assert journal.read_after(0) == []
     with pytest.raises(DomainError, match="^TOOL_EXECUTABLE_DENIED:"):
@@ -305,4 +305,5 @@ def test_registry_rejects_generic_python_and_direct_non_read_only_runner(
             _request(run, python_argv),
             _policy(python_argv).tools[0],
             cwd=workspace,
+            project_root=tmp_path,
         )

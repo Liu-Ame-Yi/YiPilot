@@ -25,7 +25,7 @@ from yipilot.domain.execution import (
 )
 from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
-from yipilot.infrastructure.filesystem import atomic_write_bytes
+from yipilot.infrastructure.filesystem import atomic_write_bytes, project_path
 from yipilot.infrastructure.tool_run_store import FileToolRunStore
 
 _CHUNK_SIZE = 64 * 1024
@@ -61,6 +61,7 @@ class FakeExecutor:
         tool: ToolPolicy,
         *,
         cwd: Path,
+        project_root: Path | None = None,
         environment: Mapping[str, str] | None = None,
         cancel_event: Event | None = None,
         approval_gate: ApprovalGate | None = None,
@@ -68,7 +69,8 @@ class FakeExecutor:
         approval_id: str | None = None,
         confirm_token: str | None = None,
     ) -> ToolResult:
-        del cwd, environment
+        del environment
+        _require_workspace_cwd(project_root, request, cwd)
         _require_approval(
             request, tool, self.trust_level, approval_gate, policy_revision,
             approval_id, confirm_token,
@@ -123,6 +125,7 @@ class LocalCommandRunner:
         tool: ToolPolicy,
         *,
         cwd: Path,
+        project_root: Path | None = None,
         environment: Mapping[str, str] | None = None,
         cancel_event: Event | None = None,
         approval_gate: ApprovalGate | None = None,
@@ -131,6 +134,7 @@ class LocalCommandRunner:
         confirm_token: str | None = None,
     ) -> ToolResult:
         tool.validate_request(request)
+        _require_workspace_cwd(project_root, request, cwd)
         if is_generic_python_executable(tool.executable):
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
@@ -204,6 +208,7 @@ class ControlledWorkspaceWriter:
         tool: ToolPolicy,
         *,
         cwd: Path,
+        project_root: Path | None = None,
         environment: Mapping[str, str] | None = None,
         cancel_event: Event | None = None,
         approval_gate: ApprovalGate | None = None,
@@ -213,6 +218,7 @@ class ControlledWorkspaceWriter:
     ) -> ToolResult:
         del environment, cancel_event
         tool.validate_request(request)
+        _require_workspace_cwd(project_root, request, cwd)
         if tool.kind is not ToolKind.WORKSPACE_WRITE or request.argv != (
             "yipilot.write-file", "approval-marker.txt", "approved"
         ):
@@ -297,6 +303,18 @@ def _require_approval(
         confirm_token=confirm_token,
         policy_revision=policy_revision,
     )
+
+
+def _require_workspace_cwd(
+    project_root: Path | None, request: ToolRequest, cwd: Path
+) -> None:
+    if project_root is None:
+        raise DomainError("PATH_DENIED", "executor requires the project root")
+    root = Path(project_root).resolve(strict=True)
+    expected = project_path(root, request.workspace_relative_path).resolve(strict=False)
+    actual = Path(cwd).resolve(strict=False)
+    if (expected != root and root not in expected.parents) or expected != actual:
+        raise DomainError("PATH_DENIED", "executor cwd does not match the task workspace")
 
 
 def _limit_output(stdout: bytes, stderr: bytes, budget: int) -> tuple[bytes, bytes, bool]:

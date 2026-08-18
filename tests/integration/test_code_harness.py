@@ -103,8 +103,22 @@ def test_code_harness_persists_independent_report_and_blocks_stale_git_evidence(
     approvals.save(approval)
     writer = ControlledWorkspaceWriter(FileArtifactStore(store), journal)
     with pytest.raises(DomainError, match="^APPROVAL_REQUIRED:"):
-        writer.execute(request, policy.tools[0], cwd=workspace.path)
+        writer.execute(request, policy.tools[0], cwd=workspace.path, project_root=project)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(DomainError, match="^PATH_DENIED:"):
+        writer.execute(
+            request,
+            policy.tools[0],
+            cwd=outside,
+            project_root=project,
+            approval_gate=ApprovalGate(approvals),
+            policy_revision=policy.revision,
+            approval_id=approval.approval_id,
+            confirm_token=request.fingerprint,
+        )
     assert not (workspace.path / "approval-marker.txt").exists()
+    assert not (outside / "approval-marker.txt").exists()
     assert journal.read_after(0) == []
     result = ToolRegistry(
         policy,

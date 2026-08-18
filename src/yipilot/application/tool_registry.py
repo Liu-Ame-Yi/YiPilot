@@ -29,6 +29,7 @@ class ExecutorPort(Protocol):
         tool: ToolPolicy,
         *,
         cwd: Path,
+        project_root: Path | None = None,
         environment: Mapping[str, str] | None = None,
         cancel_event: Event | None = None,
         approval_gate: ApprovalGate | None = None,
@@ -96,6 +97,7 @@ class ToolRegistry:
         return self._executor.execute(
             request,
             tool,
+            project_root=project_root,
             cwd=self._policy.resolve_cwd(project_root, request),
             environment=environment,
             cancel_event=cancel_event,
