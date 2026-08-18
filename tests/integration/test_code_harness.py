@@ -101,9 +101,14 @@ def test_code_harness_persists_independent_report_and_blocks_stale_git_evidence(
     )
     approvals = FileApprovalStore(store)
     approvals.save(approval)
+    writer = ControlledWorkspaceWriter(FileArtifactStore(store), journal)
+    with pytest.raises(DomainError, match="^APPROVAL_REQUIRED:"):
+        writer.execute(request, policy.tools[0], cwd=workspace.path)
+    assert not (workspace.path / "approval-marker.txt").exists()
+    assert journal.read_after(0) == []
     result = ToolRegistry(
         policy,
-        ControlledWorkspaceWriter(FileArtifactStore(store), journal),
+        writer,
         ApprovalGate(approvals),
     ).execute(
         project,
@@ -124,6 +129,11 @@ def test_code_harness_persists_independent_report_and_blocks_stale_git_evidence(
     assert (store.event_journal_path(run.run_id).parent / "harness/code-harness-report.json").is_file()
     assert (store.event_journal_path(run.run_id).parent / "harness/task-integrity-report.json").is_file()
     assert harness.require_passed().status == "passed"
+    stdout = store.event_journal_path(run.run_id).parent / result.stdout_artifact_ref.relative_path
+    stdout.write_bytes(b"tampered")
+    with pytest.raises(DomainError, match="^CODE_HARNESS_FAILED:"):
+        harness.require_passed()
+    stdout.write_bytes(b"")
     (workspace.path / "approval-marker.txt").write_text("stale\n", encoding="utf-8")
     with pytest.raises(DomainError, match="^CODE_HARNESS_FAILED:"):
         harness.require_passed()

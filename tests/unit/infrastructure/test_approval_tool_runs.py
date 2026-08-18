@@ -118,6 +118,23 @@ def test_approval_store_rejects_unsafe_identifier(tmp_path: Path) -> None:
         FileApprovalStore(store).save(approval)
 
 
+def test_approval_store_rejects_mismatched_or_corrupt_record(tmp_path: Path) -> None:
+    store, _run, request, policy = _context(tmp_path)
+    approval = _approval(request, policy)
+    approvals = FileApprovalStore(store)
+    with pytest.raises(DomainError, match="^APPROVAL_MISMATCH:"):
+        approvals.save(
+            approval.model_copy(
+                update={"operation_id": "00000000-0000-0000-0000-000000000000"}
+            )
+        )
+    approvals.save(approval)
+    path = store.event_journal_path(request.run_id).parent / "approvals" / "approval-1.json"
+    path.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(DomainError, match="^APPROVAL_INVALID:"):
+        approvals.get(request.task_id, request.run_id, approval.approval_id)
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected"),
     [

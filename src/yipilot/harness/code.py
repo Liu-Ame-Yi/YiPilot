@@ -8,9 +8,10 @@ from uuid import uuid4
 
 from pydantic import JsonValue
 
+from yipilot.application.approval import approval_action_type
 from yipilot.application.workspace_service import PreparedWorkspace
 from yipilot.domain.errors import DomainError
-from yipilot.domain.execution import ExecutionPolicy
+from yipilot.domain.execution import ExecutionPolicy, ToolResult, ToolRunStatus
 from yipilot.harness.git_workspace import GitWorkspaceHarness
 from yipilot.harness.models import (
     HarnessCheck,
@@ -138,11 +139,7 @@ class CodeHarness:
                 description="ToolResult has complete Run and Artifact associations", message="no persisted ToolResult exists",
                 evidence_refs=["tool-runs"],
             )
-        if not any(
-            result.request_fingerprint == self._target_fingerprint
-            and self._action_type.endswith(f":{result.trust_level.value}")
-            for result in results
-        ):
+        if not any(self._matches_approval(result) for result in results):
             return HarnessCheck(
                 id="CODE-TOOLRUN-001", status=HarnessStatus.FAILED,
                 description="ToolResult has complete Run and Artifact associations",
@@ -153,6 +150,20 @@ class CodeHarness:
             id="CODE-TOOLRUN-001", status=HarnessStatus.PASSED,
             description="ToolResult has complete Run and Artifact associations", message="all persisted ToolResults are intact",
             evidence_refs=[f"tool-runs/{result.tool_run_id}.json" for result in results],
+        )
+
+    def _matches_approval(self, result: ToolResult) -> bool:
+        return any(
+            result.request_fingerprint == self._target_fingerprint
+            and result.status is ToolRunStatus.SUCCEEDED
+            and self._action_type == approval_action_type(tool, result.trust_level)
+            and result.argv[0] == tool.executable
+            and len(result.argv[1:]) == len(tool.argv_schema)
+            and all(
+                rule.accepts(value)
+                for rule, value in zip(tool.argv_schema, result.argv[1:], strict=True)
+            )
+            for tool in self._policy.tools
         )
 
 

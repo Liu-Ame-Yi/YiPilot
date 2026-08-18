@@ -31,6 +31,10 @@ class ExecutorPort(Protocol):
         cwd: Path,
         environment: Mapping[str, str] | None = None,
         cancel_event: Event | None = None,
+        approval_gate: ApprovalGate | None = None,
+        policy_revision: str | None = None,
+        approval_id: str | None = None,
+        confirm_token: str | None = None,
     ) -> ToolResult: ...
 
 
@@ -95,4 +99,8 @@ class ToolRegistry:
             cwd=self._policy.resolve_cwd(project_root, request),
             environment=environment,
             cancel_event=cancel_event,
+            approval_gate=self._approval_gate,
+            policy_revision=self._policy.revision,
+            approval_id=approval_id,
+            confirm_token=confirm_token,
         )

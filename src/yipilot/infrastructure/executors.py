@@ -10,6 +10,7 @@ from threading import Event
 from typing import BinaryIO
 from uuid import uuid4
 
+from yipilot.application.approval import ApprovalGate, requires_approval
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     ArtifactRef,
@@ -62,8 +63,16 @@ class FakeExecutor:
         cwd: Path,
         environment: Mapping[str, str] | None = None,
         cancel_event: Event | None = None,
+        approval_gate: ApprovalGate | None = None,
+        policy_revision: str | None = None,
+        approval_id: str | None = None,
+        confirm_token: str | None = None,
     ) -> ToolResult:
-        del tool, cwd, environment
+        del cwd, environment
+        _require_approval(
+            request, tool, self.trust_level, approval_gate, policy_revision,
+            approval_id, confirm_token,
+        )
         started_at = datetime.now(UTC)
         tool_run_id = str(uuid4())
         _started(self._journal, tool_run_id, request.tool_id)
@@ -116,6 +125,10 @@ class LocalCommandRunner:
         cwd: Path,
         environment: Mapping[str, str] | None = None,
         cancel_event: Event | None = None,
+        approval_gate: ApprovalGate | None = None,
+        policy_revision: str | None = None,
+        approval_id: str | None = None,
+        confirm_token: str | None = None,
     ) -> ToolResult:
         tool.validate_request(request)
         if is_generic_python_executable(tool.executable):
@@ -123,6 +136,10 @@ class LocalCommandRunner:
                 "TOOL_EXECUTABLE_DENIED",
                 "generic Python interpreters are not Task 10 tools",
             )
+        _require_approval(
+            request, tool, self.trust_level, approval_gate, policy_revision,
+            approval_id, confirm_token,
+        )
         environment = environment or {}
         missing = set(request.env_names).difference(environment)
         if missing:
@@ -189,6 +206,10 @@ class ControlledWorkspaceWriter:
         cwd: Path,
         environment: Mapping[str, str] | None = None,
         cancel_event: Event | None = None,
+        approval_gate: ApprovalGate | None = None,
+        policy_revision: str | None = None,
+        approval_id: str | None = None,
+        confirm_token: str | None = None,
     ) -> ToolResult:
         del environment, cancel_event
         tool.validate_request(request)
@@ -196,6 +217,10 @@ class ControlledWorkspaceWriter:
             "yipilot.write-file", "approval-marker.txt", "approved"
         ):
             raise DomainError("TOOL_WRITE_DENIED", "workspace write is not Task 11's fixed action")
+        _require_approval(
+            request, tool, self.trust_level, approval_gate, policy_revision,
+            approval_id, confirm_token,
+        )
         started_at = datetime.now(UTC)
         tool_run_id = str(uuid4())
         _started(self._journal, tool_run_id, request.tool_id)
@@ -249,6 +274,29 @@ def _read_streams(
     for reader in readers:
         reader.start()
     return stdout, stderr, exceeded, readers
+
+
+def _require_approval(
+    request: ToolRequest,
+    tool: ToolPolicy,
+    trust_level: ExecutionTrustLevel,
+    approval_gate: ApprovalGate | None,
+    policy_revision: str | None,
+    approval_id: str | None,
+    confirm_token: str | None,
+) -> None:
+    if not requires_approval(tool, trust_level):
+        return
+    if approval_gate is None or policy_revision is None:
+        raise DomainError("APPROVAL_REQUIRED", "high-risk tool execution requires approval")
+    approval_gate.require_approved(
+        request,
+        tool,
+        trust_level,
+        approval_id=approval_id,
+        confirm_token=confirm_token,
+        policy_revision=policy_revision,
+    )
 
 
 def _limit_output(stdout: bytes, stderr: bytes, budget: int) -> tuple[bytes, bytes, bool]:
