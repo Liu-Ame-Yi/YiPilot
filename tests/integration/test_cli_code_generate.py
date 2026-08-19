@@ -19,6 +19,15 @@ def _git(cwd: Path, *arguments: str) -> str:
     return subprocess.check_output(["git", *arguments], cwd=cwd, text=True).strip()
 
 
+def _repository_snapshot(repository: Path) -> tuple[str, str, str, str]:
+    return (
+        _git(repository, "rev-parse", "HEAD"),
+        _git(repository, "status", "--porcelain"),
+        _git(repository, "for-each-ref", "--format=%(refname) %(objectname)"),
+        _git(repository, "config", "--get-regexp", r"^remote\."),
+    )
+
+
 def _project_with_repository(tmp_path: Path) -> tuple[Path, Path]:
     source = tmp_path / "source"
     source.mkdir()
@@ -103,6 +112,137 @@ def test_fake_code_generate_is_auditable_and_prepare_only_leaves_git_unchanged(
     assert "environment-secret" not in handoff_path.read_text(encoding="utf-8")
     assert _git(source, "rev-parse", "HEAD") == source_head
     assert _git(source, "status", "--porcelain") == ""
+
+
+def test_prepare_only_preserves_source_report_and_git_boundaries(tmp_path: Path) -> None:
+    project, source = _project_with_repository(tmp_path)
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git(remote, "init", "--bare")
+    _git(source, "remote", "add", "origin", str(remote))
+    _git(source, "push", "-u", "origin", "main")
+    project_sentinel = project / "outside-workspace.txt"
+    project_sentinel.write_text("unchanged\n", encoding="utf-8")
+    source_sentinel = tmp_path / "source-sibling.txt"
+    source_sentinel.write_text("unchanged\n", encoding="utf-8")
+
+    generated = _generate(project)
+    source_run_id = str(generated["run_id"])
+    store = FileTaskStore(project)
+    source_root = store.event_journal_path(source_run_id).parent
+    source_report_path = source_root / "harness" / "code-harness-report.json"
+    source_report = json.loads(source_report_path.read_text(encoding="utf-8"))
+    source_evidence = {
+        path.relative_to(source_root): path.read_bytes()
+        for directory in (source_root / "git", source_root / "harness", source_root / "artifacts")
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
+    source_before = _repository_snapshot(source)
+    remote_before = _git(remote, "for-each-ref", "--format=%(refname) %(objectname)")
+
+    applied = runner.invoke(
+        app,
+        [
+            "code", "apply", "--project", str(project), "--taskid", "1001",
+            "--run-id", source_run_id, "--prepare-only", "--output", "json",
+        ],
+    )
+
+    assert applied.exit_code == 0, (applied.stdout, applied.exception)
+    applied_value = json.loads(applied.stdout)
+    apply_run_id = str(applied_value["run_id"])
+    handoff_path = (
+        store.event_journal_path(apply_run_id).parent
+        / applied_value["handoff_artifact_ref"]["relative_path"]
+    )
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    assert handoff["code_harness_report_ref"] == {
+        "input_fingerprint": source_report["input_fingerprint"],
+        "path": f"tasks/1001/runs/{source_run_id}/harness/code-harness-report.json",
+        "report_id": source_report["report_id"],
+    }
+    verification_ref = handoff["freshness_verification_artifact_ref"]
+    verification_path = store.event_journal_path(apply_run_id).parent / verification_ref["relative_path"]
+    verification = json.loads(verification_path.read_text(encoding="utf-8"))
+    assert verification["source_code_harness_report_ref"] == handoff["code_harness_report_ref"]
+    assert verification["verification"]["run_id"] == source_run_id
+    assert verification_ref["relative_path"] != handoff["code_harness_report_ref"]["path"]
+    FileArtifactStore(store).verify("1001", apply_run_id, verification_ref["artifact_id"])
+    assert _repository_snapshot(source) == source_before
+    assert _git(remote, "for-each-ref", "--format=%(refname) %(objectname)") == remote_before
+    assert project_sentinel.read_text(encoding="utf-8") == "unchanged\n"
+    assert source_sentinel.read_text(encoding="utf-8") == "unchanged\n"
+    assert {
+        path.relative_to(source_root): path.read_bytes()
+        for directory in (source_root / "git", source_root / "harness", source_root / "artifacts")
+        for path in directory.rglob("*")
+        if path.is_file()
+    } == source_evidence
+
+
+def test_code_cli_machine_output_hides_instruction_argv_and_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, _source = _project_with_repository(tmp_path)
+    instruction = "instruction-sentinel-7d1f"
+    environment_value = "environment-sentinel-7d1f"
+    argv_marker = "yipilot.fake-diagnostic"
+    monkeypatch.setenv("YIPILOT_OUTPUT_SENTINEL", environment_value)
+
+    generated = runner.invoke(
+        app,
+        [
+            "code", "generate", "--project", str(project), "--taskid", "1001",
+            "--alias", "sample", "--instruction", instruction, "--planner", "fake",
+            "--output", "json",
+        ],
+    )
+    assert generated.exit_code == 0
+    generated_value = json.loads(generated.stdout)
+    assert generated.stdout == json.dumps(
+        generated_value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ) + "\n"
+    assert all(value not in generated.stdout for value in (instruction, environment_value, argv_marker))
+
+    watched = runner.invoke(
+        app,
+        [
+            "run", "watch", "--project", str(project), "--run-id", str(generated_value["run_id"]),
+            "--output", "jsonl",
+        ],
+    )
+    assert watched.exit_code == 0
+    assert all(json.loads(line) for line in watched.stdout.splitlines())
+    assert all(value not in watched.stdout for value in (instruction, environment_value, argv_marker))
+
+    missed = runner.invoke(
+        app,
+        [
+            "code", "generate", "--project", str(project), "--taskid", "1001",
+            "--alias", "sample", "--instruction", instruction, "--planner", "replay",
+            "--output", "json",
+        ],
+    )
+    assert missed.exit_code == 1
+    assert json.loads(missed.stdout)["error_code"] == "PLANNER_REPLAY_NOT_FOUND"
+    assert all(value not in missed.stdout for value in (instruction, environment_value, argv_marker))
+
+    approval_path = (
+        FileTaskStore(project).event_journal_path(str(generated_value["run_id"])).parent
+        / "approvals" / "fake-read-only-simulation.json"
+    )
+    approval_path.unlink()
+    rejected = runner.invoke(
+        app,
+        [
+            "code", "apply", "--project", str(project), "--taskid", "1001",
+            "--run-id", str(generated_value["run_id"]), "--prepare-only", "--output", "json",
+        ],
+    )
+    assert rejected.exit_code == 1
+    assert json.loads(rejected.stdout)["code"] == "APPROVAL_REQUIRED"
+    assert all(value not in rejected.stdout for value in (instruction, environment_value, argv_marker))
 
 
 def test_replay_requires_exact_recording_without_a_tool_run(tmp_path: Path) -> None:
@@ -240,9 +380,14 @@ def test_prepare_only_creates_an_idempotent_apply_run(tmp_path: Path) -> None:
     source = _generate(project)
     source_run_id = str(source["run_id"])
     source_root = FileTaskStore(project).event_journal_path(source_run_id).parent
+    source_report = json.loads(
+        (source_root / "harness" / "code-harness-report.json").read_text(
+            encoding="utf-8"
+        )
+    )
     source_evidence = {
         path.relative_to(source_root): path.read_bytes()
-        for directory in (source_root / "git", source_root / "harness")
+        for directory in (source_root / "git", source_root / "harness", source_root / "artifacts")
         for path in directory.rglob("*")
         if path.is_file()
     }
@@ -268,9 +413,10 @@ def test_prepare_only_creates_an_idempotent_apply_run(tmp_path: Path) -> None:
     handoff_path = FileTaskStore(project).event_journal_path(apply_run_id).parent / ref["relative_path"]
     handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
     assert handoff["source_run_id"] == source_run_id
+    assert handoff["code_harness_report_ref"]["report_id"] == source_report["report_id"]
     assert {
         path.relative_to(source_root): path.read_bytes()
-        for directory in (source_root / "git", source_root / "harness")
+        for directory in (source_root / "git", source_root / "harness", source_root / "artifacts")
         for path in directory.rglob("*")
         if path.is_file()
     } == source_evidence

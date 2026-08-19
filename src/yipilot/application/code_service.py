@@ -44,6 +44,7 @@ _POLICY_REVISION = "code-cli-fake-v1"
 _REPLAY_INSTRUCTION = "yipilot replay diagnostic"
 _PLAN_PATH = "artifacts/agent-plan.json"
 _HANDOFF_PATH = "artifacts/prepare-only-handoff.json"
+_VERIFICATION_PATH = "artifacts/prepare-only-verification.json"
 
 
 @dataclass(frozen=True)
@@ -191,11 +192,32 @@ class CodeService:
         self._store.set_run_status(run.run_id, RunStatus.RUNNING)
         journal.append("run.started", {"source_run_id": source_run_id})
         try:
-            workspace, report, approval, tool_runs, artifacts = self._source_handoff_evidence(
+            workspace, report, verification, approval, tool_runs, artifacts = self._source_handoff_evidence(
                 source_run
             )
+            verification_record = FileArtifactStore(self._store).write_bytes(
+                task_id,
+                run.run_id,
+                producer="code_apply_prepare",
+                relative_path=_VERIFICATION_PATH,
+                content=json.dumps(
+                    _verification_value(source_run, report, verification),
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8"),
+                input_fingerprint=verification.input_fingerprint,
+                operation_id=run.operation_id,
+            )
             handoff = _handoff_value(
-                run, source_run, workspace, report, approval, tool_runs, artifacts
+                run,
+                source_run,
+                workspace,
+                report,
+                verification_record,
+                approval,
+                tool_runs,
+                artifacts,
             )
             handoff_record = FileArtifactStore(self._store).write_bytes(
                 task_id,
@@ -228,6 +250,7 @@ class CodeService:
     ) -> tuple[
         PreparedWorkspace,
         HarnessReport,
+        HarnessReport,
         ApprovalRecord,
         list[ToolResult],
         list[ArtifactRecord],
@@ -258,7 +281,7 @@ class CodeService:
         tool_runs = FileToolRunStore(self._store).list(run.task_id, run.run_id)
         if not tool_runs:
             raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "no persisted tool result exists")
-        return workspace, refreshed, approval, tool_runs, artifacts
+        return workspace, report, refreshed, approval, tool_runs, artifacts
 
     def _load_plan(self, run: RunRecord) -> tuple[AgentPlan, ArtifactRecord]:
         artifacts = FileArtifactStore(self._store)
@@ -468,6 +491,7 @@ def _handoff_value(
     source_run: RunRecord,
     workspace: PreparedWorkspace,
     report: HarnessReport,
+    verification_record: ArtifactRecord,
     approval: ApprovalRecord,
     tool_runs: list[ToolResult],
     artifacts: list[ArtifactRecord],
@@ -484,14 +508,8 @@ def _handoff_value(
     return {
         "artifact_refs": [_artifact_ref_value(record) for record in artifacts],
         "approval_refs": [{"approval_id": approval.approval_id, "simulation_only": True}],
-        "code_harness_report_ref": {
-            "input_fingerprint": report_value["input_fingerprint"],
-            "path": (
-                f"tasks/{source_run.task_id}/runs/{source_run.run_id}/"
-                f"harness/{CODE_HARNESS_REPORT_NAME}"
-            ),
-            "report_id": report_value["report_id"],
-        },
+        "code_harness_report_ref": _code_harness_report_ref(source_run, report),
+        "freshness_verification_artifact_ref": _artifact_ref_value(verification_record),
         "git_evidence_refs": git_evidence_refs,
         "operation_id": run.operation_id,
         "prepare_only": True,
@@ -522,6 +540,32 @@ def _handoff_value(
             "path": _workspace_path_value(workspace),
             "repo_alias": workspace.repo_alias,
         },
+    }
+
+
+def _verification_value(
+    source_run: RunRecord, source_report: HarnessReport, verification: HarnessReport
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "source_code_harness_report_ref": _code_harness_report_ref(
+            source_run, source_report
+        ),
+        "verification": verification.model_dump(mode="json"),
+    }
+
+
+def _code_harness_report_ref(
+    source_run: RunRecord, report: HarnessReport
+) -> dict[str, object]:
+    value = report.model_dump(mode="json")
+    return {
+        "input_fingerprint": value["input_fingerprint"],
+        "path": (
+            f"tasks/{source_run.task_id}/runs/{source_run.run_id}/"
+            f"harness/{CODE_HARNESS_REPORT_NAME}"
+        ),
+        "report_id": value["report_id"],
     }
 
 
