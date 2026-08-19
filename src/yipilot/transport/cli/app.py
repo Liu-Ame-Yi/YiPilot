@@ -9,6 +9,7 @@ import typer
 from pydantic import BaseModel
 
 from yipilot import __version__
+from yipilot.application.code_service import CodeService
 from yipilot.application.project_service import ProjectService
 from yipilot.application.repo_service import RepoMetadata, RepoService
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
@@ -27,8 +28,10 @@ task_app = typer.Typer(no_args_is_help=True)
 run_app = typer.Typer(no_args_is_help=True)
 repo_app = typer.Typer(no_args_is_help=True)
 workspace_app = typer.Typer(no_args_is_help=True)
+code_app = typer.Typer(no_args_is_help=True)
 app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
+app.add_typer(code_app, name="code")
 task_app.add_typer(repo_app, name="repo")
 task_app.add_typer(workspace_app, name="workspace")
 
@@ -147,6 +150,52 @@ def workspace_prepare(
             output,
             _workspace_value(workspace),
             f"Prepared workspace {workspace.path}.",
+        )
+
+
+@code_app.command("generate")
+def code_generate(
+    task_id: Annotated[str, typer.Option("--taskid")],
+    alias: Annotated[str, typer.Option("--alias")],
+    instruction: Annotated[str, typer.Option("--instruction")],
+    planner: Annotated[str, typer.Option("--planner")],
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    result = _invoke(
+        output, lambda: CodeService(project).generate(task_id, alias, instruction, planner)
+    )
+    if result is not None:
+        _render_value(
+            output,
+            result.value(),
+            f"Code generation run {result.run_id} is {result.status}.",
+        )
+        if result.status != "succeeded":
+            raise typer.Exit(code=1)
+
+
+@code_app.command("apply")
+def code_apply(
+    task_id: Annotated[str, typer.Option("--taskid")],
+    run_id: Annotated[str, typer.Option("--run-id")],
+    prepare_only: Annotated[bool, typer.Option("--prepare-only")] = False,
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    if not prepare_only:
+        _render_value(
+            output,
+            {"code": "PREPARE_ONLY_REQUIRED", "message": "code apply only supports --prepare-only"},
+            "PREPARE_ONLY_REQUIRED: code apply only supports --prepare-only",
+        )
+        raise typer.Exit(code=1)
+    result = _invoke(output, lambda: CodeService(project).prepare_only(task_id, run_id))
+    if result is not None:
+        _render_value(
+            output,
+            result.value(),
+            f"Prepared handoff for run {result.run_id}; no Git apply was performed.",
         )
 
 

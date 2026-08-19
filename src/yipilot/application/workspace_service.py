@@ -1,5 +1,6 @@
 """Task-owned Git worktree preparation."""
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -55,7 +56,7 @@ class WorkspaceService:
         if not isinstance(run_id, str) or _RUN_ID.fullmatch(run_id) is None:
             raise DomainError("WORKSPACE_RUN_INVALID", "workspace run id is invalid")
         metadata = self._repos.get_metadata(task_id, repo_alias)
-        branch = f"yipilot/task-{task_id}/{run_id}"
+        branch = f"yipilot/task-{task_id}/{_branch_component(run_id)}"
         repo_root = project_path(
             self._project_root,
             ".yipilot",
@@ -181,3 +182,10 @@ class WorkspaceService:
 
 def _timestamp() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _branch_component(run_id: str) -> str:
+    """Keep UUID-backed branches below Windows' Git ref path limit."""
+    if len(run_id) <= 16:
+        return run_id
+    return hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]

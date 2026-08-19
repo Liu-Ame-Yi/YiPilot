@@ -61,6 +61,7 @@ class ApprovalRecord(BaseModel):
     policy_revision: NonEmptyString
     decision: ApprovalDecision
     decided_at: datetime
+    simulation_only: bool = False
 
     @field_validator("decided_at")
     @classmethod
