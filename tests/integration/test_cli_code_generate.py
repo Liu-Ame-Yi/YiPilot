@@ -2,8 +2,10 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.task_store import FileTaskStore
 from yipilot.transport.cli.app import app
 
@@ -54,8 +56,11 @@ def _generate(project: Path, instruction: str = "offline fake diagnostic") -> di
     return value
 
 
-def test_fake_code_generate_is_auditable_and_prepare_only_leaves_git_unchanged(tmp_path: Path) -> None:
+def test_fake_code_generate_is_auditable_and_prepare_only_leaves_git_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     project, source = _project_with_repository(tmp_path)
+    monkeypatch.setenv("YIPILOT_TEST_SECRET", "environment-secret")
     source_head = _git(source, "rev-parse", "HEAD")
     generated = _generate(project, "Authorization: Bearer instruction-secret")
     run_id = str(generated["run_id"])
@@ -84,13 +89,15 @@ def test_fake_code_generate_is_auditable_and_prepare_only_leaves_git_unchanged(t
     assert applied.exit_code == 0
     value = json.loads(applied.stdout)
     handoff_ref = value["handoff_artifact_ref"]
-    handoff_path = store.event_journal_path(run_id).parent / handoff_ref["relative_path"]
+    apply_run_id = str(value["run_id"])
+    handoff_path = store.event_journal_path(apply_run_id).parent / handoff_ref["relative_path"]
     handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
     assert handoff["prepare_only"] is True
     assert handoff["approval_refs"] == [{"approval_id": "fake-read-only-simulation", "simulation_only": True}]
     assert handoff["git_evidence_refs"]
     assert "instruction-secret" not in handoff_path.read_text(encoding="utf-8")
     assert "argv" not in handoff_path.read_text(encoding="utf-8")
+    assert "environment-secret" not in handoff_path.read_text(encoding="utf-8")
     assert _git(source, "rev-parse", "HEAD") == source_head
     assert _git(source, "status", "--porcelain") == ""
 
@@ -151,6 +158,40 @@ def test_prepare_only_rejects_missing_approval_tampered_evidence_and_wrong_run(t
     assert wrong_run.exit_code == 1
     assert json.loads(wrong_run.stdout)["code"] == "CODE_HANDOFF_PRECONDITION_FAILED"
 
+    assert runner.invoke(
+        app, ["task", "init", "--project", str(project), "--taskid", "1002"]
+    ).exit_code == 0
+    mismatched = runner.invoke(
+        app,
+        [
+            "code", "apply", "--project", str(project), "--taskid", "1002", "--run-id", run_id,
+            "--prepare-only", "--output", "json",
+        ],
+    )
+    assert mismatched.exit_code == 1
+    assert json.loads(mismatched.stdout)["code"] == "RUN_NOT_FOUND"
+
+
+def test_prepare_only_rejects_stale_approval_without_a_handoff(tmp_path: Path) -> None:
+    project, _source = _project_with_repository(tmp_path)
+    generated = _generate(project)
+    run_id = str(generated["run_id"])
+    store = FileTaskStore(project)
+    run_root = store.event_journal_path(run_id).parent
+    approval_path = run_root / "approvals" / "fake-read-only-simulation.json"
+    approval = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval["policy_revision"] = "stale-policy"
+    approval_path.write_text(json.dumps(approval), encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "code", "apply", "--project", str(project), "--taskid", "1001", "--run-id", run_id,
+            "--prepare-only", "--output", "json",
+        ],
+    )
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["code"] == "APPROVAL_STALE"
+
 
 def test_prepare_only_rejects_tampered_tool_evidence_without_a_handoff(tmp_path: Path) -> None:
     project, _source = _project_with_repository(tmp_path)
@@ -171,3 +212,49 @@ def test_prepare_only_rejects_tampered_tool_evidence_without_a_handoff(tmp_path:
     assert result.exit_code == 1
     assert json.loads(result.stdout)["code"] == "CODE_HARNESS_FAILED"
     assert not (run_root / "artifacts" / "prepare-only-handoff.json").exists()
+
+
+def test_code_generate_uses_a_distinct_workspace_for_each_run(tmp_path: Path) -> None:
+    project, source = _project_with_repository(tmp_path)
+    first = _generate(project, "first fake diagnostic")
+    second = _generate(project, "second fake diagnostic")
+    first_run = str(first["run_id"])
+    second_run = str(second["run_id"])
+    first_plan = first["plan_artifact_ref"]
+    second_plan = second["plan_artifact_ref"]
+    assert first_run != second_run
+    assert first_plan["relative_path"] == second_plan["relative_path"]
+    first_workspace = project / ".yipilot/tasks/1001/repos/sample/workspaces" / first_run
+    second_workspace = project / ".yipilot/tasks/1001/repos/sample/workspaces" / second_run
+    assert first_workspace.is_dir()
+    assert second_workspace.is_dir()
+    assert first_workspace != second_workspace
+    assert _git(source, "status", "--porcelain") == ""
+
+
+def test_prepare_only_creates_an_idempotent_apply_run(tmp_path: Path) -> None:
+    project, _source = _project_with_repository(tmp_path)
+    source = _generate(project)
+    source_run_id = str(source["run_id"])
+    command = [
+        "code", "apply", "--project", str(project), "--taskid", "1001", "--run-id", source_run_id,
+        "--prepare-only", "--request-id", "handoff-1001", "--output", "json",
+    ]
+    first = runner.invoke(app, command)
+    assert first.exit_code == 0
+    first_value = json.loads(first.stdout)
+    apply_run_id = str(first_value["run_id"])
+    assert apply_run_id != source_run_id
+    ref = first_value["handoff_artifact_ref"]
+    artifacts = FileArtifactStore(FileTaskStore(project))
+    artifacts.verify("1001", apply_run_id, ref["artifact_id"])
+
+    second = runner.invoke(app, command)
+    assert second.exit_code == 0
+    second_value = json.loads(second.stdout)
+    assert second_value["run_id"] == apply_run_id
+    assert second_value["handoff_artifact_ref"] == ref
+    artifacts.verify("1001", apply_run_id, ref["artifact_id"])
+    handoff_path = FileTaskStore(project).event_journal_path(apply_run_id).parent / ref["relative_path"]
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    assert handoff["source_run_id"] == source_run_id

@@ -48,7 +48,7 @@ diagnostic plan:
 ```powershell
 uv run yipilot code generate --project C:\work\demo --taskid 1001 --alias sample --instruction "check the local workspace" --planner fake --output json
 uv run yipilot run watch --project C:\work\demo --run-id <run-id-from-json> --after-sequence 0 --output jsonl
-uv run yipilot code apply --project C:\work\demo --taskid 1001 --run-id <run-id-from-json> --prepare-only --output json
+uv run yipilot code apply --project C:\work\demo --taskid 1001 --run-id <run-id-from-json> --prepare-only --request-id handoff-1001 --output json
 ```
 
 `fake` never starts a subprocess or writes project source files. It uses one
@@ -67,7 +67,7 @@ Any other replay instruction produces a failed Run with
 `PLANNER_REPLAY_NOT_FOUND`; no tool is executed. `code apply` has no mode other
 than `--prepare-only`. It revalidates the saved CodeHarness report, approval,
 ToolRuns, Artifacts, workspace and Git evidence, then writes the run-scoped
-handoff at `.yipilot/tasks/<task-id>/runs/<run-id>/artifacts/prepare-only-handoff.json`.
+handoff at `.yipilot/tasks/<task-id>/runs/<apply-run-id>/artifacts/prepare-only-handoff.json`.
 It does not commit, push, merge, reset, alter a remote, or apply the diff.
 
 The handoff contains identifiers, workspace metadata, Git and evidence refs,
@@ -76,6 +76,10 @@ simulation-only fake approval is evidence for an offline rehearsal, never a
 human approval for a real write. Future `host_trusted` execution has the full
 permissions of the launching user and must require an explicit, fresh human
 approval; it is not enabled by these commands.
+
+`--request-id` makes `code generate` and `code apply --prepare-only` idempotent:
+repeat the same request ID to retrieve the same durable Run and handoff; choose
+a new ID only to make a new attempt.
 
 ## Local state and scope boundary
 

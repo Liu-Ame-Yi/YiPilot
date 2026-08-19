@@ -22,9 +22,24 @@ def project_path(root: Path, *parts: str) -> Path:
         part_path = Path(part)
         if part_path.is_absolute() or ".." in part_path.parts:
             raise DomainError("PATH_DENIED", "path escapes project root")
-    candidate = resolved_root.joinpath(*parts).resolve(strict=False)
-    if candidate != resolved_root and resolved_root not in candidate.parents:
-        raise DomainError("PATH_DENIED", "path escapes project root")
+    candidate = resolved_root.joinpath(*parts)
+    if candidate == resolved_root:
+        return resolved_root
+    if candidate.exists() or candidate.is_symlink():
+        resolved_candidate = candidate.resolve(strict=True)
+        if (
+            resolved_candidate != resolved_root
+            and resolved_root not in resolved_candidate.parents
+        ):
+            raise DomainError("PATH_DENIED", "path escapes project root")
+        return candidate
+    parent = candidate.parent
+    while parent != resolved_root:
+        if parent.exists():
+            resolved_parent = parent.resolve(strict=True)
+            if resolved_parent != resolved_root and resolved_root not in resolved_parent.parents:
+                raise DomainError("PATH_DENIED", "path escapes project root")
+        parent = parent.parent
     return candidate
 
 

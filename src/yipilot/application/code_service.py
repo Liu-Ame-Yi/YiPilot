@@ -93,7 +93,12 @@ class CodeService:
         self._store = FileTaskStore(self._project_root)
 
     def generate(
-        self, task_id: str, alias: str, instruction: str, planner_mode: str
+        self,
+        task_id: str,
+        alias: str,
+        instruction: str,
+        planner_mode: str,
+        request_id: str | None = None,
     ) -> CodeGenerateResult:
         if not instruction:
             raise DomainError("INSTRUCTION_INVALID", "instruction is required")
@@ -101,16 +106,21 @@ class CodeService:
             raise DomainError("PLANNER_MODE_INVALID", "planner must be fake or replay")
         self._store.get_task(task_id)
         instruction_fingerprint = _sha256(instruction)
+        idempotency_key = request_id or instruction_fingerprint
         operation = self._store.create_operation(
             task_id,
             "code_generate",
-            f"code-generate:{task_id}:{alias}:{planner_mode}:{instruction_fingerprint}",
+            f"code-generate:{task_id}:{alias}:{planner_mode}:{idempotency_key}",
             {
                 "alias": alias,
                 "instruction_fingerprint": instruction_fingerprint,
                 "planner": planner_mode,
+                "request_id": idempotency_key,
             },
         )
+        existing = _operation_run(self._store, task_id, operation.operation_id, "code_generate")
+        if existing is not None:
+            return _generate_result(self._store, existing)
         run = self._store.create_run(task_id, operation.operation_id, "code_generate")
         journal = _journal(self._store, run)
         policy = _fake_policy()
@@ -144,28 +154,78 @@ class CodeService:
                 else lambda: False
             ),
         )
-        return CodeGenerateResult(
+        return _generate_result(self._store, result.run)
+
+    def prepare_only(
+        self, task_id: str, source_run_id: str, request_id: str | None = None
+    ) -> PrepareOnlyResult:
+        source_run = self._store.get_run(task_id, source_run_id)
+        if source_run.status is not RunStatus.SUCCEEDED or source_run.stage != "code_generate":
+            raise DomainError("CODE_HANDOFF_PRECONDITION_FAILED", "run is not a successful code generation")
+        workspace, report, approval, tool_runs, artifacts = self._source_handoff_evidence(source_run)
+        idempotency_key = request_id or source_run_id
+        operation = self._store.create_operation(
+            task_id,
+            "code_apply_prepare",
+            f"code-apply-prepare:{source_run_id}:{idempotency_key}",
+            {"request_id": idempotency_key, "source_run_id": source_run_id},
+        )
+        existing = _operation_run(
+            self._store, task_id, operation.operation_id, "code_apply_prepare"
+        )
+        if existing is not None:
+            if existing.status is not RunStatus.SUCCEEDED:
+                raise DomainError("CODE_HANDOFF_PRECONDITION_FAILED", "apply preparation is not complete")
+            return _prepare_result(self._store, existing)
+
+        run = self._store.create_run(task_id, operation.operation_id, "code_apply_prepare")
+        journal = _journal(self._store, run)
+        self._store.set_run_status(run.run_id, RunStatus.RUNNING)
+        journal.append("run.started", {"source_run_id": source_run_id})
+        try:
+            handoff = _handoff_value(
+                run, source_run, workspace, report, approval, tool_runs, artifacts
+            )
+            handoff_record = FileArtifactStore(self._store).write_bytes(
+                task_id,
+                run.run_id,
+                producer="code_apply_prepare",
+                relative_path=_HANDOFF_PATH,
+                content=json.dumps(
+                    handoff, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8"),
+                input_fingerprint=report.input_fingerprint,
+                operation_id=run.operation_id,
+            )
+            journal.append("stage.progress", {"handoff_artifact_id": handoff_record.artifact_id})
+            completed = self._store.set_run_status(run.run_id, RunStatus.SUCCEEDED)
+            journal.append("run.succeeded", {})
+        except DomainError as error:
+            self._store.set_run_status(run.run_id, RunStatus.FAILED, error_code=error.code)
+            journal.append("run.failed", {"error_code": error.code})
+            raise
+        return PrepareOnlyResult(
             task_id=task_id,
-            operation_id=operation.operation_id,
-            run_id=run.run_id,
-            status=result.run.status.value,
-            error_code=result.run.error_code,
-            plan_artifact_ref=(
-                result.plan_artifact_ref.model_dump(mode="json")
-                if result.plan_artifact_ref is not None
-                else None
-            ),
+            operation_id=completed.operation_id,
+            run_id=completed.run_id,
+            status=completed.status.value,
+            handoff_artifact_ref=_artifact_ref_value(handoff_record),
         )
 
-    def prepare_only(self, task_id: str, run_id: str) -> PrepareOnlyResult:
-        run = self._store.get_run(task_id, run_id)
-        if run.status is not RunStatus.SUCCEEDED or run.stage != "code_generate":
-            raise DomainError("CODE_HANDOFF_PRECONDITION_FAILED", "run is not a successful code generation")
-        report = HarnessReportStore(self._store).load(run_id, CODE_HARNESS_REPORT_NAME)
+    def _source_handoff_evidence(
+        self, run: RunRecord
+    ) -> tuple[
+        PreparedWorkspace,
+        HarnessReport,
+        ApprovalRecord,
+        list[ToolResult],
+        list[ArtifactRecord],
+    ]:
+        report = HarnessReportStore(self._store).load(run.run_id, CODE_HARNESS_REPORT_NAME)
         if (
-            report.task_id != task_id
+            report.task_id != run.task_id
             or report.operation_id != run.operation_id
-            or report.run_id != run_id
+            or report.run_id != run.run_id
             or report.stage != run.stage
             or report.harness_name != "code_harness"
             or report.status is not HarnessStatus.PASSED
@@ -174,7 +234,7 @@ class CodeService:
         plan, _plan_record = self._load_plan(run)
         request = _require_fake_request(plan)
         workspace = WorkspaceService(self._project_root, GitRunner()).prepare(
-            task_id, _alias_from_request(request), run_id
+            run.task_id, _alias_from_request(request), run.run_id
         )
         policy = _fake_policy()
         approval = _simulation_approval(self._store, run, policy, request)
@@ -183,27 +243,11 @@ class CodeService:
         ).run()
         if refreshed.status is not HarnessStatus.PASSED:
             raise DomainError("CODE_HARNESS_FAILED", "code harness evidence is stale or has failed")
-        artifacts = _verified_artifacts(self._store, task_id, run_id)
-        tool_runs = FileToolRunStore(self._store).list(task_id, run_id)
+        artifacts = _verified_artifacts(self._store, run.task_id, run.run_id)
+        tool_runs = FileToolRunStore(self._store).list(run.task_id, run.run_id)
         if not tool_runs:
             raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "no persisted tool result exists")
-        handoff = _handoff_value(run, workspace, refreshed, approval, tool_runs, artifacts)
-        handoff_record = FileArtifactStore(self._store).write_bytes(
-            task_id,
-            run_id,
-            producer="code_apply_prepare",
-            relative_path=_HANDOFF_PATH,
-            content=json.dumps(handoff, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8"),
-            input_fingerprint=refreshed.input_fingerprint,
-            operation_id=run.operation_id,
-        )
-        return PrepareOnlyResult(
-            task_id=task_id,
-            operation_id=run.operation_id,
-            run_id=run_id,
-            status=run.status.value,
-            handoff_artifact_ref=_artifact_ref_value(handoff_record),
-        )
+        return workspace, refreshed, approval, tool_runs, artifacts
 
     def _load_plan(self, run: RunRecord) -> tuple[AgentPlan, ArtifactRecord]:
         artifacts = FileArtifactStore(self._store)
@@ -219,6 +263,66 @@ class CodeService:
         if (plan.task_id, plan.operation_id, plan.run_id) != (run.task_id, run.operation_id, run.run_id):
             raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "agent plan does not belong to the Run")
         return plan, record
+
+
+def _operation_run(
+    store: FileTaskStore, task_id: str, operation_id: str, stage: str
+) -> RunRecord | None:
+    runs = [
+        run
+        for run in store.list_runs(task_id)
+        if run.operation_id == operation_id and run.stage == stage
+    ]
+    if len(runs) > 1:
+        raise DomainError("STORAGE_INVALID", "operation has multiple runs for one idempotency key")
+    return runs[0] if runs else None
+
+
+def _generate_result(store: FileTaskStore, run: RunRecord) -> CodeGenerateResult:
+    records = [
+        record
+        for record in FileArtifactStore(store).list(run.task_id, run.run_id)
+        if record.relative_path == _PLAN_PATH
+    ]
+    plan_ref = _plan_ref(records[0]) if len(records) == 1 else None
+    return CodeGenerateResult(
+        task_id=run.task_id,
+        operation_id=run.operation_id,
+        run_id=run.run_id,
+        status=run.status.value,
+        error_code=run.error_code,
+        plan_artifact_ref=plan_ref,
+    )
+
+
+def _prepare_result(store: FileTaskStore, run: RunRecord) -> PrepareOnlyResult:
+    records = [
+        record
+        for record in FileArtifactStore(store).list(run.task_id, run.run_id)
+        if record.relative_path == _HANDOFF_PATH
+    ]
+    if len(records) != 1:
+        raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "prepared handoff artifact is missing")
+    record = FileArtifactStore(store).verify(run.task_id, run.run_id, records[0].artifact_id)
+    return PrepareOnlyResult(
+        task_id=run.task_id,
+        operation_id=run.operation_id,
+        run_id=run.run_id,
+        status=run.status.value,
+        handoff_artifact_ref=_artifact_ref_value(record),
+    )
+
+
+def _plan_ref(record: ArtifactRecord) -> dict[str, object]:
+    return {
+        "artifact_id": record.artifact_id,
+        "operation_id": record.operation_id,
+        "relative_path": record.relative_path,
+        "run_id": record.run_id,
+        "schema_version": 1,
+        "sha256": record.sha256,
+        "task_id": record.task_id,
+    }
 
 
 def _fake_policy() -> ExecutionPolicy:
@@ -242,9 +346,7 @@ def _plan(run: RunRecord, workspace: PreparedWorkspace, instruction_fingerprint:
         task_id=run.task_id,
         operation_id=run.operation_id,
         run_id=run.run_id,
-        workspace_relative_path=(
-            f".yipilot/tasks/{run.task_id}/repos/{workspace.repo_alias}/workspace"
-        ),
+        workspace_relative_path=_workspace_path_value(workspace),
         tool_id=_FAKE_TOOL_ID,
         argv=_FAKE_ARGV,
         timeout_seconds=1,
@@ -352,6 +454,7 @@ def _verified_artifacts(store: FileTaskStore, task_id: str, run_id: str) -> list
 
 def _handoff_value(
     run: RunRecord,
+    source_run: RunRecord,
     workspace: PreparedWorkspace,
     report: HarnessReport,
     approval: ApprovalRecord,
@@ -372,7 +475,10 @@ def _handoff_value(
         "approval_refs": [{"approval_id": approval.approval_id, "simulation_only": True}],
         "code_harness_report_ref": {
             "input_fingerprint": report_value["input_fingerprint"],
-            "path": f"harness/{CODE_HARNESS_REPORT_NAME}",
+            "path": (
+                f"tasks/{source_run.task_id}/runs/{source_run.run_id}/"
+                f"harness/{CODE_HARNESS_REPORT_NAME}"
+            ),
             "report_id": report_value["report_id"],
         },
         "git_evidence_refs": git_evidence_refs,
@@ -385,10 +491,15 @@ def _handoff_value(
         ],
         "run_id": run.run_id,
         "schema_version": 1,
+        "source_operation_id": source_run.operation_id,
+        "source_run_id": source_run.run_id,
         "task_id": run.task_id,
         "tool_run_refs": [
             {
-                "path": f"tool-runs/{result.tool_run_id}.json",
+                "path": (
+                    f"tasks/{source_run.task_id}/runs/{source_run.run_id}/"
+                    f"tool-runs/{result.tool_run_id}.json"
+                ),
                 "status": result.status.value,
                 "tool_run_id": result.tool_run_id,
             }
@@ -397,7 +508,7 @@ def _handoff_value(
         "workspace": {
             "base_sha": workspace.base_sha,
             "branch": workspace.branch,
-            "path": f".yipilot/tasks/{workspace.task_id}/repos/{workspace.repo_alias}/workspace",
+            "path": _workspace_path_value(workspace),
             "repo_alias": workspace.repo_alias,
         },
     }
@@ -410,6 +521,13 @@ def _artifact_ref_value(record: ArtifactRecord) -> dict[str, object]:
         "relative_path": record.relative_path,
         "sha256": record.sha256,
     }
+
+
+def _workspace_path_value(workspace: PreparedWorkspace) -> str:
+    return (
+        f".yipilot/tasks/{workspace.task_id}/repos/{workspace.repo_alias}/"
+        f"workspaces/{workspace.run_id}"
+    )
 
 
 def _journal(store: FileTaskStore, run: RunRecord) -> JsonlEventJournal:

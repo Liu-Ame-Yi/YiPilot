@@ -65,8 +65,10 @@ class WorkspaceService:
             "repos",
             repo_alias,
         )
-        workspace_path = project_path(repo_root, "workspace")
-        manifest_path = project_path(repo_root, "workspace-manifest.json")
+        workspaces_root = project_path(repo_root, "workspaces")
+        workspaces_root.mkdir(exist_ok=True)
+        workspace_path = project_path(workspaces_root, run_id)
+        manifest_path = project_path(workspaces_root, f"{run_id}.json")
         relative_workspace = workspace_path.relative_to(self._project_root).as_posix()
         lock_path = project_path(
             self._project_root,

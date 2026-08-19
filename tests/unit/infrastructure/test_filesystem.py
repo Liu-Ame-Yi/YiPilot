@@ -24,6 +24,18 @@ def test_project_path_rejects_absolute_path(tmp_path: Path) -> None:
         project_path(tmp_path, str((tmp_path.parent / "outside.json").resolve()))
 
 
+def test_project_path_rejects_existing_symlink_escape(tmp_path: Path) -> None:
+    outside = tmp_path.parent / "outside"
+    outside.mkdir(exist_ok=True)
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+    with pytest.raises(DomainError, match="PATH_DENIED"):
+        project_path(tmp_path, "link", "evidence.json")
+
+
 @given(st.lists(st.sampled_from([".", "..", "safe", "nested"]), min_size=1, max_size=6))
 def test_project_path_never_returns_a_path_outside_root(
     parts: list[str],

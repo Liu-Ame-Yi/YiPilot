@@ -173,12 +173,20 @@ class ToolRequest(BaseModel):
             self.task_id,
             "repos",
         )
-        if (
-            len(workspace_parts) != 6
-            or workspace_parts[:4] != expected_workspace_prefix
-            or not workspace_parts[4]
-            or workspace_parts[5] != "workspace"
-        ):
+        legacy_workspace = (
+            len(workspace_parts) == 6
+            and workspace_parts[:4] == expected_workspace_prefix
+            and bool(workspace_parts[4])
+            and workspace_parts[5] == "workspace"
+        )
+        run_workspace = (
+            len(workspace_parts) == 7
+            and workspace_parts[:4] == expected_workspace_prefix
+            and bool(workspace_parts[4])
+            and workspace_parts[5] == "workspaces"
+            and workspace_parts[6] == self.run_id
+        )
+        if not legacy_workspace and not run_workspace:
             raise ValueError("workspace path must identify its Task workspace")
         association = (self.task_id, self.operation_id, self.run_id)
         if any(

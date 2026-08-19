@@ -60,7 +60,7 @@ class GitWorkspaceHarness:
         self._workspace = workspace
         self._git = git_runner or GitRunner()
         self._workspace_git_env: dict[str, str] | None = None
-        self._project_root = workspace.path.parents[5].resolve(strict=True)
+        self._project_root = _project_root(workspace.path)
         self.evidence_dir = project_path(
             self._project_root,
             ".yipilot",
@@ -242,10 +242,10 @@ class GitWorkspaceHarness:
                 (self.evidence_dir / name).write_text(value, encoding="utf-8")
 
     def _check_manifest(self) -> tuple[dict[str, JsonValue] | None, HarnessCheck]:
-        path = self._workspace.path.parent / "workspace-manifest.json"
+        path = _manifest_path(self._workspace)
         evidence_ref = (
             f"tasks/{self._workspace.task_id}/repos/"
-            f"{self._workspace.repo_alias}/workspace-manifest.json"
+            f"{self._workspace.repo_alias}/{path.relative_to(self._project_root / '.yipilot' / 'tasks' / self._workspace.task_id / 'repos' / self._workspace.repo_alias).as_posix()}"
         )
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
@@ -449,7 +449,7 @@ class GitWorkspaceHarness:
         )
 
     def _source_repository(self) -> _SourceRepository:
-        metadata_path = self._workspace.path.parent / "metadata.json"
+        metadata_path = _repo_root(self._workspace.path) / "metadata.json"
         try:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -664,6 +664,25 @@ class GitWorkspaceHarness:
             f"tasks/{self._workspace.task_id}/runs/"
             f"{self._workspace.run_id}/git/{name}"
         )
+
+
+def _project_root(workspace_path: Path) -> Path:
+    for ancestor in workspace_path.parents:
+        if ancestor.name == ".yipilot":
+            return ancestor.parent.resolve(strict=True)
+    raise DomainError("PATH_DENIED", "workspace is outside a Yipilot project")
+
+
+def _repo_root(workspace_path: Path) -> Path:
+    if workspace_path.parent.name == "workspaces":
+        return workspace_path.parents[1]
+    return workspace_path.parent
+
+
+def _manifest_path(workspace: PreparedWorkspace) -> Path:
+    if workspace.path.parent.name == "workspaces":
+        return workspace.path.parent / f"{workspace.run_id}.json"
+    return workspace.path.parent / "workspace-manifest.json"
 
 
 def _json_mapping(value: object) -> dict[str, JsonValue] | None:

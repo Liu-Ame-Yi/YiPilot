@@ -50,16 +50,24 @@ def _repository_state(repository: Path) -> tuple[str, str]:
     )
 
 
+def _manifest_path(workspace: PreparedWorkspace) -> Path:
+    return workspace.path.parent / f"{workspace.run_id}.json"
+
+
+def _metadata_path(workspace: PreparedWorkspace) -> Path:
+    return workspace.path.parents[1] / "metadata.json"
+
+
 def _retarget_source(
     workspace: PreparedWorkspace, normalized_url: str
 ) -> PreparedWorkspace:
     repo_hash = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()
-    metadata_path = workspace.path.parent / "metadata.json"
+    metadata_path = _metadata_path(workspace)
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["normalized_url"] = normalized_url
     metadata["url_hash"] = repo_hash
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
-    manifest_path = workspace.path.parent / "workspace-manifest.json"
+    manifest_path = _manifest_path(workspace)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["repo_hash"] = repo_hash
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -800,7 +808,7 @@ def test_foreign_manifest_is_git_workspace_001_failure(
     manifest_field: str,
     foreign_value: str,
 ) -> None:
-    manifest_path = prepared_workspace.path.parent / "workspace-manifest.json"
+    manifest_path = _manifest_path(prepared_workspace)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest[manifest_field] = foreign_value
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -814,7 +822,7 @@ def test_foreign_manifest_is_git_workspace_001_failure(
 def test_invalid_manifest_encoding_is_git_workspace_001_failure(
     prepared_workspace: PreparedWorkspace,
 ) -> None:
-    manifest_path = prepared_workspace.path.parent / "workspace-manifest.json"
+    manifest_path = _manifest_path(prepared_workspace)
     manifest_path.write_bytes(b"\xff")
 
     report = GitWorkspaceHarness(prepared_workspace).run()
@@ -1117,7 +1125,7 @@ def test_source_checkout_change_is_git_workspace_004_failure(
 def test_invalid_local_repo_metadata_is_git_workspace_004_failure(
     prepared_workspace: PreparedWorkspace,
 ) -> None:
-    metadata_path = prepared_workspace.path.parent / "metadata.json"
+    metadata_path = _metadata_path(prepared_workspace)
     metadata_path.write_bytes(b"\xff")
 
     report = GitWorkspaceHarness(prepared_workspace).run()
@@ -1129,7 +1137,7 @@ def test_invalid_local_repo_metadata_is_git_workspace_004_failure(
 def test_tampered_local_repo_metadata_cannot_disable_git_workspace_004(
     prepared_workspace: PreparedWorkspace,
 ) -> None:
-    metadata_path = prepared_workspace.path.parent / "metadata.json"
+    metadata_path = _metadata_path(prepared_workspace)
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["normalized_url"] = "https://example.invalid/repo.git"
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")

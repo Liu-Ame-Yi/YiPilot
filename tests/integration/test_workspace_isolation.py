@@ -68,7 +68,8 @@ def test_task_worktrees_are_distinct_and_do_not_change_source_checkout(
         / "1001"
         / "repos"
         / "sample"
-        / "workspace"
+        / "workspaces"
+        / "run-a"
     )
     assert second.path == (
         prepared_project
@@ -77,7 +78,8 @@ def test_task_worktrees_are_distinct_and_do_not_change_source_checkout(
         / "1002"
         / "repos"
         / "sample"
-        / "workspace"
+        / "workspaces"
+        / "run-b"
     )
     assert _git(first.path, "branch", "--show-current").stdout.strip() == (
         "yipilot/task-1001/run-a"
@@ -102,7 +104,8 @@ def test_workspace_manifest_records_portable_identity_and_base(
         / "1001"
         / "repos"
         / "sample"
-        / "workspace-manifest.json"
+        / "workspaces"
+        / "run-a.json"
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
@@ -115,7 +118,7 @@ def test_workspace_manifest_records_portable_identity_and_base(
         "run_id": "run-a",
         "schema_version": 1,
         "task_id": "1001",
-        "workspace_path": ".yipilot/tasks/1001/repos/sample/workspace",
+        "workspace_path": ".yipilot/tasks/1001/repos/sample/workspaces/run-a",
     }
     assert not Path(manifest["workspace_path"]).is_absolute()
     assert workspace.base_sha == _git(workspace.path, "rev-parse", "HEAD").stdout.strip()
@@ -212,7 +215,8 @@ def test_workspace_manifest_for_another_owner_is_never_reused(
         / "1001"
         / "repos"
         / "sample"
-        / "workspace-manifest.json"
+        / "workspaces"
+        / "run-a.json"
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest[field] = value

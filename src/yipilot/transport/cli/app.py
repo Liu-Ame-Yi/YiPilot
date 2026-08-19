@@ -159,11 +159,15 @@ def code_generate(
     alias: Annotated[str, typer.Option("--alias")],
     instruction: Annotated[str, typer.Option("--instruction")],
     planner: Annotated[str, typer.Option("--planner")],
+    request_id: Annotated[str | None, typer.Option("--request-id")] = None,
     project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
     result = _invoke(
-        output, lambda: CodeService(project).generate(task_id, alias, instruction, planner)
+        output,
+        lambda: CodeService(project).generate(
+            task_id, alias, instruction, planner, request_id
+        ),
     )
     if result is not None:
         _render_value(
@@ -180,6 +184,7 @@ def code_apply(
     task_id: Annotated[str, typer.Option("--taskid")],
     run_id: Annotated[str, typer.Option("--run-id")],
     prepare_only: Annotated[bool, typer.Option("--prepare-only")] = False,
+    request_id: Annotated[str | None, typer.Option("--request-id")] = None,
     project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
@@ -190,7 +195,9 @@ def code_apply(
             "PREPARE_ONLY_REQUIRED: code apply only supports --prepare-only",
         )
         raise typer.Exit(code=1)
-    result = _invoke(output, lambda: CodeService(project).prepare_only(task_id, run_id))
+    result = _invoke(
+        output, lambda: CodeService(project).prepare_only(task_id, run_id, request_id)
+    )
     if result is not None:
         _render_value(
             output,
