@@ -59,18 +59,29 @@ class CodeHarness:
         self._reports = HarnessReportStore(self._store)
 
     def run(self) -> HarnessReport:
+        return self._evaluate(persist=True)
+
+    def verify(self) -> HarnessReport:
+        """Revalidate the current evidence without overwriting source reports."""
+        return self._evaluate(persist=False)
+
+    def _evaluate(self, *, persist: bool) -> HarnessReport:
         started_at = datetime.now(UTC)
         run = self._store.get_run(self._task_id, self._run_id)
         approval_check = self._check_approval(run.operation_id)
         tool_runs_check = self._check_tool_runs()
-        git_report = GitWorkspaceHarness(self._workspace).run()
+        git_harness = GitWorkspaceHarness(self._workspace)
+        git_report = git_harness.run() if persist else git_harness.verify()
         workspace_check = _derived_check(
             "CODE-WORKSPACE-001", git_report, "GIT-WORKSPACE-001", "workspace manifest matches Task and Run"
         )
         git_check = _git_check(git_report)
-        integrity_report = TaskIntegrityHarness(
+        integrity_harness = TaskIntegrityHarness(
             self._project_root, self._task_id, self._run_id
-        ).run()
+        )
+        integrity_report = (
+            integrity_harness.run() if persist else integrity_harness.verify()
+        )
         integrity_check = HarnessCheck(
             id="CODE-TASK-INTEGRITY-001",
             status=(HarnessStatus.PASSED if integrity_report.status is HarnessStatus.PASSED else HarnessStatus.FAILED),
@@ -93,7 +104,8 @@ class CodeHarness:
             input_fingerprint=_fingerprint(inputs), inputs=inputs, status=status, checks=checks,
             summary=f"code harness completed with status {status}",
         )
-        self._reports.save(report, CODE_HARNESS_REPORT_NAME)
+        if persist:
+            self._reports.save(report, CODE_HARNESS_REPORT_NAME)
         return report
 
     def require_passed(self) -> HarnessReport:

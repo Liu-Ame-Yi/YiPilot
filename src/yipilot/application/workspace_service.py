@@ -52,6 +52,10 @@ class WorkspaceService:
         self._git = git_runner
         self._repos = RepoService(self._project_root, git_runner)
 
+    def validate_repository(self, task_id: str, repo_alias: str) -> None:
+        """Confirm the registered repository exists before reserving a Run."""
+        self._repos.get_metadata(task_id, repo_alias)
+
     def prepare(self, task_id: str, repo_alias: str, run_id: str) -> PreparedWorkspace:
         if not isinstance(run_id, str) or _RUN_ID.fullmatch(run_id) is None:
             raise DomainError("WORKSPACE_RUN_INVALID", "workspace run id is invalid")

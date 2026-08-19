@@ -83,12 +83,19 @@ class GitWorkspaceHarness:
 
     def run(self) -> HarnessReport:
         """Build current evidence, preserving and validating the first bundle."""
+        return self._evaluate(persist=True)
+
+    def verify(self) -> HarnessReport:
+        """Validate the existing evidence bundle without changing durable evidence."""
+        return self._evaluate(persist=False)
+
+    def _evaluate(self, *, persist: bool) -> HarnessReport:
         started_at = datetime.now(UTC)
         source = self._source_repository()
         source_status_before, source_error_before = self._source_status(source)
 
         current_evidence = self._build_evidence()
-        if not self.evidence_dir.exists():
+        if persist and not self.evidence_dir.exists():
             self._persist_evidence(current_evidence)
 
         manifest, manifest_check = self._check_manifest()
@@ -135,11 +142,12 @@ class GitWorkspaceHarness:
             checks=checks,
             summary=summary,
         )
-        atomic_write_json(
-            self.report_path,
-            report.model_dump(mode="json"),
-            HarnessReport.model_validate,
-        )
+        if persist:
+            atomic_write_json(
+                self.report_path,
+                report.model_dump(mode="json"),
+                HarnessReport.model_validate,
+            )
         return report
 
     def _build_evidence(self) -> dict[str, str | bytes]:

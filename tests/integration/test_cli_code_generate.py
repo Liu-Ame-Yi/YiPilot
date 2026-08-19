@@ -1,10 +1,13 @@
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from yipilot.application.code_service import CodeService
+from yipilot.domain.errors import DomainError
 from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.task_store import FileTaskStore
 from yipilot.transport.cli.app import app
@@ -236,6 +239,13 @@ def test_prepare_only_creates_an_idempotent_apply_run(tmp_path: Path) -> None:
     project, _source = _project_with_repository(tmp_path)
     source = _generate(project)
     source_run_id = str(source["run_id"])
+    source_root = FileTaskStore(project).event_journal_path(source_run_id).parent
+    source_evidence = {
+        path.relative_to(source_root): path.read_bytes()
+        for directory in (source_root / "git", source_root / "harness")
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
     command = [
         "code", "apply", "--project", str(project), "--taskid", "1001", "--run-id", source_run_id,
         "--prepare-only", "--request-id", "handoff-1001", "--output", "json",
@@ -258,3 +268,73 @@ def test_prepare_only_creates_an_idempotent_apply_run(tmp_path: Path) -> None:
     handoff_path = FileTaskStore(project).event_journal_path(apply_run_id).parent / ref["relative_path"]
     handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
     assert handoff["source_run_id"] == source_run_id
+    assert {
+        path.relative_to(source_root): path.read_bytes()
+        for directory in (source_root / "git", source_root / "harness")
+        for path in directory.rglob("*")
+        if path.is_file()
+    } == source_evidence
+
+
+def test_generate_rejects_missing_alias_before_creating_a_run(tmp_path: Path) -> None:
+    project, _source = _project_with_repository(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "code", "generate", "--project", str(project), "--taskid", "1001",
+            "--alias", "missing", "--instruction", "offline", "--planner", "fake",
+            "--output", "json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["code"] == "REPO_NOT_FOUND"
+    assert [run.stage for run in FileTaskStore(project).list_runs("1001")] == ["task_init"]
+
+
+def test_generate_request_id_reserves_one_run_concurrently(tmp_path: Path) -> None:
+    project, _source = _project_with_repository(tmp_path)
+
+    def generate(_: int) -> str:
+        result = CodeService(project).generate(
+            "1001", "sample", "concurrent diagnostic", "fake", "request-1001"
+        )
+        return result.run_id
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        run_ids = list(executor.map(generate, range(4)))
+
+    assert len(set(run_ids)) == 1
+    runs = [
+        run
+        for run in FileTaskStore(project).list_runs("1001")
+        if run.stage == "code_generate"
+    ]
+    assert len(runs) == 1
+
+
+def test_prepare_only_request_id_reserves_one_run_concurrently(tmp_path: Path) -> None:
+    project, _source = _project_with_repository(tmp_path)
+    source_run_id = str(_generate(project)["run_id"])
+
+    def prepare(_: int) -> str:
+        try:
+            return CodeService(project).prepare_only(
+                "1001", source_run_id, "prepare-request-1001"
+            ).run_id
+        except DomainError as error:
+            assert error.code == "CODE_HANDOFF_PRECONDITION_FAILED"
+            return "in-progress"
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(prepare, range(4)))
+
+    runs = [
+        run
+        for run in FileTaskStore(project).list_runs("1001")
+        if run.stage == "code_apply_prepare"
+    ]
+    assert len(runs) == 1
+    assert runs[0].status == "succeeded"
+    assert runs[0].run_id in results

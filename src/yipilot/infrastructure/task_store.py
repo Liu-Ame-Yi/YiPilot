@@ -180,27 +180,58 @@ class FileTaskStore:
         if not stage:
             raise DomainError("PRECONDITION_FAILED", "stage is required")
         with self._lock(f"task-{task_id}"):
-            run = RunRecord(
-                run_id=str(uuid4()),
-                task_id=task_id,
-                operation_id=operation_id,
-                stage=stage,
-                created_at=_timestamp(),
-            )
-            run_directory = self._runs_directory(task_id) / run.run_id
-            staging = self._runs_directory(task_id) / f".{run.run_id}.tmp"
-            staging.mkdir()
-            try:
-                atomic_write_json(
-                    staging / "run.json",
-                    run.model_dump(mode="json", exclude_none=True),
-                    _validate_run,
-                )
-                staging.replace(run_directory)
-            except Exception:
-                shutil.rmtree(staging, ignore_errors=True)
-                raise
+            run = self._create_run_locked(task_id, operation_id, stage)
         return self.get_run(task_id, run.run_id)
+
+    def get_or_create_run(
+        self, task_id: str, operation_id: str, stage: str
+    ) -> tuple[RunRecord, bool]:
+        """Atomically reserve one stage Run for an idempotent Operation."""
+        self.get_operation(task_id, operation_id)
+        if not stage:
+            raise DomainError("PRECONDITION_FAILED", "stage is required")
+        with self._lock(f"task-{task_id}"):
+            matches = [
+                self._load_json(path / "run.json", RunRecord, "RUN_NOT_FOUND")
+                for path in self._runs_directory(task_id).iterdir()
+                if path.is_dir() and not path.name.startswith(".")
+                and (path / "run.json").is_file()
+            ]
+            matching = [
+                run
+                for run in matches
+                if run.operation_id == operation_id and run.stage == stage
+            ]
+            if len(matching) > 1:
+                raise DomainError("STORAGE_INVALID", "operation has multiple runs for one stage")
+            if matching:
+                return matching[0], False
+            return self._create_run_locked(task_id, operation_id, stage), True
+
+    def _create_run_locked(
+        self, task_id: str, operation_id: str, stage: str
+    ) -> RunRecord:
+        run = RunRecord(
+            run_id=str(uuid4()),
+            task_id=task_id,
+            operation_id=operation_id,
+            stage=stage,
+            created_at=_timestamp(),
+        )
+        run_directory = self._runs_directory(task_id) / run.run_id
+        staging = self._runs_directory(task_id) / f".{run.run_id}.tmp"
+        staging.mkdir()
+        try:
+            atomic_write_json(
+                staging / "run.json",
+                run.model_dump(mode="json", exclude_none=True),
+                _validate_run,
+            )
+            staging.replace(run_directory)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        return run
 
     def get_run(self, task_id: str, run_id: str) -> RunRecord:
         self.get_task(task_id)

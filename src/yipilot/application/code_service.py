@@ -105,6 +105,8 @@ class CodeService:
         if planner_mode not in {"fake", "replay"}:
             raise DomainError("PLANNER_MODE_INVALID", "planner must be fake or replay")
         self._store.get_task(task_id)
+        # Validate the registered repository before creating durable execution state.
+        WorkspaceService(self._project_root, GitRunner()).validate_repository(task_id, alias)
         instruction_fingerprint = _sha256(instruction)
         idempotency_key = request_id or instruction_fingerprint
         operation = self._store.create_operation(
@@ -118,10 +120,11 @@ class CodeService:
                 "request_id": idempotency_key,
             },
         )
-        existing = _operation_run(self._store, task_id, operation.operation_id, "code_generate")
-        if existing is not None:
-            return _generate_result(self._store, existing)
-        run = self._store.create_run(task_id, operation.operation_id, "code_generate")
+        run, created = self._store.get_or_create_run(
+            task_id, operation.operation_id, "code_generate"
+        )
+        if not created:
+            return _generate_result(self._store, run)
         journal = _journal(self._store, run)
         policy = _fake_policy()
         artifacts = FileArtifactStore(self._store)
@@ -131,9 +134,16 @@ class CodeService:
             planner: PlannerPort = RecordedReplayPlanner("builtin-replay-v1", {})
             workspace = None
         else:
-            workspace = WorkspaceService(self._project_root, GitRunner()).prepare(
-                task_id, alias, run.run_id
-            )
+            try:
+                workspace = WorkspaceService(self._project_root, GitRunner()).prepare(
+                    task_id, alias, run.run_id
+                )
+            except DomainError as error:
+                self._store.set_run_status(run.run_id, RunStatus.RUNNING)
+                journal.append("run.started", {})
+                self._store.set_run_status(run.run_id, RunStatus.FAILED, error_code=error.code)
+                journal.append("run.failed", {"error_code": error.code})
+                return _generate_result(self._store, self._store.get_run(task_id, run.run_id))
             plan = _plan(run, workspace, instruction_fingerprint)
             planner = (
                 FakePlanner(plan)
@@ -162,7 +172,6 @@ class CodeService:
         source_run = self._store.get_run(task_id, source_run_id)
         if source_run.status is not RunStatus.SUCCEEDED or source_run.stage != "code_generate":
             raise DomainError("CODE_HANDOFF_PRECONDITION_FAILED", "run is not a successful code generation")
-        workspace, report, approval, tool_runs, artifacts = self._source_handoff_evidence(source_run)
         idempotency_key = request_id or source_run_id
         operation = self._store.create_operation(
             task_id,
@@ -170,19 +179,21 @@ class CodeService:
             f"code-apply-prepare:{source_run_id}:{idempotency_key}",
             {"request_id": idempotency_key, "source_run_id": source_run_id},
         )
-        existing = _operation_run(
-            self._store, task_id, operation.operation_id, "code_apply_prepare"
+        run, created = self._store.get_or_create_run(
+            task_id, operation.operation_id, "code_apply_prepare"
         )
-        if existing is not None:
-            if existing.status is not RunStatus.SUCCEEDED:
+        if not created:
+            if run.status is not RunStatus.SUCCEEDED:
                 raise DomainError("CODE_HANDOFF_PRECONDITION_FAILED", "apply preparation is not complete")
-            return _prepare_result(self._store, existing)
+            return _prepare_result(self._store, run)
 
-        run = self._store.create_run(task_id, operation.operation_id, "code_apply_prepare")
         journal = _journal(self._store, run)
         self._store.set_run_status(run.run_id, RunStatus.RUNNING)
         journal.append("run.started", {"source_run_id": source_run_id})
         try:
+            workspace, report, approval, tool_runs, artifacts = self._source_handoff_evidence(
+                source_run
+            )
             handoff = _handoff_value(
                 run, source_run, workspace, report, approval, tool_runs, artifacts
             )
@@ -240,7 +251,7 @@ class CodeService:
         approval = _simulation_approval(self._store, run, policy, request)
         refreshed = _code_harness(
             self._project_root, workspace, policy, run, request, approval.approval_id
-        ).run()
+        ).verify()
         if refreshed.status is not HarnessStatus.PASSED:
             raise DomainError("CODE_HARNESS_FAILED", "code harness evidence is stale or has failed")
         artifacts = _verified_artifacts(self._store, run.task_id, run.run_id)

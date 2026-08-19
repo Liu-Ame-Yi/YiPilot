@@ -43,6 +43,13 @@ class TaskIntegrityHarness:
         self._store = FileTaskStore(self._project_root)
 
     def run(self) -> HarnessReport:
+        return self._evaluate(persist=True)
+
+    def verify(self) -> HarnessReport:
+        """Validate persisted Task evidence without creating a new report."""
+        return self._evaluate(persist=False)
+
+    def _evaluate(self, *, persist: bool) -> HarnessReport:
         started_at = datetime.now(UTC)
         task, task_check = self._check_task()
         run, run_check = self._check_run(task)
@@ -75,7 +82,7 @@ class TaskIntegrityHarness:
             checks=checks,
             summary=f"task integrity checks completed with status {status}",
         )
-        if run is not None:
+        if persist and run is not None:
             HarnessReportStore(self._store).save(report)
         return report
 
