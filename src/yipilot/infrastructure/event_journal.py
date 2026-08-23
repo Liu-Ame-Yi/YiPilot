@@ -13,6 +13,7 @@ from filelock import FileLock
 from pydantic import BaseModel, ValidationError
 
 from yipilot.domain.errors import DomainError
+from yipilot.security.redaction import SecretRedactor
 
 MAX_EVENT_PAYLOAD_BYTES = 16_384
 
@@ -181,8 +182,7 @@ def _redact_value(value: object) -> object:
     if isinstance(value, tuple):
         return [_redact_value(item) for item in value]
     if isinstance(value, str):
-        value = _AUTHORIZATION_PATTERN.sub(r"\1[REDACTED]", value)
-        return _BEARER_PATTERN.sub("Bearer [REDACTED]", value)
+        return SecretRedactor().redact_text(value)
     return value
 
 

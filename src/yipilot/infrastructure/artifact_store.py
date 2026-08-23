@@ -15,6 +15,7 @@ from yipilot.infrastructure.filesystem import (
     project_path,
 )
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
+from yipilot.security.redaction import SecretRedactor
 
 
 class ArtifactRecord(BaseModel):
@@ -93,7 +94,7 @@ class FileArtifactStore:
         """Atomically persist and register one run-scoped binary artifact."""
         run, run_root = self._run_context(task_id, run_id)
         self._require_operation(run, operation_id)
-        atomic_write_bytes(_artifact_path(run_root, relative_path), content)
+        atomic_write_bytes(_artifact_path(run_root, relative_path), _redact_bytes(content))
         return self.register(
             task_id,
             run_id,
@@ -173,6 +174,12 @@ class FileArtifactStore:
             f"{artifact_id}.json",
         )
 
+
+def _redact_bytes(content: bytes) -> bytes:
+    try:
+        return SecretRedactor().redact_text(content.decode("utf-8")).encode("utf-8")
+    except UnicodeDecodeError:
+        return content
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()

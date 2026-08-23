@@ -11,12 +11,14 @@ from pydantic import BaseModel
 from yipilot import __version__
 from yipilot.application.code_service import CodeService
 from yipilot.application.project_service import ProjectService
+from yipilot.application.provider_service import ProviderService
 from yipilot.application.repo_service import RepoMetadata, RepoService
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
 from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.git_runner import GitRunner
 from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.security.redaction import SecretRedactor
 from yipilot.transport.cli.events import (
     HumanEventRenderer,
     JsonlEventRenderer,
@@ -29,11 +31,15 @@ run_app = typer.Typer(no_args_is_help=True)
 repo_app = typer.Typer(no_args_is_help=True)
 workspace_app = typer.Typer(no_args_is_help=True)
 code_app = typer.Typer(no_args_is_help=True)
+settings_app = typer.Typer(no_args_is_help=True)
+provider_app = typer.Typer(no_args_is_help=True)
 app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
 app.add_typer(code_app, name="code")
+app.add_typer(settings_app, name="settings")
 task_app.add_typer(repo_app, name="repo")
 task_app.add_typer(workspace_app, name="workspace")
+settings_app.add_typer(provider_app, name="provider")
 
 Result = TypeVar("Result")
 _DEFAULT_PROJECT = Path(".")
@@ -205,6 +211,84 @@ def code_apply(
             f"Prepared handoff for run {result.run_id}; no Git apply was performed.",
         )
 
+@provider_app.command("add")
+def provider_add(
+    name: Annotated[str, typer.Option("--name")],
+    base_url: Annotated[str, typer.Option("--base-url")],
+    model: Annotated[str, typer.Option("--model")],
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+    api_key_ref: Annotated[str | None, typer.Option("--api-key-ref")] = None,
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds")] = 60.0,
+    output_budget: Annotated[int, typer.Option("--output-budget")] = 4096,
+    capabilities: Annotated[str, typer.Option("--capabilities")] = "chat",
+    enabled: Annotated[bool, typer.Option("--enabled/--disabled")] = True,
+    revision: Annotated[int, typer.Option("--revision")] = 1,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    profile = _settings_invoke(output, lambda: ProviderService(settings_dir).add(
+        name=name, provider_type="openai_compatible", base_url=base_url, model=model,
+        timeout_seconds=timeout_seconds, output_budget=output_budget,
+        capabilities=tuple(item for item in capabilities.split(",") if item),
+        enabled=enabled, revision=revision, api_key_ref=api_key_ref,
+    ))
+    if profile is not None:
+        _render_value(output, profile.public_value(), f"Saved provider profile {profile.name}.")
+
+
+@provider_app.command("list")
+def provider_list(
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    value = _settings_invoke(output, lambda: ProviderService(settings_dir).list())
+    if value is not None:
+        _render_value(output, value, f"Configured {len(value['profiles'])} provider profile(s).")
+
+
+@provider_app.command("show")
+def provider_show(
+    name: Annotated[str, typer.Option("--name")],
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    profile = _settings_invoke(output, lambda: ProviderService(settings_dir).show(name))
+    if profile is not None:
+        _render_value(output, profile.public_value(), f"Provider profile {profile.name}.")
+
+
+@provider_app.command("use")
+def provider_use(
+    name: Annotated[str, typer.Option("--name")],
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    profile = _settings_invoke(output, lambda: ProviderService(settings_dir).use(name))
+    if profile is not None:
+        _render_value(output, profile.public_value(), f"Using provider profile {profile.name}.")
+
+
+@provider_app.command("set-key")
+def provider_set_key(
+    name: Annotated[str, typer.Option("--name")],
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    value = typer.prompt("API key", hide_input=True)
+    profile = _settings_invoke(output, lambda: ProviderService(settings_dir).set_key(name, value))
+    if profile is not None:
+        _render_value(output, profile.public_value(), f"Stored key reference for {profile.name}.")
+
+
+@provider_app.command("test")
+def provider_test(
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+    name: Annotated[str | None, typer.Option("--name")] = None,
+    request: Annotated[bool, typer.Option("--request")] = False,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    profile = _settings_invoke(output, lambda: ProviderService(settings_dir).test(name, request=request))
+    if profile is not None:
+        _render_value(output, {"name": profile.name, "revision": profile.revision, "status": "local_validation_passed"}, f"Provider profile {profile.name} passed local validation.")
 
 @run_app.command("list")
 def run_list(
@@ -381,6 +465,19 @@ def _invoke(
         )
         raise typer.Exit(code=2 if error.code == "INVALID_TASK_ID" else 1) from error
 
+
+def _settings_invoke(output: str, action: Callable[[], Result]) -> Result | None:
+    _validate_output(output)
+    try:
+        return action()
+    except DomainError as error:
+        value = SecretRedactor().redact({"code": error.code, "message": error.message})
+        assert isinstance(value, dict)
+        if output == "json":
+            typer.echo(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")), err=True)
+        else:
+            typer.echo(f"{error.code}: {value['message']}", err=True)
+        raise typer.Exit(code=1) from error
 
 def _render(output: str, record: BaseModel, human: str) -> None:
     _render_value(output, record.model_dump(mode="json"), human)

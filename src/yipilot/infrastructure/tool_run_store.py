@@ -13,6 +13,7 @@ from yipilot.infrastructure.filesystem import (
     safe_path_component,
 )
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
+from yipilot.security.redaction import SecretRedactor
 
 
 class FileToolRunStore:
@@ -25,7 +26,9 @@ class FileToolRunStore:
     def save(self, result: ToolResult) -> Path:
         self._validate_result(result)
         path = self._path(result.run_id, result.tool_run_id, create=True)
-        atomic_write_json(path, result.model_dump(mode="json"), ToolResult.model_validate)
+        value = SecretRedactor().redact(result.model_dump(mode="json"))
+        assert isinstance(value, dict)
+        atomic_write_json(path, value, ToolResult.model_validate)
         return path
 
     def get(self, task_id: str, run_id: str, tool_run_id: str) -> ToolResult:

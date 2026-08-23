@@ -8,6 +8,7 @@ from yipilot.domain.errors import DomainError
 from yipilot.harness.models import HarnessReport
 from yipilot.infrastructure.filesystem import atomic_write_json, project_path
 from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.security.redaction import SecretRedactor
 
 TASK_INTEGRITY_REPORT_NAME = "task-integrity-report.json"
 CODE_HARNESS_REPORT_NAME = "code-harness-report.json"
@@ -34,11 +35,9 @@ class HarnessReportStore:
     ) -> Path:
         self._validate_run_association(report)
         path = self.report_path(report.run_id, report_name)
-        atomic_write_json(
-            path,
-            report.model_dump(mode="json"),
-            HarnessReport.model_validate,
-        )
+        value = SecretRedactor().redact(report.model_dump(mode="json"))
+        assert isinstance(value, dict)
+        atomic_write_json(path, value, HarnessReport.model_validate)
         return path
 
     def load(
