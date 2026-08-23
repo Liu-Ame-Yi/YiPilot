@@ -143,7 +143,10 @@ class JsonlEventJournal:
 
 def _prepare_payload(payload: Mapping[str, object]) -> dict[str, object]:
     try:
-        redacted = _redact_mapping(payload)
+        if any(not isinstance(key, str) for key in payload):
+            raise TypeError("event payload keys must be strings")
+        redacted = SecretRedactor().redact(payload)
+        assert isinstance(redacted, dict)
         encoded = json.dumps(
             redacted,
             ensure_ascii=False,
@@ -160,30 +163,6 @@ def _prepare_payload(payload: Mapping[str, object]) -> dict[str, object]:
             f"event payload exceeds {MAX_EVENT_PAYLOAD_BYTES} bytes",
         )
     return redacted
-
-
-def _redact_mapping(value: Mapping[str, object]) -> dict[str, object]:
-    redacted: dict[str, object] = {}
-    for key, item in value.items():
-        if not isinstance(key, str):
-            raise TypeError("event payload keys must be strings")
-        if key.casefold() == "authorization":
-            redacted[key] = "[REDACTED]"
-        else:
-            redacted[key] = _redact_value(item)
-    return redacted
-
-
-def _redact_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return _redact_mapping(value)
-    if isinstance(value, list):
-        return [_redact_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_redact_value(item) for item in value]
-    if isinstance(value, str):
-        return SecretRedactor().redact_text(value)
-    return value
 
 
 def _timestamp() -> str:

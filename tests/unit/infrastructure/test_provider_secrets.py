@@ -1,12 +1,18 @@
 import json
+from datetime import UTC, datetime
 
 import pytest
 
 from yipilot.application.provider_service import ProviderService
 from yipilot.domain.errors import DomainError
 from yipilot.domain.provider import ProviderProfile
+from yipilot.harness.models import HarnessCheck, HarnessReport, HarnessStatus
+from yipilot.harness.report_store import HarnessReportStore
+from yipilot.infrastructure.artifact_store import FileArtifactStore
+from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.provider_store import FileProviderStore
 from yipilot.infrastructure.secret_store import FakeSecretBackend, SecretStore
+from yipilot.infrastructure.task_store import FileTaskStore
 from yipilot.security.redaction import SecretRedactor
 
 
@@ -36,7 +42,7 @@ def test_fake_keyring_and_fake_env_read_without_system_credentials(tmp_path) -> 
     assert secrets.read("keyring:local") == "unit-secret"
     service = ProviderService(tmp_path, secrets=secrets)
     service.add(**_profile().model_dump())
-    assert service.test().name == "local"
+    assert service.test("local").name == "local"
 
 
 def test_redactor_hides_known_values_headers_and_url_credentials() -> None:
@@ -45,4 +51,35 @@ def test_redactor_hides_known_values_headers_and_url_credentials() -> None:
     )
     assert "unit-secret" not in value
     assert "password" not in value
-    assert "Bearer [REDACTED]" in value
+    assert "Authorization: [REDACTED]" in value
+
+
+def test_event_artifact_and_harness_persistence_redact_credentials(tmp_path) -> None:
+    store = FileTaskStore(tmp_path)
+    store.initialize_project()
+    store.create_task("1001")
+    operation = store.create_operation("1001", "test", "provider-security", {})
+    run = store.create_run("1001", operation.operation_id, "test")
+    text = "Authorization: Bearer provider-test-secret https://user:password@example.test"
+    journal = JsonlEventJournal(store.event_journal_path(run.run_id))
+    journal.append("stage.progress", {"x-api-key": "provider-test-secret", "message": text})
+    artifact = FileArtifactStore(store).write_bytes(
+        run.task_id, run.run_id, producer="test", relative_path="artifacts/output.txt",
+        content=text.encode(), input_fingerprint="input", operation_id=run.operation_id,
+    )
+    now = datetime.now(UTC)
+    report = HarnessReport(
+        report_id="provider-security", task_id=run.task_id, operation_id=run.operation_id,
+        run_id=run.run_id, stage=run.stage, harness_name="test", harness_version="1",
+        started_at=now, ended_at=now, input_fingerprint="input", inputs=[],
+        status=HarnessStatus.PASSED,
+        checks=[HarnessCheck(id="TEST", status=HarnessStatus.PASSED, message=text)], summary=text,
+    )
+    HarnessReportStore(store).save(report)
+    persisted = "".join(path.read_text(encoding="utf-8") for path in [
+        store.event_journal_path(run.run_id),
+        store.event_journal_path(run.run_id).parent / artifact.relative_path,
+        HarnessReportStore(store).report_path(run.run_id),
+    ])
+    assert "provider-test-secret" not in persisted
+    assert "password" not in persisted

@@ -11,7 +11,17 @@ MAX_PROVIDER_OUTPUT_BUDGET = 128_000
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _CAPABILITY = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
-_REFERENCE = re.compile(r"^(?:env:[A-Za-z_][A-Za-z0-9_]*|keyring:[A-Za-z0-9][A-Za-z0-9_.-]{0,63})$")
+_REFERENCE = re.compile(r"^(?:(?P<env>env):(?P<env_name>[A-Za-z_][A-Za-z0-9_]*)|(?P<keyring>keyring):(?P<keyring_name>[A-Za-z0-9][A-Za-z0-9_.-]{0,63}))$")
+
+
+def parse_api_key_ref(value: str) -> tuple[str, str]:
+    """Validate one safe secret reference and return its kind and name."""
+    match = _REFERENCE.fullmatch(value)
+    if match is None:
+        raise ValueError("api key must be an env: or keyring: reference")
+    if match.group("env") == "env":
+        return "env", match.group("env_name")
+    return "keyring", match.group("keyring_name")
 
 
 class ProviderProfile(BaseModel):
@@ -71,8 +81,8 @@ class ProviderProfile(BaseModel):
     @field_validator("api_key_ref")
     @classmethod
     def validate_api_key_ref(cls, value: str | None) -> str | None:
-        if value is not None and _REFERENCE.fullmatch(value) is None:
-            raise ValueError("api key must be an env: or keyring: reference")
+        if value is not None:
+            parse_api_key_ref(value)
         return value
 
     def public_value(self) -> dict[str, object]:

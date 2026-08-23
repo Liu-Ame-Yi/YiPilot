@@ -242,7 +242,9 @@ def provider_list(
 ) -> None:
     value = _settings_invoke(output, lambda: ProviderService(settings_dir).list())
     if value is not None:
-        _render_value(output, value, f"Configured {len(value['profiles'])} provider profile(s).")
+        profiles = value["profiles"]
+        assert isinstance(profiles, list)
+        _render_value(output, value, f"Configured {len(profiles)} provider profile(s).")
 
 
 @provider_app.command("show")

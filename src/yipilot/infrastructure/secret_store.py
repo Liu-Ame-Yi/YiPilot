@@ -1,15 +1,14 @@
 """User-local secret references backed by Windows Credential Locker or env."""
 
 import os
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import keyring
 
 from yipilot.domain.errors import DomainError
+from yipilot.domain.provider import parse_api_key_ref
 
-_REFERENCE = re.compile(r"^(?:(?P<env>env):(?P<env_name>[A-Za-z_][A-Za-z0-9_]*)|(?P<keyring>keyring):(?P<keyring_name>[A-Za-z0-9][A-Za-z0-9_.-]{0,63}))$")
 _SERVICE_NAME = "yipilot"
 
 
@@ -39,8 +38,10 @@ class SecretStore:
 
     @staticmethod
     def validate_reference(reference: str) -> str:
-        if _REFERENCE.fullmatch(reference) is None:
-            raise DomainError("SECRET_REF_INVALID", "secret reference is invalid")
+        try:
+            parse_api_key_ref(reference)
+        except ValueError as error:
+            raise DomainError("SECRET_REF_INVALID", "secret reference is invalid") from error
         return reference
 
     @staticmethod
@@ -48,11 +49,11 @@ class SecretStore:
         return f"keyring:{profile_name}"
 
     def read(self, reference: str) -> str:
-        match = _REFERENCE.fullmatch(reference)
-        if match is None:
-            raise DomainError("SECRET_REF_INVALID", "secret reference is invalid")
-        name = match.group("env_name") or match.group("keyring_name")
-        if match.group("env") == "env":
+        try:
+            kind, name = parse_api_key_ref(reference)
+        except ValueError as error:
+            raise DomainError("SECRET_REF_INVALID", "secret reference is invalid") from error
+        if kind == "env":
             value = self._environ.get(name)
         else:
             try:
