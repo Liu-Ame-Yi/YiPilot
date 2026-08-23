@@ -93,3 +93,26 @@ task-owned worktree preparation.
 
 LLM/provider integration, FastAPI, HTTP SSE and any remote deployment are
 future work and are intentionally outside this milestone.
+
+## Provider profiles and secret references
+
+Provider profiles are user-local metadata, stored outside the project `.yipilot`
+tree. Add a compatible endpoint with a reference, never a literal API key:
+
+```powershell
+uv run yipilot settings provider add --name local --base-url https://api.example.test/v1 --model example-model --api-key-ref env:YIPILOT_API_KEY --settings-dir C:\work\yipilot-settings --output json
+uv run yipilot settings provider use --name local --settings-dir C:\work\yipilot-settings --output json
+uv run yipilot settings provider test --settings-dir C:\work\yipilot-settings --output json
+```
+
+`env:YIPILOT_API_KEY` is read only when local validation needs it and is never
+printed. `settings provider set-key` prompts without echo and stores the value
+in Windows Credential Locker through `keyring`; profiles retain only a
+`keyring:<profile>` reference. `list` and `show` never display a secret value.
+Use `--settings-dir` (or `YIPILOT_SETTINGS_DIR`) for isolated tests and local
+experiments.
+
+`settings provider test` performs schema, URL and secret-reference checks only.
+`settings provider test --request` is intentionally rejected with
+`LIVE_PROVIDER_TEST_NOT_IMPLEMENTED`: real network validation and HTTP model
+adapters are not available until Task 16.
