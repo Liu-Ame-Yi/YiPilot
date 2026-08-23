@@ -77,11 +77,16 @@ class AgentRuntime:
         try:
             plan = self._planner.plan(instruction_fingerprint=fingerprint)
         except Exception as error:  # noqa: BLE001 - planner faults become an auditable Run failure
-            error_code = (
-                "PLANNER_REPLAY_NOT_FOUND"
-                if isinstance(error, DomainError) and error.code == "REPLAY_PLAN_NOT_FOUND"
-                else "PLANNER_FAILED"
-            )
+            error_code = "PLANNER_FAILED"
+            if isinstance(error, DomainError):
+                error_code = {
+                    "REPLAY_PLAN_NOT_FOUND": "PLANNER_REPLAY_NOT_FOUND",
+                    "MODEL_REPLAY_NOT_FOUND": "MODEL_REPLAY_NOT_FOUND",
+                    "MODEL_DISABLED": "MODEL_DISABLED",
+                    "MODEL_OUTPUT_LIMIT_EXCEEDED": "MODEL_OUTPUT_LIMIT_EXCEEDED",
+                    "MODEL_PLAN_INVALID": "MODEL_PLAN_INVALID",
+                    "MODEL_INPUT_MISMATCH": "MODEL_INPUT_MISMATCH",
+                }.get(error.code, error_code)
             return self._failed(run, journal, plan_ref, results, error_code)
         try:
             plan = AgentPlan.model_validate(plan.model_dump(mode="json"))

@@ -23,6 +23,7 @@ _EVENT_TYPES = {
     "stage.progress",
     "model.delta",
     "model.message_completed",
+    "model.failed",
     "tool.started",
     "tool.output",
     "tool.completed",

@@ -9,6 +9,9 @@ _AUTHORIZATION = re.compile(
 )
 _BEARER = re.compile(r"(?i)\bbearer\s+[^\s\"']+")
 _URL_CREDENTIALS = re.compile(r"(?i)\b(https?://)[^\s/@:]+(?::[^\s/@]*)?@")
+_ENVIRONMENT_ASSIGNMENT = re.compile(
+    r"\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)=([^\s,;]+)"
+)
 _SECRET_KEYS = {"authorization", "proxy-authorization", "api-key", "api_key", "password", "secret", "token", "x-api-key"}
 
 
@@ -25,7 +28,8 @@ class SecretRedactor:
             value = value.replace(secret, "[REDACTED]")
         value = _AUTHORIZATION.sub("Authorization: [REDACTED]", value)
         value = _BEARER.sub("Bearer [REDACTED]", value)
-        return _URL_CREDENTIALS.sub(r"\1[REDACTED]@", value)
+        value = _URL_CREDENTIALS.sub(r"\1[REDACTED]@", value)
+        return _ENVIRONMENT_ASSIGNMENT.sub(r"\1=[REDACTED]", value)
 
     def redact(self, value: object) -> object:
         if isinstance(value, Mapping):

@@ -9,6 +9,9 @@ from pathlib import Path
 from yipilot.application.agent_runtime import AgentRuntime
 from yipilot.application.approval import approval_action_type
 from yipilot.application.planner import FakePlanner, PlannerPort, RecordedReplayPlanner
+from yipilot.application.replay_model import (
+    replay_model_planner as _replay_model_planner,
+)
 from yipilot.application.tool_registry import ToolRegistry
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
@@ -103,8 +106,8 @@ class CodeService:
     ) -> CodeGenerateResult:
         if not instruction:
             raise DomainError("INSTRUCTION_INVALID", "instruction is required")
-        if planner_mode not in {"fake", "replay"}:
-            raise DomainError("PLANNER_MODE_INVALID", "planner must be fake or replay")
+        if planner_mode not in {"fake", "replay", "replay-model"}:
+            raise DomainError("PLANNER_MODE_INVALID", "planner must be fake, replay or replay-model")
         self._store.get_task(task_id)
         # Validate the registered repository before creating durable execution state.
         WorkspaceService(self._project_root, GitRunner()).validate_repository(task_id, alias)
@@ -146,7 +149,9 @@ class CodeService:
                 journal.append("run.failed", {"error_code": error.code})
                 return _generate_result(self._store, self._store.get_run(task_id, run.run_id))
             plan = _plan(run, workspace, instruction_fingerprint)
-            planner = (
+            planner = _replay_model_planner(
+                run, instruction, plan.steps[0].tool_request, artifacts, journal
+            ) if planner_mode == "replay-model" else (
                 FakePlanner(plan)
                 if planner_mode == "fake"
                 else RecordedReplayPlanner("builtin-replay-v1", {instruction_fingerprint: plan})
