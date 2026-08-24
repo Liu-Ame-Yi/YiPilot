@@ -30,3 +30,4 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+markers = ['live: explicit provider network validation']

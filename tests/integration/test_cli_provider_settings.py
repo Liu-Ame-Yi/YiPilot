@@ -20,10 +20,7 @@ def test_provider_cli_add_list_show_use_and_local_test(tmp_path: Path, monkeypat
     checked = runner.invoke(app, ["settings", "provider", "test", *common])
     assert checked.exit_code == 0
     assert json.loads(checked.stdout)["status"] == "local_validation_passed"
-    request = runner.invoke(app, ["settings", "provider", "test", "--request", *common])
-    assert request.exit_code == 1
-    assert request.stdout == ""
-    assert json.loads(request.stderr)["code"] == "LIVE_PROVIDER_TEST_NOT_IMPLEMENTED"
+
 
 
 def test_provider_cli_has_no_api_key_option_and_errors_do_not_echo_key(tmp_path: Path) -> None:
@@ -34,3 +31,43 @@ def test_provider_cli_has_no_api_key_option_and_errors_do_not_echo_key(tmp_path:
     assert invalid.exit_code == 1
     assert "raw-test-secret" not in invalid.output
     assert json.loads(invalid.stderr)["code"] == "PROVIDER_PROFILE_INVALID"
+
+
+def test_provider_cli_request_uses_a_mocked_explicit_probe(tmp_path: Path, monkeypatch) -> None:
+    import importlib
+
+    from yipilot.application.provider_service import ProviderService
+
+    monkeypatch.setenv("YIPILOT_TEST_KEY", "provider-test-secret")
+    runner = CliRunner()
+    common = ["--settings-dir", str(tmp_path), "--output", "json"]
+    assert runner.invoke(
+        app,
+        [
+            "settings", "provider", "add", "--name", "local",
+            "--base-url", "https://example.test/v1", "--model", "test-model",
+            "--api-key-ref", "env:YIPILOT_TEST_KEY", *common,
+        ],
+    ).exit_code == 0
+    assert runner.invoke(app, ["settings", "provider", "use", "--name", "local", *common]).exit_code == 0
+
+    requests = []
+
+    class ProbePort:
+        def stream(self, request):
+            requests.append(request)
+            return ()
+
+    cli_module = importlib.import_module("yipilot.transport.cli.app")
+    monkeypatch.setattr(
+        cli_module,
+        "ProviderService",
+        lambda settings_dir: ProviderService(settings_dir, port_factory=lambda profile, secrets: ProbePort()),
+    )
+
+    result = runner.invoke(app, ["settings", "provider", "test", "--request", *common])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["status"] == "request_passed"
+    assert len(requests) == 1
+    assert requests[0].user_instruction == "Reply with OK."
+    assert "provider-test-secret" not in result.output

@@ -1,13 +1,37 @@
-"""Small use-cases for user-local provider setup without network access."""
+"""Small use-cases for user-local provider setup with an explicit live probe."""
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import ValidationError
 
 from yipilot.domain.errors import DomainError
+from yipilot.domain.model import ModelPort
 from yipilot.domain.provider import ProviderProfile
+from yipilot.infrastructure.openai_compatible import (
+    OpenAICompatibleModelPort,
+    provider_probe_request,
+)
 from yipilot.infrastructure.provider_store import FileProviderStore
 from yipilot.infrastructure.secret_store import SecretStore
+
+
+@dataclass(frozen=True)
+class ProviderTestResult:
+    profile: ProviderProfile
+    status: Literal["local_validation_passed", "request_passed"]
+    summary: str
+
+    def public_value(self) -> dict[str, object]:
+        return {
+            "model": self.profile.model,
+            "name": self.profile.name,
+            "secret": "configured",
+            "status": self.status,
+            "summary": self.summary,
+        }
 
 
 class ProviderService:
@@ -16,9 +40,11 @@ class ProviderService:
         settings_dir: Path | None = None,
         *,
         secrets: SecretStore | None = None,
+        port_factory: Callable[[ProviderProfile, SecretStore], ModelPort] | None = None,
     ) -> None:
         self._store = FileProviderStore(settings_dir)
         self._secrets = secrets or SecretStore()
+        self._port_factory = port_factory or OpenAICompatibleModelPort
 
     @property
     def path(self) -> Path:
@@ -53,12 +79,7 @@ class ProviderService:
             )
         )
 
-    def test(self, name: str | None = None, *, request: bool = False) -> ProviderProfile:
-        if request:
-            raise DomainError(
-                "LIVE_PROVIDER_TEST_NOT_IMPLEMENTED",
-                "live provider requests are unavailable before Task 16",
-            )
+    def test(self, name: str | None = None, *, request: bool = False) -> ProviderTestResult:
         settings = self._store.load()
         selected = name or settings.default_profile
         if selected is None:
@@ -67,4 +88,15 @@ class ProviderService:
         if profile.api_key_ref is None:
             raise DomainError("SECRET_REF_MISSING", "provider profile has no secret reference")
         self._secrets.read(profile.api_key_ref)
-        return profile
+        if not request:
+            return ProviderTestResult(
+                profile, "local_validation_passed", "local profile and secret validation passed"
+            )
+        port = self._port_factory(profile, self._secrets)
+        try:
+            port.stream(provider_probe_request(profile))
+        finally:
+            close = getattr(port, "close", None)
+            if callable(close):
+                close()
+        return ProviderTestResult(profile, "request_passed", "minimal provider probe completed")

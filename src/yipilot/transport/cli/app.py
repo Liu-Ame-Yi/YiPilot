@@ -288,9 +288,11 @@ def provider_test(
     request: Annotated[bool, typer.Option("--request")] = False,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
-    profile = _settings_invoke(output, lambda: ProviderService(settings_dir).test(name, request=request))
-    if profile is not None:
-        _render_value(output, {"name": profile.name, "revision": profile.revision, "status": "local_validation_passed"}, f"Provider profile {profile.name} passed local validation.")
+    result = _settings_invoke(output, lambda: ProviderService(settings_dir).test(name, request=request))
+    if result is not None:
+        _render_value(
+            output, result.public_value(), f"Provider profile {result.profile.name}: {result.status}."
+        )
 
 @run_app.command("list")
 def run_list(

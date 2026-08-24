@@ -1,6 +1,7 @@
 """Versioned, non-secret provider profile contracts."""
 
 import re
+from ipaddress import ip_address
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -62,6 +63,8 @@ class ProviderProfile(BaseModel):
             or any(character.isspace() for character in value)
         ):
             raise ValueError("base URL must be an http(s) URL without credentials")
+        if parsed.scheme == "http" and not _is_loopback(parsed.hostname):
+            raise ValueError("HTTP base URLs are limited to loopback hosts")
         return value.rstrip("/")
 
     @field_validator("model")
@@ -87,3 +90,13 @@ class ProviderProfile(BaseModel):
 
     def public_value(self) -> dict[str, object]:
         return self.model_dump(mode="json")
+
+def _is_loopback(hostname: str | None) -> bool:
+    if hostname is None:
+        return False
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        return ip_address(hostname).is_loopback
+    except ValueError:
+        return False

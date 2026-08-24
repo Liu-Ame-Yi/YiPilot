@@ -42,7 +42,7 @@ def test_fake_keyring_and_fake_env_read_without_system_credentials(tmp_path) -> 
     assert secrets.read("keyring:local") == "unit-secret"
     service = ProviderService(tmp_path, secrets=secrets)
     service.add(**_profile().model_dump())
-    assert service.test("local").name == "local"
+    assert service.test("local").profile.name == "local"
 
 
 def test_redactor_hides_known_values_headers_and_url_credentials() -> None:
