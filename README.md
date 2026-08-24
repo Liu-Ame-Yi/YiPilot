@@ -91,28 +91,50 @@ M0–M2 do not call a model provider, Codex CLI or a network LLM. They do not ru
 Git push or Git merge. The only Git effects are local, argv-only cache sync and
 task-owned worktree preparation.
 
-LLM/provider integration, FastAPI, HTTP SSE and any remote deployment are
-future work and are intentionally outside this milestone.
+HTTP servers, FastAPI and server-sent-event serving remain outside this local CLI milestone.
 
 ## Provider profiles and secret references
 
-Provider profiles are user-local metadata, stored outside the project `.yipilot`
-tree. Add a compatible endpoint with a reference, never a literal API key:
+Provider profiles are user-local metadata stored outside the project `.yipilot`
+tree. Yipilot supports only OpenAI-compatible `POST /chat/completions`. Use an
+HTTPS endpoint; plain HTTP is permitted only for a loopback development service
+such as `http://localhost`. Never put URL credentials or an API key in a profile,
+command line, project file, Event or Artifact.
 
 ```powershell
 uv run yipilot settings provider add --name local --base-url https://api.example.test/v1 --model example-model --api-key-ref env:YIPILOT_API_KEY --settings-dir C:\work\yipilot-settings --output json
 uv run yipilot settings provider use --name local --settings-dir C:\work\yipilot-settings --output json
 uv run yipilot settings provider test --settings-dir C:\work\yipilot-settings --output json
+uv run yipilot settings provider test --request --settings-dir C:\work\yipilot-settings --output json
 ```
 
-`env:YIPILOT_API_KEY` is read only when local validation needs it and is never
-printed. `settings provider set-key` prompts without echo and stores the value
-in Windows Credential Locker through `keyring`; profiles retain only a
-`keyring:<profile>` reference. `list` and `show` never display a secret value.
-Use `--settings-dir` (or `YIPILOT_SETTINGS_DIR`) for isolated tests and local
-experiments.
+The first test is local-only: it validates the selected profile, URL and secret
+reference and never opens a network connection. Adding `--request` explicitly
+permits one small live probe, which sends only the fixed text `Reply with OK.`
+with a tiny output budget. It may consume provider credits. It never sends the
+repository, `.git`, environment variables, user instruction, task Artifacts or
+other project content.
 
-`settings provider test` performs schema, URL and secret-reference checks only.
-`settings provider test --request` is intentionally rejected with
-`LIVE_PROVIDER_TEST_NOT_IMPLEMENTED`: real network validation and HTTP model
-adapters are not available until Task 16.
+A configured runtime request sends only its controlled user instruction to the
+chosen provider endpoint. It does not upload repository source, `.git`, the
+process environment or unapproved Artifacts. The key is read only from
+`env:YIPILOT_API_KEY` or Windows Credential Manager through `keyring`; it is
+kept only in the in-memory Authorization header and is redacted from diagnostics.
+
+To revoke access, remove `YIPILOT_API_KEY` from the launching environment (or
+delete the `yipilot` credential in Windows Credential Manager). To disable a
+profile, save the same profile name with an increased `--revision` and
+`--disabled`; a disabled profile cannot make a request. Use a new profile
+without an `--api-key-ref` when you no longer need the secret reference.
+
+Live pytest is disabled by default, including in CI. Run it only after selecting
+a configured profile and explicitly opting in:
+
+```powershell
+$env:YIPILOT_RUN_LIVE = "1"
+$env:YIPILOT_LIVE_PROFILE = "local"
+uv run pytest -m live -q
+```
+
+The live test makes the same one-probe request. Normal `pytest` remains fully
+offline.
