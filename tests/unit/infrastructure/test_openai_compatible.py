@@ -229,3 +229,41 @@ def test_adapter_ignores_ambient_proxy_environment(monkeypatch) -> None:
     monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid")
     port = _port(profile, lambda request: _response(200))
     assert port._client._trust_env is False
+
+
+def test_redirect_is_not_followed() -> None:
+    profile = _profile()
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _response(302, headers={"location": "https://unapproved.invalid"})
+
+    with pytest.raises(DomainError, match="MODEL_HTTP_ERROR"):
+        _port(profile, handler).stream(_request(profile))
+    assert calls == 1
+
+
+def test_cancellation_closes_an_open_response_stream() -> None:
+    profile = _profile()
+
+    class CancellableStream(httpx.SyncByteStream):
+        closed = False
+
+        def __iter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"ignored"}}]}\n'
+
+        def close(self) -> None:
+            self.closed = True
+
+    stream = CancellableStream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    with pytest.raises(DomainError, match="MODEL_CANCELLED"):
+        _port(profile, handler, is_cancelled=iter((False, False, True)).__next__).stream(
+            _request(profile)
+        )
+    assert stream.closed
