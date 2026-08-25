@@ -37,7 +37,7 @@ class OpenAICompatibleModelPort:
         self._max_response_bytes = max_response_bytes
         self._is_cancelled = is_cancelled or (lambda: False)
         self._clock = clock
-        self._client = httpx.Client(transport=transport, follow_redirects=False)
+        self._client = httpx.Client(transport=transport, follow_redirects=False, trust_env=False)
 
     def close(self) -> None:
         self._client.close()

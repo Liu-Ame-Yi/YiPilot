@@ -222,3 +222,10 @@ def test_provider_service_only_uses_a_port_for_explicit_request(tmp_path) -> Non
     assert calls == 0
     assert service.test(request=True).status == "request_passed"
     assert calls == 1
+
+
+def test_adapter_ignores_ambient_proxy_environment(monkeypatch) -> None:
+    profile = _profile()
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid")
+    port = _port(profile, lambda request: _response(200))
+    assert port._client._trust_env is False
