@@ -138,3 +138,33 @@ uv run pytest -m live -q
 
 The live test makes the same one-probe request. Normal `pytest` remains fully
 offline.
+
+## Offline quality artifacts and Harnesses
+
+Generate quality artifacts only from an explicit PRD text or a named, run-scoped
+Markdown PRD Artifact. The default `fake` and `replay` modes are offline and
+deterministic; they never scan, upload, or summarize the repository.
+
+```powershell
+uv run yipilot quality generate --project C:\work\demo --taskid 1001 --prd "Add an offline audit report." --model replay --output json
+uv run yipilot quality harness --project C:\work\demo --taskid 1001 --run-id <quality-run-id> --kind srs --output json
+uv run yipilot quality harness --project C:\work\demo --taskid 1001 --run-id <quality-run-id> --kind sdd --profile-revision 1 --output json
+uv run yipilot quality pytest --project C:\work\demo --taskid 1001 --alias sample --output json
+```
+
+Each command stores only run-scoped Artifact refs and bounded summaries in
+Events. `srs.md`, `sdd.md`, `test-plan.md`, their metadata, model-call record,
+model response, pytest stdout/stderr, ToolRun, Approval, Git evidence and
+Harness reports live below `.yipilot/tasks/<task>/runs/<run>/`.
+
+`quality pytest` is deliberately limited to the policy-generated fixed argv
+`<configured Python> -m pytest` in the task workspace. It has no user supplied
+shell, interpreter, pytest arguments, language runner or environment values.
+It records the explicit CLI invocation as an Approval and does not modify Git.
+
+Real model use is not part of this command set. A future explicit live boundary
+may charge the configured provider and sends only its approved prompt and
+Artifact inputs—not repository source, `.git`, or process environment. The
+SDD semantic-review flag remains disabled by default: deterministic structure
+checks do not claim to prove a design correct. No command automatically applies,
+commits, pushes, merges, or repairs Git changes.
