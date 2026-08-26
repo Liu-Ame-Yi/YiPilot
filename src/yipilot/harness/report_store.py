@@ -12,6 +12,9 @@ from yipilot.security.redaction import SecretRedactor
 
 TASK_INTEGRITY_REPORT_NAME = "task-integrity-report.json"
 CODE_HARNESS_REPORT_NAME = "code-harness-report.json"
+SRS_HARNESS_REPORT_NAME = "srs-harness-report.json"
+SDD_HARNESS_REPORT_NAME = "sdd-harness-report.json"
+UNIT_TEST_HARNESS_REPORT_NAME = "unit-test-harness-report.json"
 
 
 class HarnessReportStore:

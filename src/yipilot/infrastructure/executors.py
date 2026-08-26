@@ -135,10 +135,10 @@ class LocalCommandRunner:
     ) -> ToolResult:
         tool.validate_request(request)
         _require_workspace_cwd(project_root, request, cwd)
-        if is_generic_python_executable(tool.executable):
+        if is_generic_python_executable(tool.executable) and tool.kind is not ToolKind.TEST:
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
-                "generic Python interpreters are not Task 10 tools",
+                "generic Python interpreters are only allowed for registered test tools",
             )
         _require_approval(
             request, tool, self.trust_level, approval_gate, policy_revision,

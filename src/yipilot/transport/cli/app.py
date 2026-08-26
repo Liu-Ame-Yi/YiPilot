@@ -3,7 +3,7 @@ import math
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, TypeVar
+from typing import Annotated, TypeVar, cast
 
 import typer
 from pydantic import BaseModel
@@ -12,9 +12,13 @@ from yipilot import __version__
 from yipilot.application.code_service import CodeService
 from yipilot.application.project_service import ProjectService
 from yipilot.application.provider_service import ProviderService
+from yipilot.application.quality_artifacts import QualityArtifactService
 from yipilot.application.repo_service import RepoMetadata, RepoService
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
+from yipilot.harness.models import HarnessReport
+from yipilot.harness.quality import SddHarness, SrsHarness
+from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.git_runner import GitRunner
 from yipilot.infrastructure.task_store import FileTaskStore
@@ -31,11 +35,13 @@ run_app = typer.Typer(no_args_is_help=True)
 repo_app = typer.Typer(no_args_is_help=True)
 workspace_app = typer.Typer(no_args_is_help=True)
 code_app = typer.Typer(no_args_is_help=True)
+quality_app = typer.Typer(no_args_is_help=True)
 settings_app = typer.Typer(no_args_is_help=True)
 provider_app = typer.Typer(no_args_is_help=True)
 app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
 app.add_typer(code_app, name="code")
+app.add_typer(quality_app, name="quality")
 app.add_typer(settings_app, name="settings")
 task_app.add_typer(repo_app, name="repo")
 task_app.add_typer(workspace_app, name="workspace")
@@ -158,6 +164,71 @@ def workspace_prepare(
             f"Prepared workspace {workspace.path}.",
         )
 
+
+@quality_app.command("generate")
+def quality_generate(
+    task_id: Annotated[str, typer.Option("--taskid")],
+    prd: Annotated[str, typer.Option("--prd")] = "",
+    source_run_id: Annotated[str | None, typer.Option("--source-run-id")] = None,
+    prd_artifact_id: Annotated[str | None, typer.Option("--prd-artifact-id")] = None,
+    model: Annotated[str, typer.Option("--model")] = "fake",
+    profile_revision: Annotated[int, typer.Option("--profile-revision")] = 1,
+    request_id: Annotated[str | None, typer.Option("--request-id")] = None,
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    result = _invoke(output, lambda: QualityArtifactService(project).generate(task_id, prd_text=prd or None, source_run_id=source_run_id, prd_artifact_id=prd_artifact_id, model_mode=model, profile_revision=profile_revision, request_id=request_id))
+    if result is not None:
+        _render_value(output, result.value(), f"Generated quality artifacts for run {result.run_id}.")
+
+
+@quality_app.command("show")
+def quality_show(
+    task_id: Annotated[str, typer.Option("--taskid")],
+    run_id: Annotated[str, typer.Option("--run-id")],
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    def action() -> dict[str, object]:
+        records = FileArtifactStore(FileTaskStore(project)).list(task_id, run_id)
+        return {"task_id": task_id, "run_id": run_id, "artifact_refs": [{"artifact_id": r.artifact_id, "relative_path": r.relative_path, "sha256": r.sha256} for r in records]}
+    value = _invoke(output, action)
+    if value is not None:
+        _render_value(output, value, f"Quality artifacts for run {run_id}.")
+
+
+@quality_app.command("harness")
+def quality_harness(
+    task_id: Annotated[str, typer.Option("--taskid")],
+    run_id: Annotated[str, typer.Option("--run-id")],
+    kind: Annotated[str, typer.Option("--kind")],
+    profile_revision: Annotated[int | None, typer.Option("--profile-revision")] = None,
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    def action() -> HarnessReport:
+        if kind == "srs":
+            return SrsHarness(project, task_id, run_id).run()
+        if kind == "sdd":
+            return SddHarness(project, task_id, run_id, profile_revision=profile_revision).run()
+        raise DomainError("HARNESS_KIND_INVALID", "harness kind must be srs or sdd")
+    report = cast(HarnessReport | None, _invoke(output, action))
+    if report is not None:
+        _render(output, report, f"{kind} Harness status: {report.status}.")
+
+
+@quality_app.command("pytest")
+def quality_pytest(
+    task_id: Annotated[str, typer.Option("--taskid")],
+    alias: Annotated[str, typer.Option("--alias")],
+    timeout_seconds: Annotated[float, typer.Option("--timeout-seconds")] = 60,
+    request_id: Annotated[str | None, typer.Option("--request-id")] = None,
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    value = _invoke(output, lambda: QualityArtifactService(project).run_pytest(task_id, alias, timeout_seconds=timeout_seconds, request_id=request_id))
+    if value is not None:
+        _render_value(output, value, f"Controlled pytest status: {value['status']}.")
 
 @code_app.command("generate")
 def code_generate(

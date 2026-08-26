@@ -58,10 +58,10 @@ class ToolRegistry:
             raise DomainError(
                 "APPROVAL_REQUIRED", "high-risk tool execution requires approval"
             )
-        if is_generic_python_executable(tool.executable):
+        if is_generic_python_executable(tool.executable) and tool.kind is not ToolKind.TEST:
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
-                "generic Python interpreters are not Task 10 tools",
+                "generic Python interpreters are only allowed for registered test tools",
             )
         return tool
 
