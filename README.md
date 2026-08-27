@@ -148,7 +148,7 @@ deterministic; they never scan, upload, or summarize the repository.
 ```powershell
 uv run yipilot quality generate --project C:\work\demo --taskid 1001 --prd "Build a redacted offline quality workflow." --model replay --output json
 uv run yipilot quality harness --project C:\work\demo --taskid 1001 --run-id <quality-run-id> --kind srs --output json
-uv run yipilot quality harness --project C:\work\demo --taskid 1001 --run-id <quality-run-id> --kind sdd --output json
+uv run yipilot quality harness --project C:\work\demo --taskid 1001 --run-id <quality-run-id> --kind sdd --profile-revision 1 --output json
 # returns run_id and approval_target_fingerprint; this only prepares the fixed test request
 uv run yipilot quality pytest --project C:\work\demo --taskid 1001 --alias sample --prepare --output json
 # an authorized external approval workflow persists an Approval for this exact Run and fingerprint
@@ -166,9 +166,5 @@ Harness reports live below `.yipilot/tasks/<task>/runs/<run>/`.
 shell, interpreter, pytest arguments, language runner or environment values.
 A missing or stale Approval returns `APPROVAL_REQUIRED` before pytest starts. This command only consumes a persisted, exact Approval; it never grants one and does not modify Git.
 
-Real model use is not part of this command set. A future explicit live boundary
-may charge the configured provider and sends only its approved prompt and
-Artifact inputs—not repository source, `.git`, or process environment. The
-SDD semantic-review flag remains disabled by default: deterministic structure
-checks do not claim to prove a design correct. No command automatically applies,
+`quality generate` currently supports only offline `fake` and `replay` fixtures; the Task 16 live adapter is not wired to this command. A future explicit live boundary may charge the configured provider and send only its approved prompt and Artifact inputs—not repository source, `.git`, or process environment. The SDD `--semantic-review` flag remains disabled by default; when explicitly enabled it blocks as not implemented and makes no network request or design-correctness claim. No command automatically applies,
 commits, pushes, merges, or repairs Git changes.
