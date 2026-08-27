@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated, TypeVar, cast
 
 import typer
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from yipilot import __version__
 from yipilot.application.code_service import CodeService
@@ -618,13 +618,23 @@ def _invoke(
     _validate_output(output)
     try:
         return action()
-    except DomainError as error:
+    except (DomainError, ValidationError) as error:
+        code, message = (
+            (error.code, error.message)
+            if isinstance(error, DomainError)
+            else ("VALIDATION_ERROR", "input validation failed")
+        )
+        value = SecretRedactor().redact({"code": code, "message": message})
+        assert isinstance(value, dict)
+        safe_code, safe_message = value["code"], value["message"]
+        assert isinstance(safe_code, str)
+        assert isinstance(safe_message, str)
         _render_value(
             output,
-            {"code": error.code, "message": error.message},
-            str(error),
+            {"code": safe_code, "message": safe_message},
+            f"{safe_code}: {safe_message}",
         )
-        raise typer.Exit(code=2 if error.code == "INVALID_TASK_ID" else 1) from error
+        raise typer.Exit(code=2 if code == "INVALID_TASK_ID" else 1) from error
 
 
 def _settings_invoke(output: str, action: Callable[[], Result]) -> Result | None:

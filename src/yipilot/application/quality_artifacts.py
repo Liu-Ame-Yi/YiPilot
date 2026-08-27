@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import sys
 from collections.abc import Mapping
@@ -17,6 +18,7 @@ from yipilot.application.tool_registry import ToolRegistry
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
+    MAX_TOOL_TIMEOUT_SECONDS,
     QUALITY_PYTEST_POLICY_REVISION,
     QUALITY_PYTEST_TOOL_ID,
     ArgvRule,
@@ -78,6 +80,9 @@ _DEFAULT_QUALITY_FIXTURES: dict[str, ModelResponse] = {
 }
 
 
+_QUALITY_PYTEST_MAX_TIMEOUT_SECONDS = 600.0
+
+
 @dataclass(frozen=True)
 class QualityGenerationResult:
     task_id: str
@@ -121,6 +126,7 @@ class QualityArtifactService:
         provider_profile_name: str = "offline-quality",
         request_id: str | None = None,
     ) -> QualityGenerationResult:
+        _validate_quality_profile_revision(profile_revision)
         if model_mode not in {"fake", "replay"}:
             raise DomainError("MODEL_MODE_INVALID", "model mode must be fake or replay")
         if (prd_text is None) == (prd_artifact_id is None) or (
@@ -350,6 +356,7 @@ class QualityArtifactService:
         timeout_seconds: float = 60,
         request_id: str | None = None,
     ) -> dict[str, object]:
+        _validate_pytest_timeout(timeout_seconds)
         self._store.get_task(task_id)
         operation = self._store.create_operation(
             task_id,
@@ -580,6 +587,23 @@ def _pytest_tool_request(
     )
 
 
+def _validate_quality_profile_revision(value: int) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise DomainError("VALIDATION_ERROR", "invalid quality generation input")
+
+
+def _validate_pytest_timeout(value: float) -> None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or not 0 < value <= min(
+            MAX_TOOL_TIMEOUT_SECONDS, _QUALITY_PYTEST_MAX_TIMEOUT_SECONDS
+        )
+    ):
+        raise DomainError("VALIDATION_ERROR", "invalid pytest preparation input")
+
+
 def _pytest_report_value(result: ToolResult) -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -602,7 +626,7 @@ def _pytest_policy(timeout: float) -> ExecutionPolicy:
                 argv_schema=(ArgvRule(literal="-m"), ArgvRule(literal="pytest")),
                 allowed_env_names=("SYSTEMROOT", "WINDIR"),
                 max_output_bytes=128 * 1024,
-                max_timeout_seconds=min(timeout, 600),
+                max_timeout_seconds=min(timeout, _QUALITY_PYTEST_MAX_TIMEOUT_SECONDS),
             ),
         ),
     )
