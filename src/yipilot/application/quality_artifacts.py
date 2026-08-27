@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,13 +12,13 @@ from threading import Event
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from yipilot.application.approval import ApprovalGate, approval_action_type
+from yipilot.application.approval import ApprovalGate
 from yipilot.application.tool_registry import ToolRegistry
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
-    ApprovalDecision,
-    ApprovalRecord,
+    QUALITY_PYTEST_POLICY_REVISION,
+    QUALITY_PYTEST_TOOL_ID,
     ArgvRule,
     ArtifactRef,
     ExecutionPolicy,
@@ -32,7 +33,6 @@ from yipilot.domain.model import (
     ModelChunk,
     ModelRequest,
     ModelResponse,
-    model_request_fingerprint,
 )
 from yipilot.domain.models import RunStatus
 from yipilot.harness.quality import UnitTestHarness
@@ -55,6 +55,29 @@ class _QualityDocuments(BaseModel):
     test_plan: str = Field(min_length=1)
 
 
+def _fixture_fingerprint(prd: str) -> str:
+    return hashlib.sha256(prd.encode()).hexdigest()
+
+
+def _fixture_response(payload: str) -> ModelResponse:
+    return ModelResponse(chunks=(ModelChunk(content=payload),))
+
+
+_DEFAULT_QUALITY_FIXTURES: dict[str, ModelResponse] = {
+    _fixture_fingerprint(
+        "Build a redacted offline quality workflow."
+    ): _fixture_response(
+        '{"schema_version":1,"srs":"# SRS\\n\\n## Goals and scope\\nOffline audit report.\\n\\n## Functional requirements\\n- FR-101: Produce redacted audit evidence.\\n\\n## Non-functional requirements\\n- NFR-101: Store bounded artifacts.\\n\\n## Acceptance criteria\\n- FR-101 has a passing report.\\n\\n## Assumptions and constraints\\n- Explicit PRD only.\\n","sdd":"# SDD\\n\\n## Architecture and components\\nQuality artifacts.\\n\\n## Interfaces and data flow\\nPRD -> SRS -> SDD.\\n\\n## Constraints\\nPython only.\\n\\n## Error handling\\nStale evidence blocks.\\n\\n## Test traceability\\nFR-101.\\n\\n## SRS reference\\nSRS Artifact: {SRS_ARTIFACT}.\\n","test_plan":"# Test Plan\\n\\n## Test scope\\nFR-101.\\n\\n## Preconditions\\nFresh evidence.\\n\\n## Test cases and commands\\n`python -m pytest`\\n\\n## Expected results\\nExit zero.\\n\\n## Requirements and design references\\nFR-101; SRS Artifact: {SRS_ARTIFACT}; SDD Artifact: {SDD_ARTIFACT}.\\n"}'
+    ),
+    _fixture_fingerprint("Build alpha capability."): _fixture_response(
+        '{"schema_version":1,"srs":"# SRS\\n\\n## Goals and scope\\nAlpha capability.\\n\\n## Functional requirements\\n- FR-201: Deliver alpha.\\n\\n## Non-functional requirements\\n- NFR-201: Keep artifacts redacted.\\n\\n## Acceptance criteria\\n- FR-201 is verified.\\n\\n## Assumptions and constraints\\n- Explicit PRD only.\\n","sdd":"# SDD\\n\\n## Architecture and components\\nAlpha component.\\n\\n## Interfaces and data flow\\nPRD -> SRS -> SDD.\\n\\n## Constraints\\nPython only.\\n\\n## Error handling\\nStale evidence blocks.\\n\\n## Test traceability\\nFR-201.\\n\\n## SRS reference\\nSRS Artifact: {SRS_ARTIFACT}.\\n","test_plan":"# Test Plan\\n\\n## Test scope\\nFR-201.\\n\\n## Preconditions\\nFresh evidence.\\n\\n## Test cases and commands\\n`python -m pytest`\\n\\n## Expected results\\nExit zero.\\n\\n## Requirements and design references\\nFR-201; SRS Artifact: {SRS_ARTIFACT}; SDD Artifact: {SDD_ARTIFACT}.\\n"}'
+    ),
+    _fixture_fingerprint("Build beta capability."): _fixture_response(
+        '{"schema_version":1,"srs":"# SRS\\n\\n## Goals and scope\\nBeta capability.\\n\\n## Functional requirements\\n- FR-301: Deliver beta.\\n\\n## Non-functional requirements\\n- NFR-301: Keep artifacts redacted.\\n\\n## Acceptance criteria\\n- FR-301 is verified.\\n\\n## Assumptions and constraints\\n- Explicit PRD only.\\n","sdd":"# SDD\\n\\n## Architecture and components\\nBeta component.\\n\\n## Interfaces and data flow\\nPRD -> SRS -> SDD.\\n\\n## Constraints\\nPython only.\\n\\n## Error handling\\nStale evidence blocks.\\n\\n## Test traceability\\nFR-301.\\n\\n## SRS reference\\nSRS Artifact: {SRS_ARTIFACT}.\\n","test_plan":"# Test Plan\\n\\n## Test scope\\nFR-301.\\n\\n## Preconditions\\nFresh evidence.\\n\\n## Test cases and commands\\n`python -m pytest`\\n\\n## Expected results\\nExit zero.\\n\\n## Requirements and design references\\nFR-301; SRS Artifact: {SRS_ARTIFACT}; SDD Artifact: {SDD_ARTIFACT}.\\n"}'
+    ),
+}
+
+
 @dataclass(frozen=True)
 class QualityGenerationResult:
     task_id: str
@@ -74,9 +97,16 @@ class QualityGenerationResult:
 class QualityArtifactService:
     """Create offline-replayable quality documents from only explicit PRD input."""
 
-    def __init__(self, project_root: Path, *, settings_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        *,
+        settings_dir: Path | None = None,
+        fixture_responses: Mapping[str, ModelResponse] | None = None,
+    ) -> None:
         self._project_root = Path(project_root).resolve(strict=True)
         self._providers = FileProviderStore(settings_dir)
+        self._fixtures = dict(fixture_responses or _DEFAULT_QUALITY_FIXTURES)
         self._store = FileTaskStore(self._project_root)
 
     def generate(
@@ -93,16 +123,17 @@ class QualityArtifactService:
     ) -> QualityGenerationResult:
         if model_mode not in {"fake", "replay"}:
             raise DomainError("MODEL_MODE_INVALID", "model mode must be fake or replay")
-        if (prd_text is None) == (prd_artifact_id is None):
+        if (prd_text is None) == (prd_artifact_id is None) or (
+            prd_text is not None and not prd_text.strip()
+        ):
             raise DomainError(
-                "PRD_INPUT_INVALID", "provide exactly one PRD text or PRD Artifact"
+                "PRD_INPUT_INVALID", "provide one non-empty PRD text or PRD Artifact"
             )
-        if prd_text is not None and not prd_text.strip():
-            raise DomainError("PRD_INPUT_INVALID", "PRD text is required")
         self._store.get_task(task_id)
-        source_fingerprint = hashlib.sha256(
-            (prd_text or prd_artifact_id or "").encode()
-        ).hexdigest()
+        prd_content, source_ref = self._prd_content(
+            task_id, prd_text, source_run_id, prd_artifact_id
+        )
+        source_fingerprint = _source_fingerprint(prd_content, source_ref)
         operation = self._store.create_operation(
             task_id,
             "quality_artifacts",
@@ -128,14 +159,10 @@ class QualityArtifactService:
                     )
                 ],
             )
-        journal = _journal(self._store, run)
-        artifacts = FileArtifactStore(self._store)
+        journal, artifacts = _journal(self._store, run), FileArtifactStore(self._store)
         self._store.set_run_status(run.run_id, RunStatus.RUNNING)
         journal.append("run.started", {})
         try:
-            prd_content, source_ref = self._prd_content(
-                task_id, prd_text, source_run_id, prd_artifact_id
-            )
             profile_model, current_revision = "quality-fixture", profile_revision
             if provider_profile_name != "offline-quality":
                 profile = self._providers.get(provider_profile_name)
@@ -146,7 +173,7 @@ class QualityArtifactService:
                 producer="quality_artifacts",
                 relative_path="artifacts/prd.md",
                 content=prd_content.encode(),
-                input_fingerprint=hashlib.sha256(prd_content.encode()).hexdigest(),
+                input_fingerprint=_fixture_fingerprint(prd_content),
                 operation_id=operation.operation_id,
             )
             input_ref = _ref(prd)
@@ -161,23 +188,10 @@ class QualityArtifactService:
                 timeout_seconds=1,
                 output_budget_bytes=4096,
                 allowed_input_artifact_refs=(input_ref,),
-                input_fingerprint=model_request_fingerprint(
-                    "Generate quality artifacts from the approved PRD.", (input_ref,)
-                ),
+                input_fingerprint=prd.sha256,
                 user_instruction="Generate quality artifacts from the approved PRD.",
             )
-            fixture = ModelResponse(
-                chunks=(
-                    ModelChunk(content=_quality_payload(prd_content).model_dump_json()),
-                )
-            )
-            port = (
-                FakeModelPort(fixture)
-                if model_mode == "fake"
-                else RecordedReplayModelPort(
-                    "quality-replay-v1", {request.input_fingerprint: fixture}
-                )
-            )
+            port = self._model_port(model_mode, request.input_fingerprint)
             response = "".join(chunk.content for chunk in port.stream(request))
             try:
                 payload = _QualityDocuments.model_validate_json(response)
@@ -211,7 +225,7 @@ class QualityArtifactService:
                 started_at=datetime.now(UTC),
                 ended_at=datetime.now(UTC),
                 response_artifact_ref=_ref(response_record),
-                redacted_summary="offline quality document payload stored",
+                redacted_summary="offline quality fixture response stored",
             )
             call_record = artifacts.write_bytes(
                 task_id,
@@ -315,6 +329,19 @@ class QualityArtifactService:
             journal.append("run.failed", {"error_code": error.code})
             raise
 
+    def _model_port(
+        self, model_mode: str, fingerprint: str
+    ) -> FakeModelPort | RecordedReplayModelPort:
+        if model_mode == "fake":
+            try:
+                return FakeModelPort(self._fixtures[fingerprint])
+            except KeyError as error:
+                raise DomainError(
+                    "QUALITY_FIXTURE_NOT_FOUND",
+                    "no fake quality fixture matches this input",
+                ) from error
+        return RecordedReplayModelPort("quality-replay-v1", self._fixtures)
+
     def prepare_pytest(
         self,
         task_id: str,
@@ -369,32 +396,6 @@ class QualityArtifactService:
             "operation_id": operation.operation_id,
             "run_id": run.run_id,
             "approval_target_fingerprint": request.fingerprint,
-        }
-
-    def approve_pytest(
-        self, task_id: str, run_id: str, approval_id: str
-    ) -> dict[str, object]:
-        request, _ = self._pytest_request(task_id, run_id)
-        run = self._store.get_run(task_id, run_id)
-        policy = _pytest_policy(request.timeout_seconds)
-        approval = ApprovalRecord(
-            approval_id=approval_id,
-            task_id=task_id,
-            operation_id=run.operation_id,
-            run_id=run_id,
-            action_type=approval_action_type(
-                policy.tools[0], LocalCommandRunner.trust_level
-            ),
-            target_fingerprint=request.fingerprint,
-            policy_revision=policy.revision,
-            decision=ApprovalDecision.APPROVED,
-            decided_at=datetime.now(UTC),
-            simulation_only=False,
-        )
-        FileApprovalStore(self._store).save(approval)
-        return {
-            "approval_id": approval.approval_id,
-            "confirmation_token": approval.target_fingerprint,
         }
 
     def run_pytest(
@@ -565,7 +566,7 @@ def _pytest_tool_request(
         operation_id=run.operation_id,
         run_id=run.run_id,
         workspace_relative_path=f".yipilot/tasks/{run.task_id}/repos/{workspace.repo_alias}/workspaces/{run.run_id}",
-        tool_id="python-pytest",
+        tool_id=QUALITY_PYTEST_TOOL_ID,
         argv=(sys.executable, "-m", "pytest"),
         timeout_seconds=timeout,
         output_budget_bytes=128 * 1024,
@@ -587,10 +588,10 @@ def _pytest_report_value(result: ToolResult) -> dict[str, object]:
 
 def _pytest_policy(timeout: float) -> ExecutionPolicy:
     return ExecutionPolicy(
-        revision="quality-pytest-v1",
+        revision=QUALITY_PYTEST_POLICY_REVISION,
         tools=(
             ToolPolicy(
-                tool_id="python-pytest",
+                tool_id=QUALITY_PYTEST_TOOL_ID,
                 kind=ToolKind.TEST,
                 executable=sys.executable,
                 argv_schema=(ArgvRule(literal="-m"), ArgvRule(literal="pytest")),
@@ -633,27 +634,13 @@ def _value(record: ArtifactRecord) -> dict[str, str]:
     }
 
 
-def _srs(prd: ArtifactRecord, source_ref: dict[str, str] | None) -> str:
-    source = source_ref["artifact_id"] if source_ref else "explicit-text"
-    return f"# SRS\n\nUpstream PRD Artifact: {prd.artifact_id}; source: {source}.\n\n## Goals and scope\nDeliver the approved PRD capability.\n\n## Functional requirements\n- FR-001: Preserve the explicit PRD intent in run-scoped artifacts.\n\n## Non-functional requirements\n- NFR-001: Keep evidence deterministic and redacted.\n\n## Acceptance criteria\n- FR-001 has a tracked test plan.\n\n## Assumptions and constraints\n- Only explicit PRD input is used.\n"
-
-
-def _sdd(srs: ArtifactRecord) -> str:
-    return f"# SDD\n\n## Architecture and components\nQualityArtifactService and deterministic Harnesses.\n\n## Interfaces and data flow\nPRD Artifact -> SRS -> SDD -> Test Plan.\n\n## Constraints\nPython/pytest only; no arbitrary command execution.\n\n## Error handling\nStale evidence blocks downstream stages.\n\n## Test traceability\n- FR-001 -> pytest Harness.\n\n## SRS reference\nSRS Artifact: {srs.artifact_id}.\n"
-
-
-def _plan(srs: ArtifactRecord, sdd: ArtifactRecord) -> str:
-    return f"# Test Plan\n\n## Test scope\nRun deterministic Python unit tests.\n\n## Preconditions\nA prepared task workspace and fresh Approval.\n\n## Test cases and commands\n- `python -m pytest`\n\n## Expected results\nExit status zero and intact ToolRun Artifacts.\n\n## Requirements and design references\n- FR-001; SRS Artifact: {srs.artifact_id}; SDD Artifact: {sdd.artifact_id}.\n"
-
-
-def _quality_payload(prd: str) -> _QualityDocuments:
-    number = f"{int(hashlib.sha256(prd.encode()).hexdigest()[:8], 16) % 1_000_000:06d}"
-    title = next(
-        (line.lstrip("# ").strip() for line in prd.splitlines() if line.strip()), number
-    )
-    return _QualityDocuments(
-        schema_version=1,
-        srs=f"# SRS\n\n## Goals and scope\n{title}\n\n## Functional requirements\n- FR-{number[:3]}: Deliver {title}.\n\n## Non-functional requirements\n- NFR-{number[3:]}: Preserve redacted evidence.\n\n## Acceptance criteria\n- FR-{number[:3]} is verified.\n\n## Assumptions and constraints\n- Explicit PRD input only.\n",
-        sdd=f"# SDD\n\n## Architecture and components\n{title}\n\n## Interfaces and data flow\nPRD -> SRS -> SDD.\n\n## Constraints\nPython only.\n\n## Error handling\nStale evidence blocks.\n\n## Test traceability\nFR-{number[:3]}.\n\n## SRS reference\nSRS Artifact: {{SRS_ARTIFACT}}.\n",
-        test_plan=f"# Test Plan\n\n## Test scope\nFR-{number[:3]}.\n\n## Preconditions\nFresh approval.\n\n## Test cases and commands\n`python -m pytest`\n\n## Expected results\nExit zero.\n\n## Requirements and design references\nFR-{number[:3]}; SRS Artifact: {{SRS_ARTIFACT}}; SDD Artifact: {{SDD_ARTIFACT}}.\n",
-    )
+def _source_fingerprint(prd: str, source_ref: dict[str, str] | None) -> str:
+    value = {
+        "content_sha256": _fixture_fingerprint(prd),
+        "source_ref": source_ref or {},
+    }
+    return hashlib.sha256(
+        json.dumps(
+            value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()

@@ -11,7 +11,12 @@ from pydantic import JsonValue
 
 from yipilot.application.workspace_service import PreparedWorkspace
 from yipilot.domain.errors import DomainError
-from yipilot.domain.execution import ToolKind, ToolResult, ToolRunStatus
+from yipilot.domain.execution import (
+    QUALITY_PYTEST_POLICY_REVISION,
+    ToolKind,
+    ToolResult,
+    ToolRunStatus,
+)
 from yipilot.harness.git_workspace import GitWorkspaceHarness
 from yipilot.harness.models import (
     HarnessCheck,
@@ -87,7 +92,14 @@ class SrsHarness:
         prd, input_check = _record(
             artifacts, self._task_id, self._run_id, "artifacts/prd.md", "SRS-INPUT-001"
         )
-        checks = [srs_check, input_check, metadata_check]
+        plan, plan_check = _record(
+            artifacts,
+            self._task_id,
+            self._run_id,
+            "artifacts/test-plan.md",
+            "TEST-PLAN-ARTIFACT-001",
+        )
+        checks = [srs_check, input_check, plan_check, metadata_check]
         if srs is not None:
             text = _read(artifacts, srs)
             checks.extend(
@@ -96,17 +108,38 @@ class SrsHarness:
                     _requirements(text),
                 )
             )
-        if metadata is not None and srs is not None and prd is not None:
+        if plan is not None:
+            plan_text = _read(artifacts, plan)
             checks.append(
-                _meta_hashes("SRS-METADATA-001", metadata, {"srs": srs, "prd": prd})
+                _structure("TEST-PLAN-STRUCTURE-001", plan_text, _PLAN_HEADINGS)
             )
+            checks.append(
+                _passed(
+                    "TEST-PLAN-REFERENCES-001",
+                    "test plan has requirement and design references",
+                    [plan.relative_path],
+                )
+                if re.search(r"\bFR-\d{3}\b", plan_text)
+                and "SRS Artifact:" in plan_text
+                and "SDD Artifact:" in plan_text
+                else _failed(
+                    "TEST-PLAN-REFERENCES-001",
+                    "test plan lacks requirement or design references",
+                )
+            )
+        if metadata is not None and srs is not None and prd is not None:
+            records = {"srs": srs, "prd": prd}
+            if plan is not None:
+                records["test_plan"] = plan
+            checks.append(_meta_hashes("SRS-METADATA-001", metadata, records))
             checks.append(_fingerprint_check("SRS-FINGERPRINT-001", metadata, prd))
+            checks.append(_upstream_prd_check(artifacts, metadata, self._run_id))
         return _report(
             self._store,
             self._task_id,
             self._run_id,
             "srs_harness",
-            "1.0.0",
+            "1.1.0",
             checks,
             metadata,
             persist,
@@ -160,15 +193,21 @@ class SddHarness:
             self._task_id,
             self._run_id,
             "artifacts/srs.md",
-            "SDD-SRS-REFERENCE-001",
+            "SDD-SRS-ARTIFACT-001",
         )
         checks = [sdd_check, srs_check, metadata_check]
         if sdd is not None:
             text = _read(artifacts, sdd)
             checks.append(_structure("SDD-STRUCTURE-001", text, _SDD_HEADINGS))
-            if srs is not None and srs.artifact_id not in text:
+            if srs is not None:
                 checks.append(
-                    _failed(
+                    _passed(
+                        "SDD-SRS-REFERENCE-001",
+                        "SDD references the current SRS Artifact",
+                        [srs.relative_path],
+                    )
+                    if srs.artifact_id in text
+                    else _failed(
                         "SDD-SRS-REFERENCE-001",
                         "SDD does not reference the current SRS Artifact",
                     )
@@ -288,8 +327,12 @@ class UnitTestHarness:
             approvals = FileApprovalStore(self._store).list(self._task_id, self._run_id)
             action = f"tool:{ToolKind.TEST.value}:{result.trust_level.value}"
             approved = any(
-                a.action_type == action
+                a.task_id == result.task_id
+                and a.operation_id == result.operation_id
+                and a.run_id == result.run_id
+                and a.action_type == action
                 and a.target_fingerprint == result.request_fingerprint
+                and a.policy_revision == QUALITY_PYTEST_POLICY_REVISION
                 and a.decision.value == "approved"
                 for a in approvals
             )
@@ -347,6 +390,8 @@ def _pytest_report_check(
     if record is None:
         return check
     try:
+        artifacts.verify(task_id, run_id, result.stdout_artifact_ref.artifact_id)
+        artifacts.verify(task_id, run_id, result.stderr_artifact_ref.artifact_id)
         value = json.loads(_read(artifacts, record))
         if not isinstance(value, dict) or value.get("schema_version") != 1:
             raise TypeError
@@ -370,8 +415,8 @@ def _pytest_report_check(
                 "PYTEST-REPORT-001", "pytest report does not match ToolRun evidence"
             )
         )
-    except (TypeError, json.JSONDecodeError):
-        return _failed("PYTEST-REPORT-001", "pytest report is invalid")
+    except (DomainError, TypeError, json.JSONDecodeError):
+        return _failed("PYTEST-REPORT-001", "pytest report is invalid or stale")
 
 
 def _metadata(
@@ -461,6 +506,53 @@ def _fingerprint_check(
         _passed(check_id, "input fingerprint matches PRD")
         if metadata.get("input_fingerprint") == prd.sha256
         else _failed(check_id, "input fingerprint does not match PRD")
+    )
+
+
+def _upstream_prd_check(
+    artifacts: FileArtifactStore, metadata: dict[str, JsonValue], run_id: str
+) -> HarnessCheck:
+    refs = metadata.get("upstream_artifact_refs")
+    if not isinstance(refs, list):
+        return _failed("SRS-UPSTREAM-001", "upstream Artifact refs are invalid")
+    source_refs = [
+        ref
+        for ref in refs
+        if isinstance(ref, dict)
+        and ref.get("run_id") != run_id
+        and isinstance(ref.get("relative_path"), str)
+        and str(ref["relative_path"]).endswith(".md")
+    ]
+    if not source_refs:
+        return _passed(
+            "SRS-UPSTREAM-001", "explicit PRD input has no upstream Artifact"
+        )
+    for ref in source_refs:
+        try:
+            source_task, source_run, artifact_id = (
+                ref["task_id"],
+                ref["run_id"],
+                ref["artifact_id"],
+            )
+            if (
+                not isinstance(source_task, str)
+                or not isinstance(source_run, str)
+                or not isinstance(artifact_id, str)
+            ):
+                raise TypeError
+            record = artifacts.verify(source_task, source_run, artifact_id)
+            if record.relative_path != ref.get(
+                "relative_path"
+            ) or record.sha256 != ref.get("sha256"):
+                return _failed("SRS-UPSTREAM-001", "upstream PRD Artifact is stale")
+        except (DomainError, TypeError):
+            return _failed(
+                "SRS-UPSTREAM-001", "upstream PRD Artifact is missing or invalid"
+            )
+    return _passed(
+        "SRS-UPSTREAM-001",
+        "upstream PRD Artifact is intact",
+        ["upstream_artifact_refs"],
     )
 
 

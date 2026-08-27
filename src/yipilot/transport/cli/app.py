@@ -271,7 +271,6 @@ def quality_pytest(
     run_id: Annotated[str | None, typer.Option("--run-id")] = None,
     alias: Annotated[str | None, typer.Option("--alias")] = None,
     prepare: Annotated[bool, typer.Option("--prepare")] = False,
-    approve: Annotated[bool, typer.Option("--approve")] = False,
     approval_id: Annotated[str | None, typer.Option("--approval-id")] = None,
     confirmation_token: Annotated[
         str | None, typer.Option("--confirmation-token")
@@ -285,28 +284,26 @@ def quality_pytest(
 
     def action() -> dict[str, object]:
         if prepare:
-            if alias is None:
+            if (
+                alias is None
+                or run_id is not None
+                or approval_id is not None
+                or confirmation_token is not None
+            ):
                 raise DomainError(
-                    "PYTEST_ALIAS_REQUIRED",
-                    "pytest preparation requires a repository alias",
+                    "PYTEST_MODE_INVALID",
+                    "pytest preparation accepts only a repository alias",
                 )
             return service.prepare_pytest(
                 task_id, alias, timeout_seconds=timeout_seconds, request_id=request_id
             )
-        if approve:
-            if run_id is None or approval_id is None:
-                raise DomainError(
-                    "APPROVAL_REQUIRED",
-                    "pytest approval requires run ID and approval ID",
-                )
-            return service.approve_pytest(task_id, run_id, approval_id)
-        if run_id is None:
+        if alias is not None or request_id is not None:
             raise DomainError(
-                "PYTEST_RUN_REQUIRED", "pytest execution requires a prepared run ID"
+                "PYTEST_MODE_INVALID", "pytest execution requires only a prepared run"
             )
         return service.run_pytest(
             task_id,
-            run_id,
+            run_id or "missing",
             approval_id=approval_id,
             confirmation_token=confirmation_token,
         )

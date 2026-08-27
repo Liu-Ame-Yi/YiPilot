@@ -15,6 +15,7 @@ from yipilot.domain.execution import (
     ToolRequest,
     ToolResult,
     is_generic_python_executable,
+    is_quality_pytest_request,
 )
 
 
@@ -58,7 +59,9 @@ class ToolRegistry:
             raise DomainError(
                 "APPROVAL_REQUIRED", "high-risk tool execution requires approval"
             )
-        if is_generic_python_executable(tool.executable) and tool.kind is not ToolKind.TEST:
+        if is_generic_python_executable(
+            tool.executable
+        ) and not is_quality_pytest_request(tool, request):
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
                 "generic Python interpreters are only allowed for registered test tools",
@@ -85,7 +88,9 @@ class ToolRegistry:
         trust_level = self._executor.trust_level
         if requires_approval(tool, trust_level):
             if self._approval_gate is None:
-                raise DomainError("APPROVAL_REQUIRED", "high-risk tool execution requires approval")
+                raise DomainError(
+                    "APPROVAL_REQUIRED", "high-risk tool execution requires approval"
+                )
             self._approval_gate.require_approved(
                 request,
                 tool,

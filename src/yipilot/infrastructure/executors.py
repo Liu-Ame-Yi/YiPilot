@@ -22,6 +22,7 @@ from yipilot.domain.execution import (
     ToolResult,
     ToolRunStatus,
     is_generic_python_executable,
+    is_quality_pytest_request,
 )
 from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
@@ -72,8 +73,13 @@ class FakeExecutor:
         del environment
         _require_workspace_cwd(project_root, request, cwd)
         _require_approval(
-            request, tool, self.trust_level, approval_gate, policy_revision,
-            approval_id, confirm_token,
+            request,
+            tool,
+            self.trust_level,
+            approval_gate,
+            policy_revision,
+            approval_id,
+            confirm_token,
         )
         started_at = datetime.now(UTC)
         tool_run_id = str(uuid4())
@@ -135,19 +141,28 @@ class LocalCommandRunner:
     ) -> ToolResult:
         tool.validate_request(request)
         _require_workspace_cwd(project_root, request, cwd)
-        if is_generic_python_executable(tool.executable) and tool.kind is not ToolKind.TEST:
+        if is_generic_python_executable(
+            tool.executable
+        ) and not is_quality_pytest_request(tool, request):
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
                 "generic Python interpreters are only allowed for registered test tools",
             )
         _require_approval(
-            request, tool, self.trust_level, approval_gate, policy_revision,
-            approval_id, confirm_token,
+            request,
+            tool,
+            self.trust_level,
+            approval_gate,
+            policy_revision,
+            approval_id,
+            confirm_token,
         )
         environment = environment or {}
         missing = set(request.env_names).difference(environment)
         if missing:
-            raise DomainError("TOOL_ENV_VALUE_MISSING", "approved environment value is missing")
+            raise DomainError(
+                "TOOL_ENV_VALUE_MISSING", "approved environment value is missing"
+            )
         env = {name: environment[name] for name in request.env_names}
         started_at = datetime.now(UTC)
         tool_run_id = str(uuid4())
@@ -220,12 +235,21 @@ class ControlledWorkspaceWriter:
         tool.validate_request(request)
         _require_workspace_cwd(project_root, request, cwd)
         if tool.kind is not ToolKind.WORKSPACE_WRITE or request.argv != (
-            "yipilot.write-file", "approval-marker.txt", "approved"
+            "yipilot.write-file",
+            "approval-marker.txt",
+            "approved",
         ):
-            raise DomainError("TOOL_WRITE_DENIED", "workspace write is not Task 11's fixed action")
+            raise DomainError(
+                "TOOL_WRITE_DENIED", "workspace write is not Task 11's fixed action"
+            )
         _require_approval(
-            request, tool, self.trust_level, approval_gate, policy_revision,
-            approval_id, confirm_token,
+            request,
+            tool,
+            self.trust_level,
+            approval_gate,
+            policy_revision,
+            approval_id,
+            confirm_token,
         )
         started_at = datetime.now(UTC)
         tool_run_id = str(uuid4())
@@ -294,7 +318,9 @@ def _require_approval(
     if not requires_approval(tool, trust_level):
         return
     if approval_gate is None or policy_revision is None:
-        raise DomainError("APPROVAL_REQUIRED", "high-risk tool execution requires approval")
+        raise DomainError(
+            "APPROVAL_REQUIRED", "high-risk tool execution requires approval"
+        )
     approval_gate.require_approved(
         request,
         tool,
@@ -314,10 +340,14 @@ def _require_workspace_cwd(
     expected = project_path(root, request.workspace_relative_path).resolve(strict=False)
     actual = Path(cwd).resolve(strict=False)
     if (expected != root and root not in expected.parents) or expected != actual:
-        raise DomainError("PATH_DENIED", "executor cwd does not match the task workspace")
+        raise DomainError(
+            "PATH_DENIED", "executor cwd does not match the task workspace"
+        )
 
 
-def _limit_output(stdout: bytes, stderr: bytes, budget: int) -> tuple[bytes, bytes, bool]:
+def _limit_output(
+    stdout: bytes, stderr: bytes, budget: int
+) -> tuple[bytes, bytes, bool]:
     if len(stdout) + len(stderr) <= budget:
         return stdout, stderr, False
     kept_stdout = stdout[:budget]
@@ -329,9 +359,7 @@ def _started(journal: JsonlEventJournal, tool_run_id: str, tool_id: str) -> None
     journal.append("tool.started", {"tool_run_id": tool_run_id, "tool_id": tool_id})
 
 
-def _completed(
-    journal: JsonlEventJournal, result: ToolResult, tool_id: str
-) -> None:
+def _completed(journal: JsonlEventJournal, result: ToolResult, tool_id: str) -> None:
     journal.append(
         "tool.completed",
         {

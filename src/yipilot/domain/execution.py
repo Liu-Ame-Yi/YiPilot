@@ -12,6 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .errors import DomainError
 
+QUALITY_PYTEST_TOOL_ID = "python-pytest"
+QUALITY_PYTEST_POLICY_REVISION = "quality-pytest-v1"
+
 MAX_TOOL_TIMEOUT_SECONDS = 3600.0
 MAX_TOOL_OUTPUT_BYTES = 16 * 1024 * 1024
 
@@ -237,7 +240,9 @@ class AgentPlan(BaseModel):
             != association
             for step in self.steps
         ):
-            raise ValueError("plan requests must belong to the same Task, Operation and Run")
+            raise ValueError(
+                "plan requests must belong to the same Task, Operation and Run"
+            )
         if [step.step_id for step in self.steps] != list(range(1, len(self.steps) + 1)):
             raise ValueError("plan step IDs must be unique and ordered from one")
         return self
@@ -296,18 +301,21 @@ class ToolResult(BaseModel):
         association = (self.task_id, self.operation_id, self.run_id)
         refs = (self.stdout_artifact_ref, self.stderr_artifact_ref)
         if any(
-            (ref.task_id, ref.operation_id, ref.run_id) != association
-            for ref in refs
+            (ref.task_id, ref.operation_id, ref.run_id) != association for ref in refs
         ):
             raise ValueError(
                 "result artifacts must belong to the same Task, Operation and Run"
             )
         changed_paths_ref = self.change_summary.changed_paths_artifact_ref
-        if changed_paths_ref is not None and (
-            changed_paths_ref.task_id,
-            changed_paths_ref.operation_id,
-            changed_paths_ref.run_id,
-        ) != association:
+        if (
+            changed_paths_ref is not None
+            and (
+                changed_paths_ref.task_id,
+                changed_paths_ref.operation_id,
+                changed_paths_ref.run_id,
+            )
+            != association
+        ):
             raise ValueError(
                 "result artifacts must belong to the same Task, Operation and Run"
             )
@@ -416,14 +424,19 @@ class ToolPolicy(BaseModel):
                 "TOOL_ENV_DENIED", "environment name is not allowed by tool policy"
             )
         if request.output_budget_bytes > self.max_output_bytes:
-            raise DomainError(
-                "TOOL_BUDGET_DENIED", "output budget exceeds tool policy"
-            )
+            raise DomainError("TOOL_BUDGET_DENIED", "output budget exceeds tool policy")
         if request.timeout_seconds > self.max_timeout_seconds:
-            raise DomainError(
-                "TOOL_TIMEOUT_DENIED", "timeout exceeds tool policy"
-            )
+            raise DomainError("TOOL_TIMEOUT_DENIED", "timeout exceeds tool policy")
         return self
+
+
+def is_quality_pytest_request(tool: ToolPolicy, request: ToolRequest) -> bool:
+    return (
+        tool.tool_id == QUALITY_PYTEST_TOOL_ID
+        and tool.kind is ToolKind.TEST
+        and request.tool_id == QUALITY_PYTEST_TOOL_ID
+        and request.argv == (tool.executable, "-m", "pytest")
+    )
 
 
 class ExecutionPolicy(BaseModel):
@@ -523,9 +536,7 @@ _ALLOWED_TOOL_RUN_TRANSITIONS = {
 }
 
 
-def transition_tool_run(
-    current: ToolRunStatus, target: ToolRunStatus
-) -> ToolRunStatus:
+def transition_tool_run(current: ToolRunStatus, target: ToolRunStatus) -> ToolRunStatus:
     if current not in _ALLOWED_TOOL_RUN_TRANSITIONS:
         raise DomainError(
             "TOOL_RUN_TERMINAL",
