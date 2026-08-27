@@ -143,7 +143,7 @@ class LocalCommandRunner:
         _require_workspace_cwd(project_root, request, cwd)
         if is_generic_python_executable(
             tool.executable
-        ) and not is_quality_pytest_request(tool, request):
+        ) and not is_quality_pytest_request(tool, request, policy_revision):
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
                 "generic Python interpreters are only allowed for registered test tools",

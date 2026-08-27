@@ -181,7 +181,7 @@ def quality_generate(
     project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
-    result = _invoke(
+    result = _quality_invoke(
         output,
         lambda: QualityArtifactService(project, settings_dir=settings_dir).generate(
             task_id,
@@ -259,7 +259,7 @@ def quality_harness(
             ).run()
         raise DomainError("HARNESS_KIND_INVALID", "harness kind must be srs or sdd")
 
-    report = cast(HarnessReport | None, _invoke(output, action))
+    report = cast(HarnessReport | None, _quality_invoke(output, action))
     if report is not None:
         _render(output, report, f"{kind} Harness status: {report.status}.")
 
@@ -307,7 +307,7 @@ def quality_pytest(
             confirmation_token=confirmation_token,
         )
 
-    value = _invoke(output, action)
+    value = _quality_invoke(output, action)
     if value is not None:
         _render_value(
             output,
@@ -613,6 +613,21 @@ def _workspace_value(workspace: PreparedWorkspace) -> dict[str, object]:
 
 
 def _invoke(
+    output: str, action: Callable[[], Result]
+) -> Result | None:
+    _validate_output(output)
+    try:
+        return action()
+    except DomainError as error:
+        _render_value(
+            output,
+            {"code": error.code, "message": error.message},
+            str(error),
+        )
+        raise typer.Exit(code=2 if error.code == "INVALID_TASK_ID" else 1) from error
+
+
+def _quality_invoke(
     output: str, action: Callable[[], Result]
 ) -> Result | None:
     _validate_output(output)

@@ -1,6 +1,7 @@
 import hashlib
 import io
 import subprocess
+import sys
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,10 @@ from yipilot.application.approval import ApprovalGate, approval_action_type
 from yipilot.application.tool_registry import ToolRegistry
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
+    QUALITY_PYTEST_ALLOWED_ENV_NAMES,
+    QUALITY_PYTEST_MAX_OUTPUT_BYTES,
+    QUALITY_PYTEST_POLICY_REVISION,
+    QUALITY_PYTEST_TOOL_ID,
     ApprovalDecision,
     ApprovalRecord,
     ArgvRule,
@@ -307,3 +312,60 @@ def test_registry_rejects_generic_python_and_direct_non_read_only_runner(
             cwd=workspace,
             project_root=tmp_path,
         )
+
+def test_quality_pytest_policy_rejects_forged_python_and_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, run, workspace, journal = _context(tmp_path)
+    runner = LocalCommandRunner(FileArtifactStore(store), journal)
+    gate = ApprovalGate(FileApprovalStore(store))
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("Popen")
+    )
+
+    def request(argv: tuple[str, ...] = (sys.executable, "-m", "pytest")) -> ToolRequest:
+        return _request(
+            run,
+            argv,
+            tool_id=QUALITY_PYTEST_TOOL_ID,
+            timeout_seconds=60,
+            output_budget_bytes=QUALITY_PYTEST_MAX_OUTPUT_BYTES,
+        )
+
+    def policy(value: ToolRequest, **changes: object) -> ExecutionPolicy:
+        tool = {
+            "tool_id": QUALITY_PYTEST_TOOL_ID,
+            "kind": ToolKind.TEST,
+            "executable": value.argv[0],
+            "argv_schema": tuple(ArgvRule(literal=part) for part in value.argv[1:]),
+            "allowed_env_names": QUALITY_PYTEST_ALLOWED_ENV_NAMES,
+            "max_output_bytes": QUALITY_PYTEST_MAX_OUTPUT_BYTES,
+            "max_timeout_seconds": value.timeout_seconds,
+        }
+        revision = changes.pop("revision", QUALITY_PYTEST_POLICY_REVISION)
+        tool.update(changes)
+        return ExecutionPolicy(revision=str(revision), tools=(ToolPolicy(**tool),))
+
+    def assert_denied(value: ToolRequest, configured: ExecutionPolicy) -> None:
+        with pytest.raises(DomainError, match="^TOOL_EXECUTABLE_DENIED:"):
+            ToolRegistry(configured, runner, gate).validate_request(value)
+        with pytest.raises(DomainError, match="^TOOL_EXECUTABLE_DENIED:"):
+            runner.execute(
+                value,
+                configured.tools[0],
+                cwd=workspace,
+                project_root=tmp_path,
+                policy_revision=configured.revision,
+            )
+
+    fixed = request()
+    assert ToolRegistry(policy(fixed), runner, gate).validate_request(fixed).tool_id == QUALITY_PYTEST_TOOL_ID
+    assert_denied(fixed, policy(fixed, revision="forged"))
+    assert_denied(request((r"C:\fake\python.exe", "-m", "pytest")), policy(request((r"C:\fake\python.exe", "-m", "pytest"))))
+    assert_denied(
+        request((sys.executable, "-m", "pytest", "--verbose")),
+        policy(request((sys.executable, "-m", "pytest", "--verbose"))),
+    )
+    assert_denied(fixed, policy(fixed, allowed_env_names=(*QUALITY_PYTEST_ALLOWED_ENV_NAMES, "SECRET")))
+    assert_denied(fixed, policy(fixed, max_output_bytes=QUALITY_PYTEST_MAX_OUTPUT_BYTES + 1))
+    assert_denied(fixed, policy(fixed, max_timeout_seconds=61))

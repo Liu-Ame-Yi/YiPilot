@@ -250,3 +250,18 @@ def test_unit_harness_rechecks_workspace_git_evidence(tmp_path: Path) -> None:
     )
     report = UnitTestHarness(project, "1001", run_id, workspace, tool_run_id).verify()
     assert _check_status(report, "PYTEST-GIT-EVIDENCE-001") is HarnessStatus.FAILED
+
+def test_unit_harness_blocks_forged_pytest_command_provenance(tmp_path: Path) -> None:
+    project, store = _project(tmp_path)
+    service = QualityArtifactService(project)
+    result = _run(service, store, request_id="forged-command")
+    run_id, tool_run_id = str(result["run_id"]), str(result["tool_run_id"])
+    workspace = WorkspaceService(project, GitRunner()).prepare("1001", "sample", run_id)
+    path = store.event_journal_path(run_id).parent / f"tool-runs/{tool_run_id}.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["argv"][0] = r"C:\fake\python.exe"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    report = UnitTestHarness(project, "1001", run_id, workspace, tool_run_id).verify()
+
+    assert _check_status(report, "PYTEST-COMMAND-001") is HarnessStatus.FAILED

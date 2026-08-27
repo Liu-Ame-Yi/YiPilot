@@ -61,7 +61,7 @@ class ToolRegistry:
             )
         if is_generic_python_executable(
             tool.executable
-        ) and not is_quality_pytest_request(tool, request):
+        ) and not is_quality_pytest_request(tool, request, self._policy.revision):
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
                 "generic Python interpreters are only allowed for registered test tools",

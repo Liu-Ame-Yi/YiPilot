@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+import sys
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -14,6 +15,9 @@ from .errors import DomainError
 
 QUALITY_PYTEST_TOOL_ID = "python-pytest"
 QUALITY_PYTEST_POLICY_REVISION = "quality-pytest-v1"
+QUALITY_PYTEST_MAX_OUTPUT_BYTES = 128 * 1024
+QUALITY_PYTEST_MAX_TIMEOUT_SECONDS = 600.0
+QUALITY_PYTEST_ALLOWED_ENV_NAMES = ("SYSTEMROOT", "WINDIR")
 
 MAX_TOOL_TIMEOUT_SECONDS = 3600.0
 MAX_TOOL_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -430,12 +434,23 @@ class ToolPolicy(BaseModel):
         return self
 
 
-def is_quality_pytest_request(tool: ToolPolicy, request: ToolRequest) -> bool:
+def is_quality_pytest_request(
+    tool: ToolPolicy, request: ToolRequest, policy_revision: str | None
+) -> bool:
     return (
-        tool.tool_id == QUALITY_PYTEST_TOOL_ID
+        policy_revision == QUALITY_PYTEST_POLICY_REVISION
+        and tool.tool_id == QUALITY_PYTEST_TOOL_ID
         and tool.kind is ToolKind.TEST
+        and tool.executable == sys.executable
+        and tool.argv_schema
+        == (ArgvRule(literal="-m"), ArgvRule(literal="pytest"))
+        and tool.allowed_env_names == QUALITY_PYTEST_ALLOWED_ENV_NAMES
+        and tool.max_output_bytes == QUALITY_PYTEST_MAX_OUTPUT_BYTES
+        and tool.max_timeout_seconds == request.timeout_seconds
         and request.tool_id == QUALITY_PYTEST_TOOL_ID
-        and request.argv == (tool.executable, "-m", "pytest")
+        and request.argv == (sys.executable, "-m", "pytest")
+        and request.output_budget_bytes == QUALITY_PYTEST_MAX_OUTPUT_BYTES
+        and request.timeout_seconds <= QUALITY_PYTEST_MAX_TIMEOUT_SECONDS
     )
 
 

@@ -187,3 +187,19 @@ def test_quality_cli_normalizes_pydantic_validation_error_from_harness(
     assert result.stdout == '{"code":"VALIDATION_ERROR","message":"input validation failed"}\n'
     assert "traceback" not in result.output.casefold()
     assert "greater_than" not in result.output
+
+def test_non_quality_cli_domain_error_keeps_existing_output(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "task", "show", "--project", str(project), "--taskid", "1001",
+            "--output", "json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert json.loads(result.stdout)["code"] == "TASK_NOT_FOUND"

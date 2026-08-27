@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -12,8 +13,13 @@ from pydantic import JsonValue
 from yipilot.application.workspace_service import PreparedWorkspace
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
+    QUALITY_PYTEST_ALLOWED_ENV_NAMES,
+    QUALITY_PYTEST_MAX_OUTPUT_BYTES,
+    QUALITY_PYTEST_MAX_TIMEOUT_SECONDS,
     QUALITY_PYTEST_POLICY_REVISION,
+    QUALITY_PYTEST_TOOL_ID,
     ToolKind,
+    ToolRequest,
     ToolResult,
     ToolRunStatus,
 )
@@ -297,13 +303,7 @@ class UnitTestHarness:
                 )
             )
             checks.append(
-                _passed(
-                    "PYTEST-COMMAND-001", "registered argv is fixed Python -m pytest"
-                )
-                if len(result.argv) == 3 and result.argv[1:] == ("-m", "pytest")
-                else _failed(
-                    "PYTEST-COMMAND-001", "ToolRun is not the fixed pytest command"
-                )
+                _pytest_command_check(artifacts, self._task_id, self._run_id, result)
             )
             checks.append(
                 _passed("PYTEST-EXIT-001", "pytest exited successfully")
@@ -361,7 +361,7 @@ class UnitTestHarness:
             self._task_id,
             self._run_id,
             "unit_test_harness",
-            "1.1.0",
+            "1.2.0",
             checks,
             {"git_fingerprint": git_report.input_fingerprint},
             persist,
@@ -405,6 +405,46 @@ def _pytest_report_check(
         )
     except (DomainError, TypeError, json.JSONDecodeError):
         return _failed("PYTEST-REPORT-001", "pytest report is invalid or stale")
+
+
+def _pytest_command_check(
+    artifacts: FileArtifactStore, task_id: str, run_id: str, result: ToolResult
+) -> HarnessCheck:
+    record, check = _record(
+        artifacts,
+        task_id,
+        run_id,
+        "artifacts/pytest-request.json",
+        "PYTEST-COMMAND-001",
+    )
+    if record is None:
+        return check
+    try:
+        value = json.loads(_read(artifacts, record))
+        request = ToolRequest.model_validate(value["request"])
+        valid = (
+            request.task_id == result.task_id
+            and request.operation_id == result.operation_id
+            and request.run_id == result.run_id
+            and request.fingerprint == result.request_fingerprint
+            and request.tool_id == QUALITY_PYTEST_TOOL_ID
+            and request.argv == (sys.executable, "-m", "pytest")
+            and result.argv == request.argv
+            and request.output_budget_bytes == QUALITY_PYTEST_MAX_OUTPUT_BYTES
+            and request.timeout_seconds <= QUALITY_PYTEST_MAX_TIMEOUT_SECONDS
+            and set(request.env_names).issubset(QUALITY_PYTEST_ALLOWED_ENV_NAMES)
+        )
+        return (
+            _passed(
+                "PYTEST-COMMAND-001",
+                "pytest request is the fixed controlled Python policy",
+                [record.relative_path, f"tool-runs/{result.tool_run_id}.json"],
+            )
+            if valid
+            else _failed("PYTEST-COMMAND-001", "pytest request is stale or forged")
+        )
+    except (DomainError, KeyError, TypeError, json.JSONDecodeError):
+        return _failed("PYTEST-COMMAND-001", "pytest request is stale or forged")
 
 
 def _metadata(

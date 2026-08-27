@@ -19,6 +19,8 @@ from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceSe
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     MAX_TOOL_TIMEOUT_SECONDS,
+    QUALITY_PYTEST_MAX_OUTPUT_BYTES,
+    QUALITY_PYTEST_MAX_TIMEOUT_SECONDS,
     QUALITY_PYTEST_POLICY_REVISION,
     QUALITY_PYTEST_TOOL_ID,
     ArgvRule,
@@ -80,7 +82,6 @@ _DEFAULT_QUALITY_FIXTURES: dict[str, ModelResponse] = {
 }
 
 
-_QUALITY_PYTEST_MAX_TIMEOUT_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -581,7 +582,7 @@ def _pytest_tool_request(
         tool_id=QUALITY_PYTEST_TOOL_ID,
         argv=(sys.executable, "-m", "pytest"),
         timeout_seconds=timeout,
-        output_budget_bytes=128 * 1024,
+        output_budget_bytes=QUALITY_PYTEST_MAX_OUTPUT_BYTES,
         env_names=env_names,
         input_fingerprint=hashlib.sha256(f"pytest:{base_sha}".encode()).hexdigest(),
     )
@@ -598,7 +599,7 @@ def _validate_pytest_timeout(value: float) -> None:
         or isinstance(value, bool)
         or not math.isfinite(value)
         or not 0 < value <= min(
-            MAX_TOOL_TIMEOUT_SECONDS, _QUALITY_PYTEST_MAX_TIMEOUT_SECONDS
+            MAX_TOOL_TIMEOUT_SECONDS, QUALITY_PYTEST_MAX_TIMEOUT_SECONDS
         )
     ):
         raise DomainError("VALIDATION_ERROR", "invalid pytest preparation input")
@@ -625,8 +626,8 @@ def _pytest_policy(timeout: float) -> ExecutionPolicy:
                 executable=sys.executable,
                 argv_schema=(ArgvRule(literal="-m"), ArgvRule(literal="pytest")),
                 allowed_env_names=("SYSTEMROOT", "WINDIR"),
-                max_output_bytes=128 * 1024,
-                max_timeout_seconds=min(timeout, _QUALITY_PYTEST_MAX_TIMEOUT_SECONDS),
+                max_output_bytes=QUALITY_PYTEST_MAX_OUTPUT_BYTES,
+                max_timeout_seconds=timeout,
             ),
         ),
     )
