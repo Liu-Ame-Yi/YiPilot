@@ -108,25 +108,19 @@ class SrsHarness:
                     _requirements(text),
                 )
             )
+        sdd, _ = _record(
+            artifacts,
+            self._task_id,
+            self._run_id,
+            "artifacts/sdd.md",
+            "TEST-PLAN-REFERENCES-001",
+        )
         if plan is not None:
             plan_text = _read(artifacts, plan)
             checks.append(
                 _structure("TEST-PLAN-STRUCTURE-001", plan_text, _PLAN_HEADINGS)
             )
-            checks.append(
-                _passed(
-                    "TEST-PLAN-REFERENCES-001",
-                    "test plan has requirement and design references",
-                    [plan.relative_path],
-                )
-                if re.search(r"\bFR-\d{3}\b", plan_text)
-                and "SRS Artifact:" in plan_text
-                and "SDD Artifact:" in plan_text
-                else _failed(
-                    "TEST-PLAN-REFERENCES-001",
-                    "test plan lacks requirement or design references",
-                )
-            )
+            checks.append(_test_plan_references(plan_text, srs, sdd, plan))
         if metadata is not None and srs is not None and prd is not None:
             records = {"srs": srs, "prd": prd}
             if plan is not None:
@@ -139,7 +133,7 @@ class SrsHarness:
             self._task_id,
             self._run_id,
             "srs_harness",
-            "1.1.0",
+            "1.2.0",
             checks,
             metadata,
             persist,
@@ -467,6 +461,41 @@ def _structure(check_id: str, text: str, headings: tuple[str, ...]) -> HarnessCh
     )
 
 
+def _test_plan_references(
+    text: str,
+    srs: ArtifactRecord | None,
+    sdd: ArtifactRecord | None,
+    plan: ArtifactRecord,
+) -> HarnessCheck:
+    refs = [plan.relative_path]
+    if srs is not None:
+        refs.append(srs.relative_path)
+    if sdd is not None:
+        refs.append(sdd.relative_path)
+    srs_reference = re.search(r"SRS Artifact:[ \t]*([0-9a-f-]+)", text)
+    sdd_reference = re.search(r"SDD Artifact:[ \t]*([0-9a-f-]+)", text)
+    if (
+        re.search(r"\bFR-\d{3}\b", text)
+        and srs is not None
+        and sdd is not None
+        and srs_reference is not None
+        and sdd_reference is not None
+        and srs_reference.group(1) == srs.artifact_id
+        and sdd_reference.group(1) == sdd.artifact_id
+    ):
+        return _passed(
+            "TEST-PLAN-REFERENCES-001",
+            "test plan references current requirement, SRS, and SDD Artifacts",
+            refs,
+        )
+    return HarnessCheck(
+        id="TEST-PLAN-REFERENCES-001",
+        status=HarnessStatus.FAILED,
+        blocking=True,
+        description="blocking deterministic quality check",
+        message="test plan references are missing, stale, or invalid",
+        evidence_refs=refs,
+    )
 def _requirements(text: str) -> HarnessCheck:
     return (
         _passed("SRS-REQUIREMENTS-001", "SRS has stable requirement identifiers")

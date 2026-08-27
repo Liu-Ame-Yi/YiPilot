@@ -547,11 +547,16 @@ class QualityArtifactService:
             raise DomainError(
                 "PRD_INPUT_INVALID", "PRD Artifact requires source run ID"
             )
-        record = FileArtifactStore(self._store).verify(
-            task_id, source_run_id, artifact_id
-        )
-        if not record.relative_path.endswith(".md"):
-            raise DomainError("PRD_INPUT_INVALID", "PRD Artifact must be Markdown")
+        try:
+            record = FileArtifactStore(self._store).verify(
+                task_id, source_run_id, artifact_id
+            )
+        except DomainError as error:
+            raise DomainError("PRD_ARTIFACT_INVALID", "PRD Artifact is invalid") from error
+        if record.relative_path != "artifacts/prd.md":
+            raise DomainError(
+                "PRD_ARTIFACT_INVALID", "PRD Artifact must be artifacts/prd.md"
+            )
         root = self._store.event_journal_path(source_run_id).parent
         return (root / record.relative_path).read_text(encoding="utf-8"), _value(record)
 

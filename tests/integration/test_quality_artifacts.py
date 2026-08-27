@@ -478,3 +478,175 @@ def test_sdd_harness_blocks_coherent_fingerprint_and_upstream_ref_mismatch(
     ).verify()
     assert mismatch.status is HarnessStatus.FAILED
     assert _check(mismatch, "SDD-UPSTREAM-001") is HarnessStatus.FAILED
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    (
+        ("SRS Artifact: {SRS_ARTIFACT}", "SRS Artifact: forged-srs"),
+        ("SDD Artifact: {SDD_ARTIFACT}", "SDD Artifact: forged-sdd"),
+        ("SRS Artifact: {SRS_ARTIFACT}", "SRS Artifact:"),
+        ("SDD Artifact: {SDD_ARTIFACT}", "SDD Artifact:"),
+    ),
+)
+def test_srs_harness_blocks_forged_or_missing_test_plan_references(
+    tmp_path: Path, original: str, replacement: str
+) -> None:
+    project = _project(tmp_path)
+    prd = f"Test plan reference {replacement}."
+    srs, sdd, plan = _valid_documents()
+    fixtures = {
+        hashlib.sha256(prd.encode()).hexdigest(): _fixture(
+            srs=srs,
+            sdd=sdd,
+            test_plan=plan.replace(original, replacement),
+        )
+    }
+    result = QualityArtifactService(project, fixture_responses=fixtures).generate(
+        "1001", prd_text=prd, model_mode="fake"
+    )
+    report = SrsHarness(project, "1001", result.run_id).verify()
+    assert report.status is HarnessStatus.FAILED
+    assert _check(report, "TEST-PLAN-REFERENCES-001") is HarnessStatus.FAILED
+
+
+@pytest.mark.parametrize("old_path", ("artifacts/srs.md", "artifacts/prd.md"))
+def test_srs_harness_blocks_old_or_wrong_type_test_plan_reference(
+    tmp_path: Path, old_path: str
+) -> None:
+    project = _project(tmp_path)
+    old = QualityArtifactService(project).generate(
+        "1001", prd_text="Build alpha capability.", model_mode="fake"
+    )
+    old_reference = next(
+        ref["artifact_id"]
+        for ref in old.artifact_refs
+        if ref["relative_path"] == old_path
+    )
+    prd = "Old test plan reference."
+    srs, sdd, plan = _valid_documents()
+    fixtures = {
+        hashlib.sha256(prd.encode()).hexdigest(): _fixture(
+            srs=srs,
+            sdd=sdd,
+            test_plan=plan.replace("{SRS_ARTIFACT}", old_reference),
+        )
+    }
+    result = QualityArtifactService(project, fixture_responses=fixtures).generate(
+        "1001", prd_text=prd, model_mode="fake"
+    )
+    report = SrsHarness(project, "1001", result.run_id).verify()
+    assert report.status is HarnessStatus.FAILED
+    assert _check(report, "TEST-PLAN-REFERENCES-001") is HarnessStatus.FAILED
+
+@pytest.mark.parametrize("relative_path", ("artifacts/srs.md", "artifacts/sdd.md"))
+def test_srs_harness_blocks_test_plan_when_referenced_artifact_is_stale(
+    tmp_path: Path, relative_path: str
+) -> None:
+    project = _project(tmp_path)
+    result = QualityArtifactService(project).generate(
+        "1001", prd_text="Build beta capability.", model_mode="fake"
+    )
+    path = project / ".yipilot/tasks/1001/runs" / result.run_id / relative_path
+    path.write_text("tampered", encoding="utf-8")
+    report = SrsHarness(project, "1001", result.run_id).verify()
+    assert report.status is HarnessStatus.FAILED
+    assert _check(report, "TEST-PLAN-REFERENCES-001") is HarnessStatus.FAILED
+
+
+def test_quality_generation_rejects_non_prd_artifacts_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    service = QualityArtifactService(project)
+    source = service.generate(
+        "1001", prd_text="Build beta capability.", model_mode="fake"
+    )
+    store = FileTaskStore(project)
+    artifacts = FileArtifactStore(store)
+    extras = [
+        artifacts.write_bytes(
+            "1001",
+            source.run_id,
+            producer="test",
+            relative_path=relative_path,
+            content=b"not a PRD",
+            input_fingerprint="test",
+            operation_id=source.operation_id,
+        )
+        for relative_path in (
+            "artifacts/notes.md",
+            "artifacts/pytest-stdout.txt",
+            "artifacts/pytest-stderr.txt",
+        )
+    ]
+    invalid_ids = [
+        ref["artifact_id"]
+        for ref in source.artifact_refs
+        if ref["relative_path"] != "artifacts/prd.md"
+    ] + [record.artifact_id for record in extras]
+    before_runs = [run.run_id for run in store.list_runs("1001")]
+    for artifact_id in invalid_ids:
+        with pytest.raises(DomainError) as error:
+            service.generate(
+                "1001",
+                source_run_id=source.run_id,
+                prd_artifact_id=artifact_id,
+                model_mode="replay",
+            )
+        assert error.value.code == "PRD_ARTIFACT_INVALID"
+        assert [run.run_id for run in store.list_runs("1001")] == before_runs
+
+
+def test_quality_generation_rejects_stale_missing_or_mismatched_prd_artifact(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    service = QualityArtifactService(project)
+    first = service.generate(
+        "1001", prd_text="Build alpha capability.", model_mode="fake"
+    )
+    second = service.generate(
+        "1001", prd_text="Build beta capability.", model_mode="fake"
+    )
+    first_prd = next(
+        ref["artifact_id"]
+        for ref in first.artifact_refs
+        if ref["relative_path"] == "artifacts/prd.md"
+    )
+    second_prd = next(
+        ref["artifact_id"]
+        for ref in second.artifact_refs
+        if ref["relative_path"] == "artifacts/prd.md"
+    )
+    store = FileTaskStore(project)
+    before_runs = [run.run_id for run in store.list_runs("1001")]
+    for source_run_id, artifact_id in ((first.run_id, second_prd),):
+        with pytest.raises(DomainError) as error:
+            service.generate(
+                "1001",
+                source_run_id=source_run_id,
+                prd_artifact_id=artifact_id,
+                model_mode="replay",
+            )
+        assert error.value.code == "PRD_ARTIFACT_INVALID"
+    first_path = project / ".yipilot/tasks/1001/runs" / first.run_id / "artifacts/prd.md"
+    first_path.write_text("tampered", encoding="utf-8")
+    with pytest.raises(DomainError) as error:
+        service.generate(
+            "1001",
+            source_run_id=first.run_id,
+            prd_artifact_id=first_prd,
+            model_mode="replay",
+        )
+    assert error.value.code == "PRD_ARTIFACT_INVALID"
+    second_path = project / ".yipilot/tasks/1001/runs" / second.run_id / "artifacts/prd.md"
+    second_path.unlink()
+    with pytest.raises(DomainError) as error:
+        service.generate(
+            "1001",
+            source_run_id=second.run_id,
+            prd_artifact_id=second_prd,
+            model_mode="replay",
+        )
+    assert error.value.code == "PRD_ARTIFACT_INVALID"
+    assert [run.run_id for run in store.list_runs("1001")] == before_runs
