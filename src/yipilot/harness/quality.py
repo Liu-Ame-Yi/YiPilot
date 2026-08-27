@@ -148,7 +148,7 @@ class SrsHarness:
 
 
 class SddHarness:
-    """Block a malformed SDD, missing SRS link, or stale profile/SRS input."""
+    """Block a malformed SDD, stale upstream input, or stale provider profile."""
 
     def __init__(
         self,
@@ -195,7 +195,14 @@ class SddHarness:
             "artifacts/srs.md",
             "SDD-SRS-ARTIFACT-001",
         )
-        checks = [sdd_check, srs_check, metadata_check]
+        prd, prd_check = _record(
+            artifacts,
+            self._task_id,
+            self._run_id,
+            "artifacts/prd.md",
+            "SDD-PRD-ARTIFACT-001",
+        )
+        checks = [sdd_check, srs_check, prd_check, metadata_check]
         if sdd is not None:
             text = _read(artifacts, sdd)
             checks.append(_structure("SDD-STRUCTURE-001", text, _SDD_HEADINGS))
@@ -212,53 +219,40 @@ class SddHarness:
                         "SDD does not reference the current SRS Artifact",
                     )
                 )
-        if metadata is not None and sdd is not None and srs is not None:
-            checks.append(
-                _meta_hashes("SDD-METADATA-001", metadata, {"sdd": sdd, "srs": srs})
-            )
-            profile = metadata.get("provider_profile")
-            expected = profile.get("revision") if isinstance(profile, dict) else None
-            profile_name = profile.get("name") if isinstance(profile, dict) else None
-            try:
-                actual = (
-                    self._providers.get(profile_name).revision
-                    if isinstance(profile_name, str)
-                    and profile_name != "offline-quality"
-                    else self._profile_revision
-                    if self._profile_revision is not None
-                    else expected
+        if (
+            metadata is not None
+            and sdd is not None
+            and srs is not None
+            and prd is not None
+        ):
+            checks.extend(
+                (
+                    _meta_hashes(
+                        "SDD-METADATA-001",
+                        metadata,
+                        {"prd": prd, "srs": srs, "sdd": sdd},
+                    ),
+                    _fingerprint_check("SDD-FINGERPRINT-001", metadata, prd),
+                    _upstream_prd_check(
+                        artifacts,
+                        metadata,
+                        self._run_id,
+                        "SDD-UPSTREAM-001",
+                    ),
+                    _provider_check(
+                        self._providers,
+                        metadata,
+                        self._profile_revision,
+                    ),
                 )
-                checks.append(
-                    _passed(
-                        "SDD-PROFILE-REVISION-001",
-                        "provider profile revision is current",
-                    )
-                    if expected == actual
-                    else _failed(
-                        "SDD-PROFILE-REVISION-001", "provider profile revision is stale"
-                    )
-                )
-            except DomainError as error:
-                checks.append(_failed("SDD-PROFILE-REVISION-001", error.code))
-        checks.append(
-            HarnessCheck(
-                id="SDD-SEMANTIC-REVIEW-001",
-                status=HarnessStatus.SKIPPED
-                if self._semantic_review
-                else HarnessStatus.PASSED,
-                blocking=self._semantic_review,
-                description="optional model semantic review",
-                message="disabled by default"
-                if not self._semantic_review
-                else "not implemented",
             )
-        )
+        checks.append(_semantic_check(self._semantic_review))
         return _report(
             self._store,
             self._task_id,
             self._run_id,
             "sdd_harness",
-            "1.0.0",
+            "1.1.0",
             checks,
             metadata,
             persist,
@@ -510,11 +504,14 @@ def _fingerprint_check(
 
 
 def _upstream_prd_check(
-    artifacts: FileArtifactStore, metadata: dict[str, JsonValue], run_id: str
+    artifacts: FileArtifactStore,
+    metadata: dict[str, JsonValue],
+    run_id: str,
+    check_id: str = "SRS-UPSTREAM-001",
 ) -> HarnessCheck:
     refs = metadata.get("upstream_artifact_refs")
     if not isinstance(refs, list):
-        return _failed("SRS-UPSTREAM-001", "upstream Artifact refs are invalid")
+        return _failed(check_id, "upstream Artifact refs are invalid")
     source_refs = [
         ref
         for ref in refs
@@ -524,9 +521,7 @@ def _upstream_prd_check(
         and str(ref["relative_path"]).endswith(".md")
     ]
     if not source_refs:
-        return _passed(
-            "SRS-UPSTREAM-001", "explicit PRD input has no upstream Artifact"
-        )
+        return _passed(check_id, "explicit PRD input has no upstream Artifact")
     for ref in source_refs:
         try:
             source_task, source_run, artifact_id = (
@@ -544,15 +539,67 @@ def _upstream_prd_check(
             if record.relative_path != ref.get(
                 "relative_path"
             ) or record.sha256 != ref.get("sha256"):
-                return _failed("SRS-UPSTREAM-001", "upstream PRD Artifact is stale")
+                return _failed(check_id, "upstream PRD Artifact is stale")
         except (DomainError, TypeError):
-            return _failed(
-                "SRS-UPSTREAM-001", "upstream PRD Artifact is missing or invalid"
-            )
+            return _failed(check_id, "upstream PRD Artifact is missing or invalid")
     return _passed(
-        "SRS-UPSTREAM-001",
+        check_id,
         "upstream PRD Artifact is intact",
         ["upstream_artifact_refs"],
+    )
+
+
+def _provider_check(
+    providers: FileProviderStore,
+    metadata: dict[str, JsonValue],
+    offline_revision: int | None,
+) -> HarnessCheck:
+    profile = metadata.get("provider_profile")
+    if not isinstance(profile, dict):
+        return _failed(
+            "SDD-PROFILE-REVISION-001", "provider profile metadata is invalid"
+        )
+    name, revision, model = (
+        profile.get("name"),
+        profile.get("revision"),
+        profile.get("model"),
+    )
+    if (
+        not isinstance(name, str)
+        or not isinstance(revision, int)
+        or not isinstance(model, str)
+    ):
+        return _failed(
+            "SDD-PROFILE-REVISION-001", "provider profile metadata is invalid"
+        )
+    if name == "offline-quality":
+        if offline_revision is None:
+            return _failed(
+                "SDD-PROFILE-REVISION-001", "OFFLINE_PROFILE_REVISION_REQUIRED"
+            )
+        current_revision, current_model = offline_revision, "quality-fixture"
+    else:
+        try:
+            current = providers.get(name)
+        except DomainError as error:
+            return _failed("SDD-PROFILE-REVISION-001", error.code)
+        current_revision, current_model = current.revision, current.model
+    return (
+        _passed("SDD-PROFILE-REVISION-001", "provider profile is current")
+        if (revision, model) == (current_revision, current_model)
+        else _failed("SDD-PROFILE-REVISION-001", "provider profile is stale")
+    )
+
+
+def _semantic_check(enabled: bool) -> HarnessCheck:
+    if enabled:
+        return _failed("SDD-SEMANTIC-REVIEW-001", "SEMANTIC_REVIEW_NOT_IMPLEMENTED")
+    return HarnessCheck(
+        id="SDD-SEMANTIC-REVIEW-001",
+        status=HarnessStatus.PASSED,
+        blocking=False,
+        description="optional model semantic review",
+        message="disabled by default; no network request was made",
     )
 
 

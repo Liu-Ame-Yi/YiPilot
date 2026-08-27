@@ -1,5 +1,6 @@
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from yipilot.domain.model import ModelChunk, ModelResponse
 from yipilot.domain.provider import ProviderProfile
 from yipilot.harness.models import HarnessStatus
 from yipilot.harness.quality import SddHarness, SrsHarness
+from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.provider_store import FileProviderStore
 from yipilot.infrastructure.task_store import FileTaskStore
 
@@ -40,7 +42,8 @@ def test_fake_quality_documents_are_run_scoped_and_harnessed(tmp_path: Path) -> 
         SrsHarness(project, "1001", result.run_id).run().status is HarnessStatus.PASSED
     )
     assert (
-        SddHarness(project, "1001", result.run_id).run().status is HarnessStatus.PASSED
+        SddHarness(project, "1001", result.run_id, profile_revision=1).run().status
+        is HarnessStatus.PASSED
     )
     events = (root / "events.jsonl").read_text(encoding="utf-8")
     assert "Build a redacted" not in events
@@ -187,7 +190,7 @@ def test_harnesses_block_malformed_srs_sdd_and_test_plan(tmp_path: Path) -> None
         "1001", prd_text=prd, model_mode="fake"
     )
     srs_report = SrsHarness(project, "1001", result.run_id).verify()
-    sdd_report = SddHarness(project, "1001", result.run_id).verify()
+    sdd_report = SddHarness(project, "1001", result.run_id, profile_revision=1).verify()
     assert srs_report.status is HarnessStatus.FAILED
     assert sdd_report.status is HarnessStatus.FAILED
     assert (
@@ -270,3 +273,208 @@ def test_srs_requirement_and_test_plan_reference_checks_block(tmp_path: Path) ->
         ).status
         is HarnessStatus.FAILED
     )
+
+
+def _check(report: object, check_id: str) -> HarnessStatus:
+    return next(check.status for check in report.checks if check.id == check_id)
+
+
+def test_sdd_harness_rechecks_prd_fingerprint_and_upstream_artifact(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    service = QualityArtifactService(project)
+    local = service.generate(
+        "1001", prd_text="Build beta capability.", model_mode="fake"
+    )
+    assert (
+        _check(
+            SddHarness(project, "1001", local.run_id, profile_revision=1).verify(),
+            "SDD-PROFILE-REVISION-001",
+        )
+        is HarnessStatus.PASSED
+    )
+    local_prd = project / ".yipilot/tasks/1001/runs" / local.run_id / "artifacts/prd.md"
+    local_prd.write_text("tampered", encoding="utf-8")
+    local_report = SddHarness(
+        project, "1001", local.run_id, profile_revision=1
+    ).verify()
+    assert local_report.status is HarnessStatus.FAILED
+    assert _check(local_report, "SDD-PRD-ARTIFACT-001") is HarnessStatus.FAILED
+
+    source = service.generate(
+        "1001",
+        prd_text="Build alpha capability.",
+        model_mode="fake",
+        request_id="source",
+    )
+    source_prd = next(
+        ref
+        for ref in source.artifact_refs
+        if ref["relative_path"] == "artifacts/prd.md"
+    )
+    downstream = service.generate(
+        "1001",
+        source_run_id=source.run_id,
+        prd_artifact_id=source_prd["artifact_id"],
+        model_mode="replay",
+        request_id="downstream",
+    )
+    (project / ".yipilot/tasks/1001/runs" / source.run_id / "artifacts/prd.md").unlink()
+    upstream_report = SddHarness(
+        project, "1001", downstream.run_id, profile_revision=1
+    ).verify()
+    assert upstream_report.status is HarnessStatus.FAILED
+    assert _check(upstream_report, "SDD-UPSTREAM-001") is HarnessStatus.FAILED
+
+
+def test_sdd_harness_requires_independent_offline_revision_and_blocks_semantic_review(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    result = QualityArtifactService(project).generate(
+        "1001", prd_text="Build beta capability.", model_mode="fake"
+    )
+    missing = SddHarness(project, "1001", result.run_id).verify()
+    assert missing.status is HarnessStatus.FAILED
+    assert _check(missing, "SDD-PROFILE-REVISION-001") is HarnessStatus.FAILED
+
+    enabled = SddHarness(
+        project,
+        "1001",
+        result.run_id,
+        profile_revision=1,
+        semantic_review=True,
+    ).verify()
+    assert enabled.status is HarnessStatus.FAILED
+    assert _check(enabled, "SDD-SEMANTIC-REVIEW-001") is HarnessStatus.FAILED
+
+
+def test_sdd_harness_blocks_invalid_metadata_fingerprint_and_missing_profile(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    settings = tmp_path / "settings"
+    provider = ProviderProfile(
+        name="current-profile",
+        base_url="https://example.invalid",
+        model="fixture-model",
+        timeout_seconds=30,
+        output_budget=4096,
+        revision=1,
+    )
+    FileProviderStore(settings).add(provider)
+    result = QualityArtifactService(project, settings_dir=settings).generate(
+        "1001",
+        prd_text="Build beta capability.",
+        model_mode="fake",
+        provider_profile_name="current-profile",
+    )
+    metadata = (
+        project
+        / ".yipilot/tasks/1001/runs"
+        / result.run_id
+        / "artifacts/quality-metadata.json"
+    )
+    value = json.loads(metadata.read_text(encoding="utf-8"))
+    value["input_fingerprint"] = "0" * 64
+    metadata.write_text(json.dumps(value), encoding="utf-8")
+    report = SddHarness(project, "1001", result.run_id, settings_dir=settings).verify()
+    assert report.status is HarnessStatus.FAILED
+    assert _check(report, "QUALITY-METADATA-001") is HarnessStatus.FAILED
+
+    fresh = QualityArtifactService(project, settings_dir=settings).generate(
+        "1001",
+        prd_text="Build alpha capability.",
+        model_mode="fake",
+        provider_profile_name="current-profile",
+        request_id="missing-profile",
+    )
+    missing = SddHarness(
+        project, "1001", fresh.run_id, settings_dir=tmp_path / "empty"
+    ).verify()
+    assert missing.status is HarnessStatus.FAILED
+    assert _check(missing, "SDD-PROFILE-REVISION-001") is HarnessStatus.FAILED
+
+
+def _replace_registered_metadata(
+    project: Path,
+    run_id: str,
+    mutate: Callable[[dict[str, object]], None],
+) -> None:
+    store = FileTaskStore(project)
+    artifacts = FileArtifactStore(store)
+    record = next(
+        item
+        for item in artifacts.list("1001", run_id)
+        if item.relative_path == "artifacts/quality-metadata.json"
+    )
+    path = store.event_journal_path(run_id).parent / record.relative_path
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    mutate(value)
+    content = json.dumps(value, sort_keys=True).encode()
+    path.write_bytes(content)
+    record_path = (
+        store.event_journal_path(run_id).parent
+        / "artifacts/records"
+        / f"{record.artifact_id}.json"
+    )
+    record_value = json.loads(record_path.read_text(encoding="utf-8"))
+    record_value["sha256"] = hashlib.sha256(content).hexdigest()
+    record_path.write_text(json.dumps(record_value), encoding="utf-8")
+
+
+def test_sdd_harness_blocks_coherent_fingerprint_and_upstream_ref_mismatch(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    service = QualityArtifactService(project)
+    local = service.generate(
+        "1001", prd_text="Build beta capability.", model_mode="fake"
+    )
+    _replace_registered_metadata(
+        project,
+        local.run_id,
+        lambda value: value.update({"input_fingerprint": "0" * 64}),
+    )
+    fingerprint = SddHarness(project, "1001", local.run_id, profile_revision=1).verify()
+    assert fingerprint.status is HarnessStatus.FAILED
+    assert _check(fingerprint, "SDD-FINGERPRINT-001") is HarnessStatus.FAILED
+
+    source = service.generate(
+        "1001",
+        prd_text="Build alpha capability.",
+        model_mode="fake",
+        request_id="ref-source",
+    )
+    source_prd = next(
+        ref
+        for ref in source.artifact_refs
+        if ref["relative_path"] == "artifacts/prd.md"
+    )
+    downstream = service.generate(
+        "1001",
+        source_run_id=source.run_id,
+        prd_artifact_id=source_prd["artifact_id"],
+        model_mode="replay",
+        request_id="ref-downstream",
+    )
+
+    def corrupt_ref(value: dict[str, object]) -> None:
+        refs = value["upstream_artifact_refs"]
+        assert isinstance(refs, list)
+        source_ref = next(
+            ref
+            for ref in refs
+            if isinstance(ref, dict) and ref.get("run_id") == source.run_id
+        )
+        assert isinstance(source_ref, dict)
+        source_ref["sha256"] = "0" * 64
+
+    _replace_registered_metadata(project, downstream.run_id, corrupt_ref)
+    mismatch = SddHarness(
+        project, "1001", downstream.run_id, profile_revision=1
+    ).verify()
+    assert mismatch.status is HarnessStatus.FAILED
+    assert _check(mismatch, "SDD-UPSTREAM-001") is HarnessStatus.FAILED

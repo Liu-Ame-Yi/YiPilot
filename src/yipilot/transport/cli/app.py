@@ -29,9 +29,7 @@ from yipilot.transport.cli.events import (
     is_terminal_event,
 )
 
-app = typer.Typer(
-    no_args_is_help=True, add_completion=False, invoke_without_command=True
-)
+app = typer.Typer(no_args_is_help=True, add_completion=False, invoke_without_command=True)
 task_app = typer.Typer(no_args_is_help=True)
 run_app = typer.Typer(no_args_is_help=True)
 repo_app = typer.Typer(no_args_is_help=True)
@@ -62,17 +60,11 @@ def main(
         return
 
     if output == "json":
-        typer.echo(
-            json.dumps(
-                {"name": "yipilot", "version": __version__}, separators=(",", ":")
-            )
-        )
+        typer.echo(json.dumps({"name": "yipilot", "version": __version__}, separators=(",", ":")))
     elif output == "human":
         typer.echo(f"yipilot {__version__}")
     else:
-        raise typer.BadParameter(
-            "must be either 'human' or 'json'", param_hint="--output"
-        )
+        raise typer.BadParameter("must be either 'human' or 'json'", param_hint="--output")
 
     raise typer.Exit()
 
@@ -243,12 +235,18 @@ def quality_harness(
     run_id: Annotated[str, typer.Option("--run-id")],
     kind: Annotated[str, typer.Option("--kind")],
     profile_revision: Annotated[int | None, typer.Option("--profile-revision")] = None,
+    semantic_review: Annotated[bool, typer.Option("--semantic-review")] = False,
     settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
     project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
     def action() -> HarnessReport:
         if kind == "srs":
+            if semantic_review:
+                raise DomainError(
+                    "SEMANTIC_REVIEW_KIND_INVALID",
+                    "semantic review is only available for the SDD Harness",
+                )
             return SrsHarness(project, task_id, run_id).run()
         if kind == "sdd":
             return SddHarness(
@@ -257,6 +255,7 @@ def quality_harness(
                 run_id,
                 profile_revision=profile_revision,
                 settings_dir=settings_dir,
+                semantic_review=semantic_review,
             ).run()
         raise DomainError("HARNESS_KIND_INVALID", "harness kind must be srs or sdd")
 
@@ -355,10 +354,7 @@ def code_apply(
     if not prepare_only:
         _render_value(
             output,
-            {
-                "code": "PREPARE_ONLY_REQUIRED",
-                "message": "code apply only supports --prepare-only",
-            },
+            {"code": "PREPARE_ONLY_REQUIRED", "message": "code apply only supports --prepare-only"},
             "PREPARE_ONLY_REQUIRED: code apply only supports --prepare-only",
         )
         raise typer.Exit(code=1)
@@ -371,7 +367,6 @@ def code_apply(
             result.value(),
             f"Prepared handoff for run {result.run_id}; no Git apply was performed.",
         )
-
 
 @provider_app.command("add")
 def provider_add(
@@ -387,25 +382,14 @@ def provider_add(
     revision: Annotated[int, typer.Option("--revision")] = 1,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
-    profile = _settings_invoke(
-        output,
-        lambda: ProviderService(settings_dir).add(
-            name=name,
-            provider_type="openai_compatible",
-            base_url=base_url,
-            model=model,
-            timeout_seconds=timeout_seconds,
-            output_budget=output_budget,
-            capabilities=tuple(item for item in capabilities.split(",") if item),
-            enabled=enabled,
-            revision=revision,
-            api_key_ref=api_key_ref,
-        ),
-    )
+    profile = _settings_invoke(output, lambda: ProviderService(settings_dir).add(
+        name=name, provider_type="openai_compatible", base_url=base_url, model=model,
+        timeout_seconds=timeout_seconds, output_budget=output_budget,
+        capabilities=tuple(item for item in capabilities.split(",") if item),
+        enabled=enabled, revision=revision, api_key_ref=api_key_ref,
+    ))
     if profile is not None:
-        _render_value(
-            output, profile.public_value(), f"Saved provider profile {profile.name}."
-        )
+        _render_value(output, profile.public_value(), f"Saved provider profile {profile.name}.")
 
 
 @provider_app.command("list")
@@ -428,9 +412,7 @@ def provider_show(
 ) -> None:
     profile = _settings_invoke(output, lambda: ProviderService(settings_dir).show(name))
     if profile is not None:
-        _render_value(
-            output, profile.public_value(), f"Provider profile {profile.name}."
-        )
+        _render_value(output, profile.public_value(), f"Provider profile {profile.name}.")
 
 
 @provider_app.command("use")
@@ -441,9 +423,7 @@ def provider_use(
 ) -> None:
     profile = _settings_invoke(output, lambda: ProviderService(settings_dir).use(name))
     if profile is not None:
-        _render_value(
-            output, profile.public_value(), f"Using provider profile {profile.name}."
-        )
+        _render_value(output, profile.public_value(), f"Using provider profile {profile.name}.")
 
 
 @provider_app.command("set-key")
@@ -453,13 +433,9 @@ def provider_set_key(
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
     value = typer.prompt("API key", hide_input=True)
-    profile = _settings_invoke(
-        output, lambda: ProviderService(settings_dir).set_key(name, value)
-    )
+    profile = _settings_invoke(output, lambda: ProviderService(settings_dir).set_key(name, value))
     if profile is not None:
-        _render_value(
-            output, profile.public_value(), f"Stored key reference for {profile.name}."
-        )
+        _render_value(output, profile.public_value(), f"Stored key reference for {profile.name}.")
 
 
 @provider_app.command("test")
@@ -469,16 +445,11 @@ def provider_test(
     request: Annotated[bool, typer.Option("--request")] = False,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
-    result = _settings_invoke(
-        output, lambda: ProviderService(settings_dir).test(name, request=request)
-    )
+    result = _settings_invoke(output, lambda: ProviderService(settings_dir).test(name, request=request))
     if result is not None:
         _render_value(
-            output,
-            result.public_value(),
-            f"Provider profile {result.profile.name}: {result.status}.",
+            output, result.public_value(), f"Provider profile {result.profile.name}: {result.status}."
         )
-
 
 @run_app.command("list")
 def run_list(
@@ -543,9 +514,7 @@ def _watch_cursor(value: str) -> int:
     try:
         cursor = int(value)
     except ValueError as error:
-        raise DomainError(
-            "EVENT_CURSOR_INVALID", "event cursor must be an integer"
-        ) from error
+        raise DomainError("EVENT_CURSOR_INVALID", "event cursor must be an integer") from error
     if cursor < 0:
         raise DomainError("EVENT_CURSOR_INVALID", "event cursor must be non-negative")
     return cursor
@@ -610,9 +579,7 @@ def _project_service(project: Path) -> ProjectService:
     return ProjectService(project)
 
 
-def _sync_registered_repository(
-    project: Path, task_id: str, alias: str
-) -> RepoMetadata:
+def _sync_registered_repository(project: Path, task_id: str, alias: str) -> RepoMetadata:
     service = RepoService(project, GitRunner())
     metadata = service.get_metadata(task_id, alias)
     return service.add_and_sync(task_id, metadata.normalized_url, alias)
@@ -645,7 +612,9 @@ def _workspace_value(workspace: PreparedWorkspace) -> dict[str, object]:
     }
 
 
-def _invoke(output: str, action: Callable[[], Result]) -> Result | None:
+def _invoke(
+    output: str, action: Callable[[], Result]
+) -> Result | None:
     _validate_output(output)
     try:
         return action()
@@ -666,16 +635,10 @@ def _settings_invoke(output: str, action: Callable[[], Result]) -> Result | None
         value = SecretRedactor().redact({"code": error.code, "message": error.message})
         assert isinstance(value, dict)
         if output == "json":
-            typer.echo(
-                json.dumps(
-                    value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-                ),
-                err=True,
-            )
+            typer.echo(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")), err=True)
         else:
             typer.echo(f"{error.code}: {value['message']}", err=True)
         raise typer.Exit(code=1) from error
-
 
 def _render(output: str, record: BaseModel, human: str) -> None:
     _render_value(output, record.model_dump(mode="json"), human)
@@ -698,6 +661,4 @@ def _render_value(output: str, value: object, human: str) -> None:
 
 def _validate_output(output: str) -> None:
     if output not in {"human", "json"}:
-        raise typer.BadParameter(
-            "must be either 'human' or 'json'", param_hint="--output"
-        )
+        raise typer.BadParameter("must be either 'human' or 'json'", param_hint="--output")
