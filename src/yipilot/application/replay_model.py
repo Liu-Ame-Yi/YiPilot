@@ -10,10 +10,9 @@ from yipilot.domain.model import (
     ModelResponse,
     model_request_fingerprint,
 )
-from yipilot.infrastructure.artifact_store import FileArtifactStore
-from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.model_port import RecordedReplayModelPort
 from yipilot.infrastructure.task_store import RunRecord
+from yipilot.runtime.ports import RuntimeEvidencePort
 
 REPLAY_MODEL_INSTRUCTION = "yipilot replay model diagnostic"
 
@@ -22,8 +21,7 @@ def replay_model_planner(
     run: RunRecord,
     instruction: str,
     base_request: ToolRequest,
-    artifacts: FileArtifactStore,
-    journal: JsonlEventJournal,
+    evidence: RuntimeEvidencePort,
 ) -> ModelPlanner:
     """Return an exact replay fixture or a deterministic no-match port."""
     fingerprint = model_request_fingerprint(instruction)
@@ -62,6 +60,5 @@ def replay_model_planner(
         RecordedReplayModelPort("builtin-model-replay-v1", responses),
         request,
         base_request,
-        artifacts,
-        journal,
+        evidence,
     )

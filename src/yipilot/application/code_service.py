@@ -12,6 +12,7 @@ from yipilot.application.planner import FakePlanner, PlannerPort, RecordedReplay
 from yipilot.application.replay_model import (
     replay_model_planner as _replay_model_planner,
 )
+from yipilot.application.runtime_adapters import RegistryToolGateway
 from yipilot.application.tool_registry import ToolRegistry
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
@@ -37,6 +38,7 @@ from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactSt
 from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.executors import FakeExecutor
 from yipilot.infrastructure.git_runner import GitRunner
+from yipilot.infrastructure.runtime_evidence import FileRuntimeEvidence
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
 from yipilot.infrastructure.tool_run_store import FileToolRunStore
 
@@ -133,6 +135,7 @@ class CodeService:
         policy = _fake_policy()
         artifacts = FileArtifactStore(self._store)
         registry = ToolRegistry(policy, FakeExecutor(artifacts, journal, stdout=b"fake diagnostic\n"))
+        evidence = FileRuntimeEvidence(artifacts, journal)
 
         if planner_mode == "replay" and instruction != _REPLAY_INSTRUCTION:
             planner: PlannerPort = RecordedReplayPlanner("builtin-replay-v1", {})
@@ -150,7 +153,7 @@ class CodeService:
                 return _generate_result(self._store, self._store.get_run(task_id, run.run_id))
             plan = _plan(run, workspace, instruction_fingerprint)
             planner = _replay_model_planner(
-                run, instruction, plan.steps[0].tool_request, artifacts, journal
+                run, instruction, plan.steps[0].tool_request, evidence
             ) if planner_mode == "replay-model" else (
                 FakePlanner(plan)
                 if planner_mode == "fake"
@@ -158,7 +161,7 @@ class CodeService:
             )
             _save_simulation_approval(self._store, policy, plan.steps[0].tool_request)
 
-        runtime = AgentRuntime(self._project_root, self._store, planner, registry)
+        runtime = AgentRuntime(self._store, planner, RegistryToolGateway(self._project_root, registry), evidence)
         result = runtime.execute(
             task_id,
             operation.operation_id,
@@ -170,7 +173,7 @@ class CodeService:
                 else lambda: False
             ),
         )
-        return _generate_result(self._store, result.run)
+        return _generate_result(self._store, self._store.get_run(task_id, result.run.run_id))
 
     def prepare_only(
         self, task_id: str, source_run_id: str, request_id: str | None = None
