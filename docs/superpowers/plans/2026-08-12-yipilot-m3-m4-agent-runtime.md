@@ -262,10 +262,10 @@ Task 9–13 是 M3。它们先以 fake/replay planner 验证 Yipilot 的执行�
 
 ## 6. 暂缓队列（不创建实现任务）
 
-- FastAPI、HTTP SSE：只在 CLI Agent Runtime、事件 schema、权限和多进程语义稳定后另立服务化规格。
+- FastAPI、HTTP SSE、网页 UI、云部署不是永久否决，也不是 Yipilot 的运行时依赖。它们在 Task 18 完成离线 CLI/Docker 验收后，按实际使用需求另立服务化规格和实现任务。服务化任务必须重新定义鉴权、权限、SSE 断线恢复、多进程、密钥隔离和部署边界，不能混入 M3–M4 验收任务。
 - Docker sandbox：可作为 M3 host_trusted 的风险降低实验；只有白名单挂载、网络、凭据和取消行为可验证后才可宣称 `sandboxed`。
 - 中心化服务、PostgreSQL、Redis、多 worker：遵循设计规格第 16.4 节，独立里程碑。
-- 自动 Git commit/push/merge、企业 Git provider、ACP、网页 UI：均需要独立 approval、身份和审计设计。
+- 自动 Git commit/push/merge、企业 Git provider、ACP：仍需要独立 approval、身份和审计设计。
 
 ## 7. 启动 M3 前的准备
 

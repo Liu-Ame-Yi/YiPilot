@@ -91,7 +91,11 @@ M0–M2 do not call a model provider, Codex CLI or a network LLM. They do not ru
 Git push or Git merge. The only Git effects are local, argv-only cache sync and
 task-owned worktree preparation.
 
-HTTP servers, FastAPI and server-sent-event serving remain outside this local CLI milestone.
+FastAPI, HTTP/SSE serving, a web UI and cloud deployment are not capabilities of
+this local CLI release, and are not permanently abandoned. They are a later,
+separate service milestone after the offline CLI/Docker workflow: it must define
+authentication, authorization, SSE reconnection, multi-process behavior, secret
+isolation and deployment boundaries before any implementation begins.
 
 ## Provider profiles and secret references
 
@@ -168,3 +172,46 @@ A missing or stale Approval returns `APPROVAL_REQUIRED` before pytest starts. Th
 
 `quality generate` currently supports only offline `fake` and `replay` fixtures; the Task 16 live adapter is not wired to this command. A future explicit live boundary may charge the configured provider and send only its approved prompt and Artifact inputs—not repository source, `.git`, or process environment. The SDD `--semantic-review` flag remains disabled by default; when explicitly enabled it blocks as not implemented and makes no network request or design-correctness claim. No command automatically applies,
 commits, pushes, merges, or repairs Git changes.
+
+## Docker: reproducible offline CLI environment
+
+Docker packages the supported Python, locked dependencies, Git and the
+`yipilot` CLI for a reproducible command-line environment. It is not a complete
+security sandbox. Build the image from a clean clone; `.git`, `.venv`,
+`.yipilot`, worktrees, `.codegraph`, caches, `.env` files and common secret-file
+extensions are excluded from the build context.
+
+```powershell
+git clone <repository-url> yipilot
+Set-Location yipilot
+uv sync --group dev --frozen
+uv run yipilot --version
+docker build -t yipilot:local .
+docker run --rm --network none yipilot:local --version
+```
+
+Mount only the project directory that should receive local `.yipilot` state;
+the image runs as the unprivileged `yipilot` user. The default examples keep the
+container offline:
+
+```powershell
+docker run --rm --network none -v "${PWD}:/workspace/project" yipilot:local init --project /workspace/project
+docker run --rm --network none -v "${PWD}:/workspace/project" yipilot:local code generate --project /workspace/project --taskid 1001 --alias sample --instruction "offline fake diagnostic" --planner fake --output json
+```
+
+Do not mount a home directory, `.git`, a keyring, or a directory containing
+credentials. A real provider is an explicit risk acceptance: use only a named
+environment reference such as `env:YIPILOT_API_KEY` in the provider profile and
+pass that variable deliberately when network access is explicitly enabled. The
+container does not use the host keyring. Never pass a key on the command line
+or bake it into the image. After a live experiment, remove `YIPILOT_API_KEY`
+from the launching environment and delete any Windows Credential Manager entry
+you created; inspect and remove the mounted project's `.yipilot` state if it is
+no longer needed.
+
+There is no docker-compose file, Kubernetes manifest, image publication, cloud
+deployment, PyPI release, default network access, automatic Git apply/commit/
+push/merge, external Agent CLI, multi-agent mode or arbitrary command runner in
+this release. Live tests are separate (`pytest -m live`) and remain skipped by
+default, including in CI; they require a configured provider and may incur cost
+or send the approved request to that provider.
