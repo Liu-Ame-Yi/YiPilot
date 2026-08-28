@@ -1,22 +1,30 @@
-name: CI
+name: offline-ci
 
 on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  test:
+  offline:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
         with:
-          enable-cache: true
+          enable-cache: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Install locked development dependencies
         run: uv sync --group dev --frozen
       - name: Lint
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests --no-cache
       - name: Type check
-        run: uv run mypy src
+        run: uv run mypy src --cache-dir "$env:TEMP\\yipilot-m3-m4-mypy"
       - name: Test
-        run: uv run pytest
+        run: uv run pytest -o addopts='' -q -p no:cacheprovider
+      - name: Check diff format
+        run: git diff --check
