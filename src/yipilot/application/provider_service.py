@@ -54,7 +54,9 @@ class ProviderService:
         try:
             profile = ProviderProfile.model_validate(values)
         except ValidationError as error:
-            raise DomainError("PROVIDER_PROFILE_INVALID", "provider profile is invalid") from error
+            raise DomainError(
+                "PROVIDER_PROFILE_INVALID", "provider profile is invalid"
+            ) from error
         return self._store.add(profile)
 
     def list(self) -> dict[str, object]:
@@ -79,18 +81,48 @@ class ProviderService:
             )
         )
 
-    def test(self, name: str | None = None, *, request: bool = False) -> ProviderTestResult:
+    def resolve_chat(self, name: str | None = None) -> ProviderProfile:
+        """Resolve one usable profile before a live Run reserves a workspace."""
+        settings = self._store.load()
+        selected = name or settings.default_profile
+        if selected is None:
+            raise DomainError("PROVIDER_NOT_FOUND", "no provider profile is selected")
+        profile = self._store.get(selected)
+        if not profile.enabled:
+            raise DomainError("PROVIDER_DISABLED", "provider profile is disabled")
+        if "chat" not in profile.capabilities:
+            raise DomainError(
+                "PROVIDER_CAPABILITY_UNAVAILABLE", "provider does not support chat"
+            )
+        if profile.api_key_ref is None:
+            raise DomainError(
+                "SECRET_REF_MISSING", "provider profile has no secret reference"
+            )
+        self._secrets.read(profile.api_key_ref)
+        return profile
+
+    def model_port(self, profile: ProviderProfile) -> ModelPort:
+        """Build the configured adapter only after local profile validation."""
+        return self._port_factory(profile, self._secrets)
+
+    def test(
+        self, name: str | None = None, *, request: bool = False
+    ) -> ProviderTestResult:
         settings = self._store.load()
         selected = name or settings.default_profile
         if selected is None:
             raise DomainError("PROVIDER_NOT_FOUND", "no provider profile is selected")
         profile = self._store.get(selected)
         if profile.api_key_ref is None:
-            raise DomainError("SECRET_REF_MISSING", "provider profile has no secret reference")
+            raise DomainError(
+                "SECRET_REF_MISSING", "provider profile has no secret reference"
+            )
         self._secrets.read(profile.api_key_ref)
         if not request:
             return ProviderTestResult(
-                profile, "local_validation_passed", "local profile and secret validation passed"
+                profile,
+                "local_validation_passed",
+                "local profile and secret validation passed",
             )
         port = self._port_factory(profile, self._secrets)
         try:
@@ -99,4 +131,6 @@ class ProviderService:
             close = getattr(port, "close", None)
             if callable(close):
                 close()
-        return ProviderTestResult(profile, "request_passed", "minimal provider probe completed")
+        return ProviderTestResult(
+            profile, "request_passed", "minimal provider probe completed"
+        )

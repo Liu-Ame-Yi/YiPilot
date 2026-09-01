@@ -2,13 +2,17 @@
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+from pydantic import ValidationError
 
 from yipilot.application.agent_runtime import AgentRuntime
 from yipilot.application.approval import approval_action_type
 from yipilot.application.planner import FakePlanner, PlannerPort, RecordedReplayPlanner
+from yipilot.application.provider_service import ProviderService
 from yipilot.application.replay_model import (
     replay_model_planner as _replay_model_planner,
 )
@@ -29,10 +33,28 @@ from yipilot.domain.execution import (
     ToolRequest,
     ToolResult,
 )
+from yipilot.domain.model import (
+    ModelCallRecord,
+    ModelCallStatus,
+    ModelPort,
+    ModelRequest,
+    model_request_fingerprint,
+)
 from yipilot.domain.models import RunStatus
+from yipilot.domain.patch_proposal import (
+    MAX_PATCH_DIFF_BYTES,
+    MAX_PATCH_FILES,
+    PatchProposal,
+)
+from yipilot.domain.provider import ProviderProfile
 from yipilot.harness.code import CodeHarness
 from yipilot.harness.models import HarnessReport, HarnessStatus
-from yipilot.harness.report_store import CODE_HARNESS_REPORT_NAME, HarnessReportStore
+from yipilot.harness.report_store import (
+    CODE_HARNESS_REPORT_NAME,
+    SDD_HARNESS_REPORT_NAME,
+    SRS_HARNESS_REPORT_NAME,
+    HarnessReportStore,
+)
 from yipilot.infrastructure.approval_store import FileApprovalStore
 from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
@@ -50,6 +72,19 @@ _REPLAY_INSTRUCTION = "yipilot replay diagnostic"
 _PLAN_PATH = "artifacts/agent-plan.json"
 _HANDOFF_PATH = "artifacts/prepare-only-handoff.json"
 _VERIFICATION_PATH = "artifacts/prepare-only-verification.json"
+_LIVE_PROFILE_PATH = "artifacts/provider-profile.json"
+_LIVE_CONTEXT_PATH = "artifacts/live-context.md"
+_LIVE_RESPONSE_PATH = "artifacts/live-model-response.json"
+_LIVE_CALL_PATH = "artifacts/live-model-call.json"
+_LIVE_PROPOSAL_PATH = "artifacts/patch-proposal.json"
+_LIVE_MAX_CONTEXT_FILES = MAX_PATCH_FILES
+_LIVE_MAX_CONTEXT_BYTES = 24 * 1024
+_LIVE_MAX_FILE_BYTES = 8 * 1024
+_LIVE_DOCUMENT_PATHS = (
+    "artifacts/srs.md",
+    "artifacts/sdd.md",
+    "artifacts/test-plan.md",
+)
 
 
 @dataclass(frozen=True)
@@ -60,12 +95,14 @@ class CodeGenerateResult:
     status: str
     error_code: str | None
     plan_artifact_ref: dict[str, object] | None
+    patch_proposal_artifact_ref: dict[str, object] | None
 
     def value(self) -> dict[str, object]:
         return {
             "error_code": self.error_code,
             "operation_id": self.operation_id,
             "plan_artifact_ref": self.plan_artifact_ref,
+            "patch_proposal_artifact_ref": self.patch_proposal_artifact_ref,
             "run_id": self.run_id,
             "status": self.status,
             "task_id": self.task_id,
@@ -94,9 +131,16 @@ class PrepareOnlyResult:
 class CodeService:
     """Create one auditable fake/replay Run and a no-side-effect handoff."""
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        *,
+        settings_dir: Path | None = None,
+        provider_service: ProviderService | None = None,
+    ) -> None:
         self._project_root = Path(project_root).resolve(strict=True)
         self._store = FileTaskStore(self._project_root)
+        self._providers = provider_service or ProviderService(settings_dir)
 
     def generate(
         self,
@@ -105,24 +149,40 @@ class CodeService:
         instruction: str,
         planner_mode: str,
         request_id: str | None = None,
+        provider_profile: str | None = None,
+        context_files: Iterable[str] = (),
     ) -> CodeGenerateResult:
         if not instruction:
             raise DomainError("INSTRUCTION_INVALID", "instruction is required")
-        if planner_mode not in {"fake", "replay", "replay-model"}:
-            raise DomainError("PLANNER_MODE_INVALID", "planner must be fake, replay or replay-model")
+        if planner_mode not in {"fake", "replay", "replay-model", "live"}:
+            raise DomainError(
+                "PLANNER_MODE_INVALID",
+                "planner must be fake, replay, replay-model or live",
+            )
         self._store.get_task(task_id)
         # Validate the registered repository before creating durable execution state.
-        WorkspaceService(self._project_root, GitRunner()).validate_repository(task_id, alias)
+        WorkspaceService(self._project_root, GitRunner()).validate_repository(
+            task_id, alias
+        )
+        selected_context = tuple(context_files)
+        profile = (
+            self._providers.resolve_chat(provider_profile)
+            if planner_mode == "live"
+            else None
+        )
+        port = self._providers.model_port(profile) if profile is not None else None
         instruction_fingerprint = _sha256(instruction)
         idempotency_key = request_id or instruction_fingerprint
         operation = self._store.create_operation(
             task_id,
             "code_generate",
-            f"code-generate:{task_id}:{alias}:{planner_mode}:{idempotency_key}",
+            f"code-generate:{task_id}:{alias}:{planner_mode}:{profile.name if profile else 'offline'}:{profile.revision if profile else 1}:{idempotency_key}",
             {
                 "alias": alias,
                 "instruction_fingerprint": instruction_fingerprint,
                 "planner": planner_mode,
+                "provider_profile": profile.name if profile else None,
+                "provider_revision": profile.revision if profile else None,
                 "request_id": idempotency_key,
             },
         )
@@ -130,11 +190,28 @@ class CodeService:
             task_id, operation.operation_id, "code_generate"
         )
         if not created:
+            _close_port(port)
             return _generate_result(self._store, run)
+        if planner_mode == "live":
+            assert profile is not None and port is not None
+            try:
+                return self._generate_live(
+                    run,
+                    alias,
+                    instruction,
+                    instruction_fingerprint,
+                    profile,
+                    port,
+                    selected_context,
+                )
+            finally:
+                _close_port(port)
         journal = _journal(self._store, run)
         policy = _fake_policy()
         artifacts = FileArtifactStore(self._store)
-        registry = ToolRegistry(policy, FakeExecutor(artifacts, journal, stdout=b"fake diagnostic\n"))
+        registry = ToolRegistry(
+            policy, FakeExecutor(artifacts, journal, stdout=b"fake diagnostic\n")
+        )
         evidence = FileRuntimeEvidence(artifacts, journal)
 
         if planner_mode == "replay" and instruction != _REPLAY_INSTRUCTION:
@@ -148,39 +225,292 @@ class CodeService:
             except DomainError as error:
                 self._store.set_run_status(run.run_id, RunStatus.RUNNING)
                 journal.append("run.started", {})
-                self._store.set_run_status(run.run_id, RunStatus.FAILED, error_code=error.code)
+                self._store.set_run_status(
+                    run.run_id, RunStatus.FAILED, error_code=error.code
+                )
                 journal.append("run.failed", {"error_code": error.code})
-                return _generate_result(self._store, self._store.get_run(task_id, run.run_id))
+                return _generate_result(
+                    self._store, self._store.get_run(task_id, run.run_id)
+                )
             plan = _plan(run, workspace, instruction_fingerprint)
-            planner = _replay_model_planner(
-                run, instruction, plan.steps[0].tool_request, evidence
-            ) if planner_mode == "replay-model" else (
-                FakePlanner(plan)
-                if planner_mode == "fake"
-                else RecordedReplayPlanner("builtin-replay-v1", {instruction_fingerprint: plan})
+            planner = (
+                _replay_model_planner(
+                    run, instruction, plan.steps[0].tool_request, evidence
+                )
+                if planner_mode == "replay-model"
+                else (
+                    FakePlanner(plan)
+                    if planner_mode == "fake"
+                    else RecordedReplayPlanner(
+                        "builtin-replay-v1", {instruction_fingerprint: plan}
+                    )
+                )
             )
             _save_simulation_approval(self._store, policy, plan.steps[0].tool_request)
 
-        runtime = AgentRuntime(self._store, planner, RegistryToolGateway(self._project_root, registry), evidence)
+        runtime = AgentRuntime(
+            self._store,
+            planner,
+            RegistryToolGateway(self._project_root, registry),
+            evidence,
+        )
         result = runtime.execute(
             task_id,
             operation.operation_id,
             run.run_id,
             instruction,
             harness=(
-                (lambda: _code_harness(self._project_root, workspace, policy, run, plan.steps[0].tool_request).run().status is HarnessStatus.PASSED)
+                (
+                    lambda: (
+                        _code_harness(
+                            self._project_root,
+                            workspace,
+                            policy,
+                            run,
+                            plan.steps[0].tool_request,
+                        )
+                        .run()
+                        .status
+                        is HarnessStatus.PASSED
+                    )
+                )
                 if workspace is not None
                 else lambda: False
             ),
         )
-        return _generate_result(self._store, self._store.get_run(task_id, result.run.run_id))
+        return _generate_result(
+            self._store, self._store.get_run(task_id, result.run.run_id)
+        )
+
+    def _generate_live(
+        self,
+        run: RunRecord,
+        alias: str,
+        instruction: str,
+        instruction_fingerprint: str,
+        profile: ProviderProfile,
+        port: ModelPort,
+        context_files: tuple[str, ...],
+    ) -> CodeGenerateResult:
+        """Generate and retain a proposal without constructing an AgentRuntime."""
+        journal, artifacts = _journal(self._store, run), FileArtifactStore(self._store)
+        try:
+            self._store.set_run_status(run.run_id, RunStatus.RUNNING)
+            journal.append("run.started", {"mode": "live"})
+            workspace = WorkspaceService(self._project_root, GitRunner()).prepare(
+                run.task_id, alias, run.run_id
+            )
+            snapshot = artifacts.write_bytes(
+                run.task_id,
+                run.run_id,
+                producer="live_provider",
+                relative_path=_LIVE_PROFILE_PATH,
+                content=json.dumps(
+                    _profile_snapshot(profile), sort_keys=True, separators=(",", ":")
+                ).encode(),
+                input_fingerprint=instruction_fingerprint,
+                operation_id=run.operation_id,
+            )
+            documents = self._approved_documents(run.task_id)
+            files = _context_files(workspace, context_files)
+            prompt = _live_prompt(instruction, documents, files)
+            context = artifacts.write_bytes(
+                run.task_id,
+                run.run_id,
+                producer="live_provider",
+                relative_path=_LIVE_CONTEXT_PATH,
+                content=_context_manifest(documents, files).encode(),
+                input_fingerprint=_sha256(prompt),
+                operation_id=run.operation_id,
+            )
+            context_ref = _artifact_ref(context)
+            journal.append(
+                "stage.progress",
+                {
+                    "context_artifact_id": context.artifact_id,
+                    "provider_profile_artifact_id": snapshot.artifact_id,
+                    "worktree_file_count": len(files),
+                },
+            )
+            request = ModelRequest(
+                task_id=run.task_id,
+                operation_id=run.operation_id,
+                run_id=run.run_id,
+                provider_profile_name=profile.name,
+                provider_type=profile.provider_type,
+                model=profile.model,
+                profile_revision=profile.revision,
+                timeout_seconds=profile.timeout_seconds,
+                output_budget_bytes=min(profile.output_budget, MAX_PATCH_DIFF_BYTES),
+                allowed_input_artifact_refs=(context_ref,),
+                input_fingerprint=model_request_fingerprint(prompt, (context_ref,)),
+                user_instruction=prompt,
+            )
+            proposal = self._live_model_proposal(run, artifacts, journal, request, port)
+            proposal_record = artifacts.write_bytes(
+                run.task_id,
+                run.run_id,
+                producer="live_provider",
+                relative_path=_LIVE_PROPOSAL_PATH,
+                content=proposal.model_dump_json().encode(),
+                input_fingerprint=request.input_fingerprint,
+                operation_id=run.operation_id,
+            )
+            journal.append(
+                "stage.progress",
+                {
+                    "patch_proposal_artifact_id": proposal_record.artifact_id,
+                    "patch_count": len(proposal.patches),
+                },
+            )
+            self._store.set_run_status(run.run_id, RunStatus.SUCCEEDED)
+            journal.append("run.succeeded", {})
+        except DomainError as error:
+            _fail_live_run(self._store, journal, run, error.code)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            _fail_live_run(self._store, journal, run, "LIVE_PROPOSAL_FAILED")
+        return _generate_result(
+            self._store, self._store.get_run(run.task_id, run.run_id)
+        )
+
+    def _live_model_proposal(
+        self,
+        run: RunRecord,
+        artifacts: FileArtifactStore,
+        journal: JsonlEventJournal,
+        request: ModelRequest,
+        port: ModelPort,
+    ) -> PatchProposal:
+        started_at = datetime.now(UTC)
+        response_ref = None
+        try:
+            parts: list[str] = []
+            size = 0
+            for chunk in port.stream(request):
+                size += len(chunk.content.encode("utf-8"))
+                if size > request.output_budget_bytes:
+                    raise DomainError(
+                        "MODEL_OUTPUT_LIMIT_EXCEEDED",
+                        "model output exceeded its budget",
+                    )
+                journal.append("model.delta", {"content": chunk.content})
+                parts.append(chunk.content)
+            content = "".join(parts)
+            response = artifacts.write_bytes(
+                run.task_id,
+                run.run_id,
+                producer="model_port",
+                relative_path=_LIVE_RESPONSE_PATH,
+                content=json.dumps(
+                    {"schema_version": 1, "content": content}, separators=(",", ":")
+                ).encode(),
+                input_fingerprint=request.input_fingerprint,
+                operation_id=run.operation_id,
+            )
+            response_ref = _artifact_ref(response)
+            journal.append(
+                "model.message_completed",
+                {"response_artifact_ref": response_ref.model_dump(mode="json")},
+            )
+            try:
+                proposal = PatchProposal.model_validate_json(content)
+            except ValidationError as error:
+                raise DomainError(
+                    "PATCH_PROPOSAL_INVALID",
+                    "model response is not a valid patch proposal",
+                ) from error
+            _write_live_call(
+                artifacts,
+                request,
+                ModelCallStatus.SUCCEEDED,
+                response_ref,
+                "patch proposal stored",
+                started_at,
+            )
+            return proposal
+        except DomainError as error:
+            try:
+                _write_live_call(
+                    artifacts,
+                    request,
+                    ModelCallStatus.FAILED,
+                    response_ref,
+                    error.code,
+                    started_at,
+                )
+                journal.append("model.failed", {"error_code": error.code})
+            except DomainError as persistence_error:
+                raise persistence_error from error
+            raise
+        except Exception as error:
+            failure = DomainError("MODEL_CALL_FAILED", "model call failed")
+            try:
+                _write_live_call(
+                    artifacts,
+                    request,
+                    ModelCallStatus.FAILED,
+                    response_ref,
+                    failure.code,
+                    started_at,
+                )
+                journal.append("model.failed", {"error_code": failure.code})
+            except DomainError as persistence_error:
+                raise persistence_error from error
+            raise failure from error
+
+    def _approved_documents(self, task_id: str) -> list[tuple[ArtifactRecord, str]]:
+        artifacts = FileArtifactStore(self._store)
+        reports = HarnessReportStore(self._store)
+        for run in reversed(self._store.list_runs(task_id)):
+            if (
+                run.status is not RunStatus.SUCCEEDED
+                or run.stage != "quality_artifacts"
+                or not _approved_quality_reports(reports, run.run_id)
+            ):
+                continue
+            records = {
+                record.relative_path: record
+                for record in artifacts.list(task_id, run.run_id)
+            }
+            if not all(path in records for path in _LIVE_DOCUMENT_PATHS):
+                continue
+            values: list[tuple[ArtifactRecord, str]] = []
+            total = 0
+            for path in _LIVE_DOCUMENT_PATHS:
+                record = artifacts.verify(
+                    task_id, run.run_id, records[path].artifact_id
+                )
+                raw = (
+                    self._store.event_journal_path(run.run_id).parent
+                    / record.relative_path
+                ).read_bytes()
+                total += len(raw)
+                if total > _LIVE_MAX_CONTEXT_BYTES:
+                    raise DomainError(
+                        "MODEL_CONTEXT_LIMIT_EXCEEDED",
+                        "approved documents exceed the live context limit",
+                    )
+                try:
+                    values.append((record, raw.decode("utf-8")))
+                except UnicodeDecodeError as error:
+                    raise DomainError(
+                        "MODEL_CONTEXT_INVALID", "approved document is not UTF-8"
+                    ) from error
+            return values
+        return []
 
     def prepare_only(
         self, task_id: str, source_run_id: str, request_id: str | None = None
     ) -> PrepareOnlyResult:
         source_run = self._store.get_run(task_id, source_run_id)
-        if source_run.status is not RunStatus.SUCCEEDED or source_run.stage != "code_generate":
-            raise DomainError("CODE_HANDOFF_PRECONDITION_FAILED", "run is not a successful code generation")
+        if (
+            source_run.status is not RunStatus.SUCCEEDED
+            or source_run.stage != "code_generate"
+        ):
+            raise DomainError(
+                "CODE_HANDOFF_PRECONDITION_FAILED",
+                "run is not a successful code generation",
+            )
         idempotency_key = request_id or source_run_id
         operation = self._store.create_operation(
             task_id,
@@ -193,15 +523,18 @@ class CodeService:
         )
         if not created:
             if run.status is not RunStatus.SUCCEEDED:
-                raise DomainError("CODE_HANDOFF_PRECONDITION_FAILED", "apply preparation is not complete")
+                raise DomainError(
+                    "CODE_HANDOFF_PRECONDITION_FAILED",
+                    "apply preparation is not complete",
+                )
             return _prepare_result(self._store, run)
 
         journal = _journal(self._store, run)
         self._store.set_run_status(run.run_id, RunStatus.RUNNING)
         journal.append("run.started", {"source_run_id": source_run_id})
         try:
-            workspace, report, verification, approval, tool_runs, artifacts = self._source_handoff_evidence(
-                source_run
+            workspace, report, verification, approval, tool_runs, artifacts = (
+                self._source_handoff_evidence(source_run)
             )
             verification_record = FileArtifactStore(self._store).write_bytes(
                 task_id,
@@ -238,11 +571,15 @@ class CodeService:
                 input_fingerprint=report.input_fingerprint,
                 operation_id=run.operation_id,
             )
-            journal.append("stage.progress", {"handoff_artifact_id": handoff_record.artifact_id})
+            journal.append(
+                "stage.progress", {"handoff_artifact_id": handoff_record.artifact_id}
+            )
             completed = self._store.set_run_status(run.run_id, RunStatus.SUCCEEDED)
             journal.append("run.succeeded", {})
         except DomainError as error:
-            self._store.set_run_status(run.run_id, RunStatus.FAILED, error_code=error.code)
+            self._store.set_run_status(
+                run.run_id, RunStatus.FAILED, error_code=error.code
+            )
             journal.append("run.failed", {"error_code": error.code})
             raise
         return PrepareOnlyResult(
@@ -263,7 +600,9 @@ class CodeService:
         list[ToolResult],
         list[ArtifactRecord],
     ]:
-        report = HarnessReportStore(self._store).load(run.run_id, CODE_HARNESS_REPORT_NAME)
+        report = HarnessReportStore(self._store).load(
+            run.run_id, CODE_HARNESS_REPORT_NAME
+        )
         if (
             report.task_id != run.task_id
             or report.operation_id != run.operation_id
@@ -272,7 +611,10 @@ class CodeService:
             or report.harness_name != "code_harness"
             or report.status is not HarnessStatus.PASSED
         ):
-            raise DomainError("CODE_HARNESS_FAILED", "code harness report is not a passed Run evidence record")
+            raise DomainError(
+                "CODE_HARNESS_FAILED",
+                "code harness report is not a passed Run evidence record",
+            )
         plan, _plan_record = self._load_plan(run)
         request = _require_fake_request(plan)
         workspace = WorkspaceService(self._project_root, GitRunner()).prepare(
@@ -284,26 +626,45 @@ class CodeService:
             self._project_root, workspace, policy, run, request, approval.approval_id
         ).verify()
         if refreshed.status is not HarnessStatus.PASSED:
-            raise DomainError("CODE_HARNESS_FAILED", "code harness evidence is stale or has failed")
+            raise DomainError(
+                "CODE_HARNESS_FAILED", "code harness evidence is stale or has failed"
+            )
         artifacts = _verified_artifacts(self._store, run.task_id, run.run_id)
         tool_runs = FileToolRunStore(self._store).list(run.task_id, run.run_id)
         if not tool_runs:
-            raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "no persisted tool result exists")
+            raise DomainError(
+                "CODE_HANDOFF_EVIDENCE_INVALID", "no persisted tool result exists"
+            )
         return workspace, report, refreshed, approval, tool_runs, artifacts
 
     def _load_plan(self, run: RunRecord) -> tuple[AgentPlan, ArtifactRecord]:
         artifacts = FileArtifactStore(self._store)
-        records = [record for record in artifacts.list(run.task_id, run.run_id) if record.relative_path == _PLAN_PATH]
+        records = [
+            record
+            for record in artifacts.list(run.task_id, run.run_id)
+            if record.relative_path == _PLAN_PATH
+        ]
         if len(records) != 1:
-            raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "agent plan artifact is missing or ambiguous")
+            raise DomainError(
+                "CODE_HANDOFF_EVIDENCE_INVALID",
+                "agent plan artifact is missing or ambiguous",
+            )
         record = artifacts.verify(run.task_id, run.run_id, records[0].artifact_id)
         path = self._store.event_journal_path(run.run_id).parent / record.relative_path
         try:
             plan = AgentPlan.model_validate_json(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
-            raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "agent plan artifact is invalid") from error
-        if (plan.task_id, plan.operation_id, plan.run_id) != (run.task_id, run.operation_id, run.run_id):
-            raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "agent plan does not belong to the Run")
+            raise DomainError(
+                "CODE_HANDOFF_EVIDENCE_INVALID", "agent plan artifact is invalid"
+            ) from error
+        if (plan.task_id, plan.operation_id, plan.run_id) != (
+            run.task_id,
+            run.operation_id,
+            run.run_id,
+        ):
+            raise DomainError(
+                "CODE_HANDOFF_EVIDENCE_INVALID", "agent plan does not belong to the Run"
+            )
         return plan, record
 
 
@@ -316,7 +677,9 @@ def _operation_run(
         if run.operation_id == operation_id and run.stage == stage
     ]
     if len(runs) > 1:
-        raise DomainError("STORAGE_INVALID", "operation has multiple runs for one idempotency key")
+        raise DomainError(
+            "STORAGE_INVALID", "operation has multiple runs for one idempotency key"
+        )
     return runs[0] if runs else None
 
 
@@ -326,6 +689,11 @@ def _generate_result(store: FileTaskStore, run: RunRecord) -> CodeGenerateResult
         for record in FileArtifactStore(store).list(run.task_id, run.run_id)
         if record.relative_path == _PLAN_PATH
     ]
+    proposals = [
+        record
+        for record in FileArtifactStore(store).list(run.task_id, run.run_id)
+        if record.relative_path == _LIVE_PROPOSAL_PATH
+    ]
     plan_ref = _plan_ref(records[0]) if len(records) == 1 else None
     return CodeGenerateResult(
         task_id=run.task_id,
@@ -334,6 +702,9 @@ def _generate_result(store: FileTaskStore, run: RunRecord) -> CodeGenerateResult
         status=run.status.value,
         error_code=run.error_code,
         plan_artifact_ref=plan_ref,
+        patch_proposal_artifact_ref=_artifact_ref_value(proposals[0])
+        if len(proposals) == 1
+        else None,
     )
 
 
@@ -344,8 +715,12 @@ def _prepare_result(store: FileTaskStore, run: RunRecord) -> PrepareOnlyResult:
         if record.relative_path == _HANDOFF_PATH
     ]
     if len(records) != 1:
-        raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "prepared handoff artifact is missing")
-    record = FileArtifactStore(store).verify(run.task_id, run.run_id, records[0].artifact_id)
+        raise DomainError(
+            "CODE_HANDOFF_EVIDENCE_INVALID", "prepared handoff artifact is missing"
+        )
+    record = FileArtifactStore(store).verify(
+        run.task_id, run.run_id, records[0].artifact_id
+    )
     return PrepareOnlyResult(
         task_id=run.task_id,
         operation_id=run.operation_id,
@@ -383,7 +758,9 @@ def _fake_policy() -> ExecutionPolicy:
     )
 
 
-def _plan(run: RunRecord, workspace: PreparedWorkspace, instruction_fingerprint: str) -> AgentPlan:
+def _plan(
+    run: RunRecord, workspace: PreparedWorkspace, instruction_fingerprint: str
+) -> AgentPlan:
     request = ToolRequest(
         task_id=run.task_id,
         operation_id=run.operation_id,
@@ -400,7 +777,13 @@ def _plan(run: RunRecord, workspace: PreparedWorkspace, instruction_fingerprint:
         operation_id=run.operation_id,
         run_id=run.run_id,
         instruction_fingerprint=instruction_fingerprint,
-        steps=(PlanStep(step_id=1, summary="run deterministic workspace diagnostic", tool_request=request),),
+        steps=(
+            PlanStep(
+                step_id=1,
+                summary="run deterministic workspace diagnostic",
+                tool_request=request,
+            ),
+        ),
     )
 
 
@@ -435,7 +818,9 @@ def _simulation_approval(
         and approval.target_fingerprint == request.fingerprint
     ]
     if len(approvals) != 1:
-        raise DomainError("APPROVAL_REQUIRED", "a current simulation-only fake approval is required")
+        raise DomainError(
+            "APPROVAL_REQUIRED", "a current simulation-only fake approval is required"
+        )
     approval = approvals[0]
     approval.require_fresh(
         task_id=run.task_id,
@@ -470,7 +855,9 @@ def _code_harness(
 
 def _require_fake_request(plan: AgentPlan) -> ToolRequest:
     if len(plan.steps) != 1:
-        raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "agent plan is not the built-in fake plan")
+        raise DomainError(
+            "CODE_HANDOFF_EVIDENCE_INVALID", "agent plan is not the built-in fake plan"
+        )
     request = plan.steps[0].tool_request
     if (
         request.tool_id != _FAKE_TOOL_ID
@@ -478,7 +865,9 @@ def _require_fake_request(plan: AgentPlan) -> ToolRequest:
         or request.timeout_seconds != 1
         or request.output_budget_bytes != 1024
     ):
-        raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "agent plan is not the built-in fake plan")
+        raise DomainError(
+            "CODE_HANDOFF_EVIDENCE_INVALID", "agent plan is not the built-in fake plan"
+        )
     return request
 
 
@@ -486,11 +875,15 @@ def _alias_from_request(request: ToolRequest) -> str:
     return Path(request.workspace_relative_path).parts[4]
 
 
-def _verified_artifacts(store: FileTaskStore, task_id: str, run_id: str) -> list[ArtifactRecord]:
+def _verified_artifacts(
+    store: FileTaskStore, task_id: str, run_id: str
+) -> list[ArtifactRecord]:
     artifacts = FileArtifactStore(store)
     records = artifacts.list(task_id, run_id)
     if not records:
-        raise DomainError("CODE_HANDOFF_EVIDENCE_INVALID", "no persisted artifacts exist")
+        raise DomainError(
+            "CODE_HANDOFF_EVIDENCE_INVALID", "no persisted artifacts exist"
+        )
     return [artifacts.verify(task_id, run_id, record.artifact_id) for record in records]
 
 
@@ -515,7 +908,9 @@ def _handoff_value(
     )
     return {
         "artifact_refs": [_artifact_ref_value(record) for record in artifacts],
-        "approval_refs": [{"approval_id": approval.approval_id, "simulation_only": True}],
+        "approval_refs": [
+            {"approval_id": approval.approval_id, "simulation_only": True}
+        ],
         "code_harness_report_ref": _code_harness_report_ref(source_run, report),
         "freshness_verification_artifact_ref": _artifact_ref_value(verification_record),
         "git_evidence_refs": git_evidence_refs,
@@ -584,6 +979,211 @@ def _artifact_ref_value(record: ArtifactRecord) -> dict[str, object]:
         "relative_path": record.relative_path,
         "sha256": record.sha256,
     }
+
+
+def _artifact_ref(record: ArtifactRecord):
+    from yipilot.domain.execution import ArtifactRef
+
+    return ArtifactRef(
+        artifact_id=record.artifact_id,
+        task_id=record.task_id,
+        operation_id=record.operation_id,
+        run_id=record.run_id,
+        relative_path=record.relative_path,
+        sha256=record.sha256,
+    )
+
+
+def _profile_snapshot(profile: ProviderProfile) -> dict[str, object]:
+    return {
+        "base_url": profile.base_url,
+        "capabilities": list(profile.capabilities),
+        "model": profile.model,
+        "name": profile.name,
+        "output_budget": profile.output_budget,
+        "provider_type": profile.provider_type,
+        "revision": profile.revision,
+        "schema_version": 1,
+        "timeout_seconds": profile.timeout_seconds,
+        "type": profile.provider_type,
+    }
+
+
+def _context_files(
+    workspace: PreparedWorkspace, values: tuple[str, ...]
+) -> list[tuple[str, str, str]]:
+    if len(values) > _LIVE_MAX_CONTEXT_FILES or len(set(values)) != len(values):
+        raise DomainError(
+            "MODEL_CONTEXT_INVALID",
+            "context files must be unique and within the file limit",
+        )
+    selected: list[tuple[str, str, str]] = []
+    total = 0
+    for value in values:
+        posix, windows = PurePosixPath(value), PureWindowsPath(value)
+        if (
+            not value
+            or posix.is_absolute()
+            or windows.is_absolute()
+            or bool(windows.drive)
+            or bool(windows.root)
+            or ".." in posix.parts
+            or ".." in windows.parts
+            or ".git" in {part.casefold() for part in posix.parts}
+        ):
+            raise DomainError(
+                "MODEL_CONTEXT_PATH_DENIED", "context path is not in the task worktree"
+            )
+        candidate = workspace.path.joinpath(*posix.parts)
+        if candidate.is_symlink() or not candidate.is_file():
+            raise DomainError(
+                "MODEL_CONTEXT_PATH_DENIED",
+                "context file must be a regular task-worktree file",
+            )
+        resolved = candidate.resolve(strict=True)
+        if workspace.path != resolved and workspace.path not in resolved.parents:
+            raise DomainError(
+                "MODEL_CONTEXT_PATH_DENIED", "context file escapes the task worktree"
+            )
+        raw = candidate.read_bytes()
+        total += len(raw)
+        if len(raw) > _LIVE_MAX_FILE_BYTES or total > _LIVE_MAX_CONTEXT_BYTES:
+            raise DomainError(
+                "MODEL_CONTEXT_LIMIT_EXCEEDED",
+                "context files exceed the live context limit",
+            )
+        try:
+            selected.append(
+                (value.replace("\\", "/"), _sha256_bytes(raw), raw.decode("utf-8"))
+            )
+        except UnicodeDecodeError as error:
+            raise DomainError(
+                "MODEL_CONTEXT_INVALID", "context file is not UTF-8"
+            ) from error
+    return selected
+
+
+def _approved_quality_reports(reports: HarnessReportStore, run_id: str) -> bool:
+    try:
+        return all(
+            reports.load(run_id, name).status is HarnessStatus.PASSED
+            for name in (SRS_HARNESS_REPORT_NAME, SDD_HARNESS_REPORT_NAME)
+        )
+    except DomainError:
+        return False
+
+
+def _live_prompt(
+    instruction: str,
+    documents: list[tuple[ArtifactRecord, str]],
+    files: list[tuple[str, str, str]],
+) -> str:
+    value = {
+        "approved_documents": [
+            {
+                "artifact_id": record.artifact_id,
+                "path": record.relative_path,
+                "content": content,
+            }
+            for record, content in documents
+        ],
+        "instruction": instruction,
+        "response_contract": {
+            "schema_version": 1,
+            "summary": "short summary",
+            "patches": [
+                {
+                    "path": "relative/path.py",
+                    "unified_diff": "--- a/relative/path.py\\n+++ b/relative/path.py\\n@@ -1 +1 @@\\n-old\\n+new",
+                }
+            ],
+        },
+        "worktree_files": [
+            {"path": path, "sha256": digest, "content": content}
+            for path, digest, content in files
+        ],
+    }
+    prompt = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if len(prompt.encode("utf-8")) > 32 * 1024:
+        raise DomainError(
+            "MODEL_CONTEXT_LIMIT_EXCEEDED", "live model prompt exceeds its byte limit"
+        )
+    return prompt
+
+
+def _context_manifest(
+    documents: list[tuple[ArtifactRecord, str]], files: list[tuple[str, str, str]]
+) -> str:
+    lines = ["# Live model context", "", "## Approved documents"]
+    lines.extend(
+        f"- `{record.artifact_id}` `{record.relative_path}` sha256:{record.sha256}"
+        for record, _content in documents
+    )
+    lines.extend(["", "## Selected task worktree files"])
+    lines.extend(f"- `{path}` sha256:{digest}" for path, digest, _content in files)
+    return "\n".join(lines) + "\n"
+
+
+def _write_live_call(
+    artifacts: FileArtifactStore,
+    request: ModelRequest,
+    status: ModelCallStatus,
+    response_ref: object,
+    summary: str,
+    started_at: datetime | None = None,
+) -> None:
+    from yipilot.domain.execution import ArtifactRef
+
+    ref = response_ref if isinstance(response_ref, ArtifactRef) else None
+    record = ModelCallRecord(
+        task_id=request.task_id,
+        operation_id=request.operation_id,
+        run_id=request.run_id,
+        provider_profile_name=request.provider_profile_name,
+        provider_type=request.provider_type,
+        model=request.model,
+        profile_revision=request.profile_revision,
+        timeout_seconds=request.timeout_seconds,
+        output_budget_bytes=request.output_budget_bytes,
+        input_fingerprint=request.input_fingerprint,
+        input_artifact_refs=request.allowed_input_artifact_refs,
+        status=status,
+        started_at=started_at or datetime.now(UTC),
+        ended_at=datetime.now(UTC),
+        response_artifact_ref=ref,
+        redacted_summary=summary,
+    )
+    artifacts.write_bytes(
+        request.task_id,
+        request.run_id,
+        producer="model_port",
+        relative_path=_LIVE_CALL_PATH,
+        content=record.model_dump_json(exclude_none=True).encode(),
+        input_fingerprint=request.input_fingerprint,
+        operation_id=request.operation_id,
+    )
+
+
+def _fail_live_run(
+    store: FileTaskStore, journal: JsonlEventJournal, run: RunRecord, error_code: str
+) -> None:
+    try:
+        store.set_run_status(run.run_id, RunStatus.FAILED, error_code=error_code)
+    finally:
+        try:
+            journal.append("run.failed", {"error_code": error_code})
+        except DomainError:
+            pass
+
+
+def _close_port(port: object | None) -> None:
+    close = getattr(port, "close", None)
+    if callable(close):
+        close()
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
 
 
 def _workspace_path_value(workspace: PreparedWorkspace) -> str:
