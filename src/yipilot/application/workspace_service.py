@@ -56,7 +56,14 @@ class WorkspaceService:
         """Confirm the registered repository exists before reserving a Run."""
         self._repos.get_metadata(task_id, repo_alias)
 
-    def prepare(self, task_id: str, repo_alias: str, run_id: str) -> PreparedWorkspace:
+    def prepare(
+        self,
+        task_id: str,
+        repo_alias: str,
+        run_id: str,
+        *,
+        base_sha: str | None = None,
+    ) -> PreparedWorkspace:
         if not isinstance(run_id, str) or _RUN_ID.fullmatch(run_id) is None:
             raise DomainError("WORKSPACE_RUN_INVALID", "workspace run id is invalid")
         metadata = self._repos.get_metadata(task_id, repo_alias)
@@ -94,8 +101,13 @@ class WorkspaceService:
                     branch=branch,
                     workspace_path=relative_workspace,
                 )
-                if not workspace_path.is_dir() or not (workspace_path / ".git").is_file():
-                    raise DomainError("WORKSPACE_CONFLICT", "recorded workspace is missing")
+                if (
+                    not workspace_path.is_dir()
+                    or not (workspace_path / ".git").is_file()
+                ):
+                    raise DomainError(
+                        "WORKSPACE_CONFLICT", "recorded workspace is missing"
+                    )
                 return self._prepared_workspace(workspace_path, manifest)
 
             if workspace_path.exists():
@@ -103,9 +115,12 @@ class WorkspaceService:
                     "WORKSPACE_CONFLICT", "workspace exists without a matching manifest"
                 )
 
+            base = base_sha or metadata.head_sha
             self._git.run(
-                ["git", "branch", branch, metadata.head_sha], cwd=metadata.cache_path
+                ["git", "rev-parse", "--verify", f"{base}^{{commit}}"],
+                cwd=metadata.cache_path,
             )
+            self._git.run(["git", "branch", branch, base], cwd=metadata.cache_path)
             self._git.run(
                 ["git", "worktree", "add", str(workspace_path), branch],
                 cwd=metadata.cache_path,
@@ -116,7 +131,7 @@ class WorkspaceService:
                 repo_alias=repo_alias,
                 repo_hash=metadata.url_hash,
                 branch=branch,
-                base_sha=metadata.head_sha,
+                base_sha=base,
                 workspace_path=relative_workspace,
                 created_at=_timestamp(),
             )
@@ -134,7 +149,9 @@ class WorkspaceService:
                 path.read_text(encoding="utf-8")
             )
         except (OSError, ValidationError, json.JSONDecodeError) as error:
-            raise DomainError("WORKSPACE_CONFLICT", "workspace manifest is invalid") from error
+            raise DomainError(
+                "WORKSPACE_CONFLICT", "workspace manifest is invalid"
+            ) from error
 
     @staticmethod
     def _require_matching_manifest(

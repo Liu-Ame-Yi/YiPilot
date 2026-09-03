@@ -1,6 +1,7 @@
 """Deterministic and host-trusted executors for policy-approved local tools."""
 
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Mapping
@@ -22,7 +23,7 @@ from yipilot.domain.execution import (
     ToolResult,
     ToolRunStatus,
     is_generic_python_executable,
-    is_quality_pytest_request,
+    is_registered_python_test_request,
 )
 from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
@@ -63,7 +64,7 @@ class LocalCommandRunner:
         _require_workspace_cwd(project_root, request, cwd)
         if is_generic_python_executable(
             tool.executable
-        ) and not is_quality_pytest_request(tool, request, policy_revision):
+        ) and not is_registered_python_test_request(tool, request, policy_revision):
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
                 "generic Python interpreters are only allowed for registered test tools",
@@ -86,16 +87,33 @@ class LocalCommandRunner:
         env = {name: environment[name] for name in request.env_names}
         started_at = datetime.now(UTC)
         tool_run_id = str(uuid4())
-        process = subprocess.Popen(
-            list(request.argv),
-            cwd=str(cwd),
-            env=env,
-            shell=False,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
         _started(self._journal, tool_run_id, request.tool_id)
+        try:
+            process = subprocess.Popen(
+                list(request.argv),
+                executable=_venv_tool(request.argv[0]),
+                cwd=str(cwd),
+                env=env,
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError:
+            result = _result(
+                self._artifact_store,
+                tool_run_id,
+                request,
+                started_at,
+                ToolRunStatus.FAILED,
+                None,
+                b"",
+                b"tool process could not be started\n",
+                ExecutionTrustLevel.HOST_TRUSTED,
+            )
+            self._tool_runs.save(result)
+            _completed(self._journal, result, request.tool_id)
+            return result
         stdout, stderr, exceeded, readers = _read_streams(
             process, request.output_budget_bytes
         )
@@ -374,6 +392,16 @@ def _wait_for_process(
             return ToolRunStatus.TIMED_OUT
         time.sleep(0.01)
     return ToolRunStatus.SUCCEEDED
+
+
+def _venv_tool(executable: str) -> str | None:
+    """Resolve only a fixed bare tool from the configured interpreter's Scripts dir."""
+    if executable not in {"ruff", "mypy"}:
+        return None
+    candidate = Path(sys.executable).parent / f"{executable}.exe"
+    return (
+        str(candidate) if candidate.is_file() and not candidate.is_symlink() else None
+    )
 
 
 def _terminate(process: subprocess.Popen[bytes]) -> None:

@@ -18,6 +18,8 @@ QUALITY_PYTEST_POLICY_REVISION = "quality-pytest-v1"
 QUALITY_PYTEST_MAX_OUTPUT_BYTES = 128 * 1024
 QUALITY_PYTEST_MAX_TIMEOUT_SECONDS = 600.0
 QUALITY_PYTEST_ALLOWED_ENV_NAMES = ("SYSTEMROOT", "WINDIR")
+VERIFICATION_POLICY_REVISION = "change-verification-v1"
+VERIFICATION_PYTEST_TOOL_ID = "verification-pytest"
 
 MAX_TOOL_TIMEOUT_SECONDS = 3600.0
 MAX_TOOL_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -442,8 +444,7 @@ def is_quality_pytest_request(
         and tool.tool_id == QUALITY_PYTEST_TOOL_ID
         and tool.kind is ToolKind.TEST
         and tool.executable == sys.executable
-        and tool.argv_schema
-        == (ArgvRule(literal="-m"), ArgvRule(literal="pytest"))
+        and tool.argv_schema == (ArgvRule(literal="-m"), ArgvRule(literal="pytest"))
         and tool.allowed_env_names == QUALITY_PYTEST_ALLOWED_ENV_NAMES
         and tool.max_output_bytes == QUALITY_PYTEST_MAX_OUTPUT_BYTES
         and tool.max_timeout_seconds == request.timeout_seconds
@@ -451,6 +452,23 @@ def is_quality_pytest_request(
         and request.argv == (sys.executable, "-m", "pytest")
         and request.output_budget_bytes == QUALITY_PYTEST_MAX_OUTPUT_BYTES
         and request.timeout_seconds <= QUALITY_PYTEST_MAX_TIMEOUT_SECONDS
+    )
+
+
+def is_registered_python_test_request(
+    tool: ToolPolicy, request: ToolRequest, policy_revision: str | None
+) -> bool:
+    """Permit only the two versioned Python test policies."""
+    return is_quality_pytest_request(tool, request, policy_revision) or (
+        policy_revision == VERIFICATION_POLICY_REVISION
+        and tool.tool_id == VERIFICATION_PYTEST_TOOL_ID
+        and tool.kind is ToolKind.TEST
+        and tool.executable == sys.executable
+        and tool.argv_schema == (ArgvRule(literal="-m"), ArgvRule(literal="pytest"))
+        and tool.allowed_env_names == ("SYSTEMROOT", "WINDIR", "PATH", "PATHEXT")
+        and request.tool_id == VERIFICATION_PYTEST_TOOL_ID
+        and request.argv == (sys.executable, "-m", "pytest")
+        and set(request.env_names).issubset(("SYSTEMROOT", "WINDIR", "PATH", "PATHEXT"))
     )
 
 

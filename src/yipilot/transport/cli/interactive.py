@@ -13,6 +13,10 @@ from yipilot.application.code_service import CodeService
 from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.application.project_service import ProjectService
 from yipilot.application.repo_service import RepoMetadata, RepoService
+from yipilot.application.verification_service import (
+    VerificationCandidate,
+    VerificationService,
+)
 from yipilot.domain.errors import DomainError
 from yipilot.domain.patch_proposal import PatchProposal
 from yipilot.domain.provider import ModelEntry, ProviderConnection
@@ -88,7 +92,7 @@ class InteractiveSession:
                 return
             if command == "/help":
                 self._write("/task：创建或选择任务；/model：为未来 Run 选择模型；/status：查看当前选择；/exit：退出。")
-                self._write("/run：生成仅供审阅的 live PatchProposal；/apply：批准并应用一个 Proposal；/logs、/cancel 当前不可用。")
+                self._write("/run：生成仅供审阅的 live PatchProposal；/apply：批准并应用一个 Proposal；/verify：验证已应用变更；/logs、/cancel 当前不可用。")
             elif command == "/status":
                 self._write(self._status_line())
                 self._show_current_task()
@@ -100,6 +104,8 @@ class InteractiveSession:
                 self._run_live_proposal()
             elif command == "/apply":
                 self._apply_proposal()
+            elif command == "/verify":
+                self._verify_change()
             elif command in {"/logs", "/cancel"}:
                 self._write(f"{command} 当前不可用。")
             elif command:
@@ -219,6 +225,9 @@ class InteractiveSession:
         recent = runs[-1]
         self._write(f"任务状态：{recent.status}")
         self._write(f"最近 Run：{recent.stage} · {recent.status} · {recent.run_id}")
+        verification = VerificationService(self.project or Path(".")).latest_status(task.task_id)
+        if verification is not None:
+            self._write(verification)
 
     def _run_live_proposal(self) -> None:
         if self.session_task_id is None:
@@ -327,6 +336,66 @@ class InteractiveSession:
             self._write(f"apply succeeded — Run {result.run_id}")
         else:
             self._write(f"apply failed — Run {result.run_id}: {result.error_code or 'APPLY_FAILED'}")
+
+    def _verify_change(self) -> None:
+        if self.session_task_id is None:
+            self._write("TASK_SELECTION_REQUIRED: 请先使用 /task 选择任务")
+            return
+        service = VerificationService(self.project or Path("."))
+        try:
+            task = self.tasks.show_task(self.session_task_id)
+            candidates = service.candidates(task.task_id)
+        except DomainError as error:
+            self._error(error)
+            return
+        if not candidates:
+            self._write("APPLY_RUN_NOT_FOUND: 当前任务没有可验证的已应用 Proposal")
+            return
+        selected = candidates[0] if len(candidates) == 1 else self._choose_verification(candidates)
+        if selected is None:
+            return
+        self._write("即将验证已应用变更")
+        self._write(f"任务：{task.task_id} · {task.title or '未命名任务'}")
+        self._write(f"Apply Run：{selected.apply_run_id}")
+        self._write(f"Proposal Run：{selected.proposal_run_id}")
+        self._write(f"Repository：{selected.repository_alias}")
+        self._write(f"基线 SHA：{selected.base_sha}")
+        self._write(f"当前 diff hash：{selected.diff_hash}")
+        self._write("将在隔离 worktree 中执行固定验证：")
+        self._write(f"- {__import__('sys').executable} -m pytest")
+        self._write("- ruff check src tests")
+        self._write("- mypy src")
+        self._write("权限范围：\n- 仅执行固定验证命令\n- 不调用模型\n- 不修改源代码\n- 不提交、不推送、不创建 PR")
+        self._write("继续？[y/N] ", end="")
+        if self._readline().strip() not in {"y", "Y"}:
+            self._write("已取消；未创建验证 Run，未执行命令，未修改源代码")
+            return
+        try:
+            prepared = service.prepare(task.task_id, selected.apply_run_id, request_id=str(uuid4()))
+            self._write(f"Verification Run {prepared.run_id} 已启动")
+            result = service.run(task.task_id, prepared.run_id, approvals=prepared.approvals,
+                on_progress=lambda tool_id: self._write(f"正在执行 {'pytest' if tool_id == 'verification-pytest' else tool_id.removeprefix('verification-')}…"))
+        except DomainError as error:
+            self._error(error)
+            return
+        for item in result.tool_results:
+            label = "pytest" if item.argv[1:] == ("-m", "pytest") else item.argv[0]
+            status = {"succeeded": "passed", "failed": "failed", "timed_out": "timed_out", "cancelled": "timed_out"}[item.status.value]
+            self._write(f"{label}：{status}")
+        self._write("Change Handoff 已生成" if result.status == "succeeded" else "验证失败，未生成成功 Handoff")
+
+    def _choose_verification(self, candidates: list[VerificationCandidate]) -> VerificationCandidate | None:
+        rows = [(item.apply_run_id, f"{item.apply_run_id} · {item.repository_alias} · {item.diff_hash[:12]}") for item in candidates]
+        if self._selector_enabled():
+            selected = self._pick("选择已应用 Proposal", "↑/↓ 选择 · Enter 确定 · Esc 返回", rows)
+            return next((item for item in candidates if item.apply_run_id == selected), None)
+        self._write("选择已应用 Proposal")
+        for index, (_, label) in enumerate(rows, 1):
+            self._write(f"{index}. {label}")
+        self._write("0. 返回")
+        self._write("请选择：", end="")
+        choice = self._readline().strip()
+        return candidates[int(choice) - 1] if choice.isdigit() and 1 <= int(choice) <= len(candidates) else None
 
     def _choose_proposal(self, proposals: list[dict[str, object]]) -> dict[str, object] | None:
         rows = [(str(item["proposal_run_id"]), f"{item['proposal_run_id']} · {item['summary']}") for item in proposals]
