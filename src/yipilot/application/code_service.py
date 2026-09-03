@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from yipilot.application.agent_runtime import AgentRuntime
 from yipilot.application.approval import approval_action_type
+from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.application.planner import FakePlanner, PlannerPort, RecordedReplayPlanner
 from yipilot.application.provider_service import ProviderService
 from yipilot.application.replay_model import (
@@ -46,7 +47,7 @@ from yipilot.domain.patch_proposal import (
     MAX_PATCH_FILES,
     PatchProposal,
 )
-from yipilot.domain.provider import ProviderProfile
+from yipilot.domain.provider import ResolvedModel
 from yipilot.harness.code import CodeHarness
 from yipilot.harness.models import HarnessReport, HarnessStatus
 from yipilot.harness.report_store import (
@@ -72,7 +73,7 @@ _REPLAY_INSTRUCTION = "yipilot replay diagnostic"
 _PLAN_PATH = "artifacts/agent-plan.json"
 _HANDOFF_PATH = "artifacts/prepare-only-handoff.json"
 _VERIFICATION_PATH = "artifacts/prepare-only-verification.json"
-_LIVE_PROFILE_PATH = "artifacts/provider-profile.json"
+_LIVE_RESOLVED_PATH = "artifacts/resolved-model.json"
 _LIVE_CONTEXT_PATH = "artifacts/live-context.md"
 _LIVE_RESPONSE_PATH = "artifacts/live-model-response.json"
 _LIVE_CALL_PATH = "artifacts/live-model-call.json"
@@ -137,10 +138,15 @@ class CodeService:
         *,
         settings_dir: Path | None = None,
         provider_service: ProviderService | None = None,
+        model_selection_service: ModelSelectionService | None = None,
     ) -> None:
         self._project_root = Path(project_root).resolve(strict=True)
         self._store = FileTaskStore(self._project_root)
-        self._providers = provider_service or ProviderService(settings_dir)
+        self._settings_dir = settings_dir
+        self._legacy_provider_service = provider_service
+        self._model_selection = model_selection_service or (
+            provider_service.model_selection if provider_service is not None else None
+        )
 
     def generate(
         self,
@@ -150,6 +156,7 @@ class CodeService:
         planner_mode: str,
         request_id: str | None = None,
         provider_profile: str | None = None,
+        model_selector: str | None = None,
         context_files: Iterable[str] = (),
     ) -> CodeGenerateResult:
         if not instruction:
@@ -165,24 +172,32 @@ class CodeService:
             task_id, alias
         )
         selected_context = tuple(context_files)
-        profile = (
-            self._providers.resolve_chat(provider_profile)
-            if planner_mode == "live"
-            else None
-        )
-        port = self._providers.model_port(profile) if profile is not None else None
+        if planner_mode == "live" and provider_profile is not None and model_selector is not None:
+            raise DomainError("MODEL_SELECTION_CONFLICT", "--model and --provider-profile cannot be used together")
+        selection: ModelSelectionService | None = None
+        if planner_mode == "live" and provider_profile is not None:
+            legacy = self._legacy_provider_service or ProviderService(self._settings_dir)
+            model_selector = legacy.selector_for_profile(provider_profile)
+        if planner_mode == "live":
+            selection = self._model_selection or ModelSelectionService(self._settings_dir)
+            resolved = selection.resolve(explicit_selector=model_selector)
+            port = selection.model_port(resolved)
+        else:
+            resolved = None
+            port = None
         instruction_fingerprint = _sha256(instruction)
         idempotency_key = request_id or instruction_fingerprint
         operation = self._store.create_operation(
             task_id,
             "code_generate",
-            f"code-generate:{task_id}:{alias}:{planner_mode}:{profile.name if profile else 'offline'}:{profile.revision if profile else 1}:{idempotency_key}",
+            f"code-generate:{task_id}:{alias}:{planner_mode}:{resolved.selector if resolved else 'offline'}:{resolved.connection_revision if resolved else 1}:{idempotency_key}",
             {
                 "alias": alias,
                 "instruction_fingerprint": instruction_fingerprint,
                 "planner": planner_mode,
-                "provider_profile": profile.name if profile else None,
-                "provider_revision": profile.revision if profile else None,
+                "provider_profile": resolved.connection_id if resolved else None,
+                "provider_revision": resolved.connection_revision if resolved else None,
+                "model_selector": resolved.selector if resolved else None,
                 "request_id": idempotency_key,
             },
         )
@@ -193,14 +208,14 @@ class CodeService:
             _close_port(port)
             return _generate_result(self._store, run)
         if planner_mode == "live":
-            assert profile is not None and port is not None
+            assert resolved is not None and port is not None
             try:
                 return self._generate_live(
                     run,
                     alias,
                     instruction,
                     instruction_fingerprint,
-                    profile,
+                    resolved,
                     port,
                     selected_context,
                 )
@@ -288,7 +303,7 @@ class CodeService:
         alias: str,
         instruction: str,
         instruction_fingerprint: str,
-        profile: ProviderProfile,
+        resolved: ResolvedModel,
         port: ModelPort,
         context_files: tuple[str, ...],
     ) -> CodeGenerateResult:
@@ -304,9 +319,9 @@ class CodeService:
                 run.task_id,
                 run.run_id,
                 producer="live_provider",
-                relative_path=_LIVE_PROFILE_PATH,
+                relative_path=_LIVE_RESOLVED_PATH,
                 content=json.dumps(
-                    _profile_snapshot(profile), sort_keys=True, separators=(",", ":")
+                    resolved.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
                 ).encode(),
                 input_fingerprint=instruction_fingerprint,
                 operation_id=run.operation_id,
@@ -328,7 +343,7 @@ class CodeService:
                 "stage.progress",
                 {
                     "context_artifact_id": context.artifact_id,
-                    "provider_profile_artifact_id": snapshot.artifact_id,
+                "resolved_model_artifact_id": snapshot.artifact_id,
                     "worktree_file_count": len(files),
                 },
             )
@@ -336,12 +351,13 @@ class CodeService:
                 task_id=run.task_id,
                 operation_id=run.operation_id,
                 run_id=run.run_id,
-                provider_profile_name=profile.name,
-                provider_type=profile.provider_type,
-                model=profile.model,
-                profile_revision=profile.revision,
-                timeout_seconds=profile.timeout_seconds,
-                output_budget_bytes=min(profile.output_budget, MAX_PATCH_DIFF_BYTES),
+                provider_profile_name=resolved.connection_id,
+                provider_type=resolved.provider_type,
+                model=resolved.model_id,
+                profile_revision=resolved.connection_revision,
+                timeout_seconds=resolved.timeout_seconds,
+                output_budget_bytes=min(resolved.output_limit, MAX_PATCH_DIFF_BYTES),
+                request_options=resolved.request_options,
                 allowed_input_artifact_refs=(context_ref,),
                 input_fingerprint=model_request_fingerprint(prompt, (context_ref,)),
                 user_instruction=prompt,
@@ -992,21 +1008,6 @@ def _artifact_ref(record: ArtifactRecord):
         relative_path=record.relative_path,
         sha256=record.sha256,
     )
-
-
-def _profile_snapshot(profile: ProviderProfile) -> dict[str, object]:
-    return {
-        "base_url": profile.base_url,
-        "capabilities": list(profile.capabilities),
-        "model": profile.model,
-        "name": profile.name,
-        "output_budget": profile.output_budget,
-        "provider_type": profile.provider_type,
-        "revision": profile.revision,
-        "schema_version": 1,
-        "timeout_seconds": profile.timeout_seconds,
-        "type": profile.provider_type,
-    }
 
 
 def _context_files(

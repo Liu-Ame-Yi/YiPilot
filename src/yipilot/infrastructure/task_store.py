@@ -29,6 +29,8 @@ class TaskRecord(BaseModel):
     schema_version: Literal[1] = 1
     task_id: str
     created_at: str
+    title: str = ""
+    development_goal: str = ""
 
 
 class OperationRecord(BaseModel):
@@ -96,7 +98,9 @@ class FileTaskStore:
     def get_project(self) -> ProjectRecord:
         return self._load_yaml(self._runtime_path("config.yaml"), ProjectRecord, "PROJECT_NOT_INITIALIZED")
 
-    def create_task(self, task_id: str) -> TaskRecord:
+    def create_task(
+        self, task_id: str, *, title: str = "", development_goal: str = ""
+    ) -> TaskRecord:
         validate_task_id(task_id)
         self._require_initialized()
         task_directory = self._task_directory(task_id)
@@ -108,7 +112,12 @@ class FileTaskStore:
             try:
                 for directory in (staging / "operations", staging / "runs"):
                     directory.mkdir()
-                task = TaskRecord(task_id=task_id, created_at=_timestamp())
+                task = TaskRecord(
+                    task_id=task_id,
+                    created_at=_timestamp(),
+                    title=title,
+                    development_goal=development_goal,
+                )
                 atomic_write_yaml(
                     staging / "task.yaml", task.model_dump(mode="json"), _validate_task
                 )
@@ -118,10 +127,34 @@ class FileTaskStore:
                 raise
         return self.get_task(task_id)
 
+    def create_next_task(self, title: str, development_goal: str) -> TaskRecord:
+        """Create the next numeric Task without creating an Operation or Run."""
+        self._require_initialized()
+        with self._lock("tasks"):
+            next_id = max((int(task.task_id) for task in self.list_tasks()), default=0) + 1
+            return self.create_task(
+                str(next_id), title=title, development_goal=development_goal
+            )
+
     def get_task(self, task_id: str) -> TaskRecord:
         validate_task_id(task_id)
         task_path = self._task_directory(task_id) / "task.yaml"
         return self._load_yaml(task_path, TaskRecord, "TASK_NOT_FOUND", task_id)
+
+    def list_tasks(self) -> list[TaskRecord]:
+        """Return durable Tasks in creation order."""
+        self._require_initialized()
+        tasks: list[TaskRecord] = []
+        for task_directory in self._tasks_directory().iterdir():
+            if not task_directory.is_dir() or task_directory.name.startswith("."):
+                continue
+            try:
+                tasks.append(self.get_task(task_directory.name))
+            except DomainError as error:
+                if error.code == "INVALID_TASK_ID":
+                    raise DomainError("STORAGE_INVALID", "invalid task directory") from error
+                raise
+        return sorted(tasks, key=lambda task: (task.created_at, int(task.task_id)))
 
     def create_operation(
         self,

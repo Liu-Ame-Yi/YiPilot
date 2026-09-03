@@ -22,6 +22,29 @@ def test_provider_cli_add_list_show_use_and_local_test(tmp_path: Path, monkeypat
     assert json.loads(checked.stdout)["status"] == "local_validation_passed"
 
 
+def test_provider_configure_creates_default_env_profile(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("YIPILOT_TEST_KEY", "provider-test-secret")
+    result = CliRunner().invoke(
+        app,
+        ["settings", "provider", "configure", "--settings-dir", str(tmp_path)],
+        input=(
+            "local\n"
+            "https://example.test/v1\n"
+            "test-model\n"
+            "n\n"
+            "YIPILOT_TEST_KEY\n"
+            "y\n"
+            "n\n"
+        ),
+    )
+    assert result.exit_code == 0
+    assert "configured and locally validated" in result.output
+    assert "provider-test-secret" not in result.output
+    settings = json.loads((tmp_path / "providers.json").read_text(encoding="utf-8"))
+    assert settings["default_model_selector"] == "local/test-model"
+    assert settings["connections"][0]["credential_ref"] == "env:YIPILOT_TEST_KEY"
+
+
 
 def test_provider_cli_has_no_api_key_option_and_errors_do_not_echo_key(tmp_path: Path) -> None:
     runner = CliRunner()
@@ -62,7 +85,7 @@ def test_provider_cli_request_uses_a_mocked_explicit_probe(tmp_path: Path, monke
     monkeypatch.setattr(
         cli_module,
         "ProviderService",
-        lambda settings_dir: ProviderService(settings_dir, port_factory=lambda profile, secrets: ProbePort()),
+        lambda settings_dir: ProviderService(settings_dir, port_factory=lambda model, secrets, reference: ProbePort()),
     )
 
     result = runner.invoke(app, ["settings", "provider", "test", "--request", *common])

@@ -9,7 +9,7 @@ import httpx
 
 from yipilot.domain.errors import DomainError
 from yipilot.domain.model import MAX_MODEL_CHUNK_BYTES, ModelChunk, ModelRequest
-from yipilot.domain.provider import ProviderProfile
+from yipilot.domain.provider import ALLOWED_MODEL_REQUEST_OPTIONS, ResolvedModel
 from yipilot.infrastructure.secret_store import SecretStore
 from yipilot.security.redaction import SecretRedactor
 
@@ -22,9 +22,10 @@ class OpenAICompatibleModelPort:
 
     def __init__(
         self,
-        profile: ProviderProfile,
+        model: ResolvedModel,
         secrets: SecretStore,
         *,
+        credential_ref: str,
         transport: httpx.BaseTransport | None = None,
         max_response_bytes: int = MAX_MODEL_RESPONSE_BYTES,
         is_cancelled: Callable[[], bool] | None = None,
@@ -32,7 +33,8 @@ class OpenAICompatibleModelPort:
     ) -> None:
         if max_response_bytes <= 0:
             raise ValueError("max_response_bytes must be positive")
-        self._profile = profile
+        self._model = model
+        self._credential_ref = credential_ref
         self._secrets = secrets
         self._max_response_bytes = max_response_bytes
         self._is_cancelled = is_cancelled or (lambda: False)
@@ -43,25 +45,33 @@ class OpenAICompatibleModelPort:
         self._client.close()
 
     def stream(self, request: ModelRequest) -> tuple[ModelChunk, ...]:
+        return self._request(request, streaming=True)
+
+    def probe(self, request: ModelRequest) -> tuple[ModelChunk, ...]:
+        """Verify credentials, endpoint and model without requiring SSE compatibility."""
+        return self._request(request, streaming=False)
+
+    def _request(self, request: ModelRequest, *, streaming: bool) -> tuple[ModelChunk, ...]:
         self._validate_request(request)
-        if self._profile.api_key_ref is None:
-            raise DomainError("SECRET_REF_MISSING", "provider profile has no secret reference")
-        secret = self._secrets.read(self._profile.api_key_ref)
+        secret = self._secrets.read(self._credential_ref)
         redactor = SecretRedactor([secret])
-        budget = min(request.output_budget_bytes, self._profile.output_budget)
-        timeout = min(request.timeout_seconds, self._profile.timeout_seconds)
+        budget = min(request.output_budget_bytes, self._model.output_limit)
+        timeout = min(request.timeout_seconds, self._model.timeout_seconds)
         deadline = self._clock() + timeout
         self._check_stop(deadline)
         body = {
-            "model": self._profile.model,
-            "stream": True,
+            "model": self._model.model_id,
+            "stream": streaming,
             "max_tokens": budget,
             "messages": [{"role": "user", "content": request.user_instruction}],
         }
+        if not set(request.request_options) <= ALLOWED_MODEL_REQUEST_OPTIONS:
+            raise DomainError("MODEL_REQUEST_OPTIONS_INVALID", "model request contains unsupported options")
+        body.update({key: request.request_options[key] for key in ALLOWED_MODEL_REQUEST_OPTIONS & request.request_options.keys()})
         try:
             with self._client.stream(
                 "POST",
-                f"{self._profile.base_url}/chat/completions",
+                f"{self._model.base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {secret}"},
                 json=body,
                 timeout=httpx.Timeout(timeout),
@@ -69,7 +79,7 @@ class OpenAICompatibleModelPort:
                 self._check_stop(deadline)
                 self._raise_for_status(response)
                 content_type = response.headers.get("content-type", "").casefold()
-                if "application/json" in content_type:
+                if not streaming or "application/json" in content_type:
                     content = self._json_content(self._bounded_bytes(response, deadline))
                     return _chunks(content, budget, redactor)
                 return self._sse_chunks(response, deadline, budget, redactor)
@@ -85,14 +95,12 @@ class OpenAICompatibleModelPort:
             raise DomainError("MODEL_NETWORK_FAILED", "model network request failed") from error
 
     def _validate_request(self, request: ModelRequest) -> None:
-        if not self._profile.enabled:
-            raise DomainError("PROVIDER_DISABLED", "provider profile is disabled")
-        if "chat" not in self._profile.capabilities:
+        if "chat" not in self._model.capabilities:
             raise DomainError("PROVIDER_CAPABILITY_UNAVAILABLE", "provider does not support chat")
         if (
-            request.provider_profile_name != self._profile.name
-            or request.model != self._profile.model
-            or request.profile_revision != self._profile.revision
+            request.provider_profile_name != self._model.connection_id
+            or request.model != self._model.model_id
+            or request.profile_revision != self._model.connection_revision
         ):
             raise DomainError("MODEL_PROFILE_MISMATCH", "model request does not match provider profile")
 
@@ -178,32 +186,35 @@ class OpenAICompatibleModelPort:
             raise DomainError("MODEL_OVERALL_TIMEOUT", "model request exceeded its overall timeout")
 
 
-def provider_probe_request(profile: ProviderProfile) -> ModelRequest:
+def provider_probe_request(model: ResolvedModel) -> ModelRequest:
     """A fixed minimal request for explicit provider connectivity validation."""
     from yipilot.domain.model import model_request_fingerprint
 
-    budget = min(profile.output_budget, 32)
+    budget = min(model.output_limit, 32)
     return ModelRequest(
         task_id="0",
         operation_id="provider-test",
         run_id="provider-test",
-        provider_profile_name=profile.name,
-        provider_type=profile.provider_type,
-        model=profile.model,
-        profile_revision=profile.revision,
-        timeout_seconds=min(profile.timeout_seconds, 10.0),
+        provider_profile_name=model.connection_id,
+        provider_type=model.provider_type,
+        model=model.model_id,
+        profile_revision=model.connection_revision,
+        timeout_seconds=min(model.timeout_seconds, 10.0),
         output_budget_bytes=budget,
         input_fingerprint=model_request_fingerprint(_PROBE_INSTRUCTION),
         user_instruction=_PROBE_INSTRUCTION,
     )
-
-
 def _delta_content(data: str) -> str:
     try:
         payload = json.loads(data)
-        content = payload["choices"][0]["delta"].get("content", "")
+        delta = payload["choices"][0]["delta"]
     except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
         raise DomainError("MODEL_PROTOCOL_ERROR", "model stream chunk is invalid") from error
+    if not isinstance(delta, dict):
+        raise DomainError("MODEL_PROTOCOL_ERROR", "model stream chunk is invalid")
+    content = delta.get("content")
+    if content is None:
+        return ""
     if not isinstance(content, str):
         raise DomainError("MODEL_PROTOCOL_ERROR", "model stream chunk is invalid")
     return content

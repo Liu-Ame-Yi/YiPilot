@@ -5,24 +5,29 @@ from ipaddress import ip_address
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 MAX_PROVIDER_TIMEOUT_SECONDS = 600.0
 MAX_PROVIDER_OUTPUT_BUDGET = 128_000
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _CAPABILITY = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
-_REFERENCE = re.compile(r"^(?:(?P<env>env):(?P<env_name>[A-Za-z_][A-Za-z0-9_]*)|(?P<keyring>keyring):(?P<keyring_name>[A-Za-z0-9][A-Za-z0-9_.-]{0,63}))$")
+_REFERENCE = re.compile(r"^(?:(?P<env>env):(?P<env_name>[A-Za-z_][A-Za-z0-9_]*)|(?P<keyring>keyring):(?P<keyring_name>[A-Za-z0-9][A-Za-z0-9_.-]{0,63})|(?P<file>file):(?P<file_name>[A-Za-z0-9][A-Za-z0-9_.-]{0,63}))$")
+ALLOWED_MODEL_REQUEST_OPTIONS = frozenset(
+    {"frequency_penalty", "presence_penalty", "reasoning_effort", "seed", "stop", "temperature", "top_p"}
+)
 
 
 def parse_api_key_ref(value: str) -> tuple[str, str]:
     """Validate one safe secret reference and return its kind and name."""
     match = _REFERENCE.fullmatch(value)
     if match is None:
-        raise ValueError("api key must be an env: or keyring: reference")
+        raise ValueError("api key must be an env:, keyring:, or file: reference")
     if match.group("env") == "env":
         return "env", match.group("env_name")
-    return "keyring", match.group("keyring_name")
+    if match.group("keyring") == "keyring":
+        return "keyring", match.group("keyring_name")
+    return "file", match.group("file_name")
 
 
 class ProviderProfile(BaseModel):
@@ -90,6 +95,136 @@ class ProviderProfile(BaseModel):
 
     def public_value(self) -> dict[str, object]:
         return self.model_dump(mode="json")
+
+
+class ProviderConnection(BaseModel):
+    """Non-secret endpoint configuration shared by one or more models."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    connection_id: str = Field(min_length=1, max_length=64)
+    type: Literal["openai_compatible"] = "openai_compatible"
+    base_url: str
+    capabilities: tuple[str, ...] = ("chat",)
+    enabled: bool = True
+    timeout_seconds: float = Field(gt=0, le=MAX_PROVIDER_TIMEOUT_SECONDS, allow_inf_nan=False)
+    credential_ref: str | None = None
+    revision: int = Field(ge=1)
+
+    _name = field_validator("connection_id")(ProviderProfile.validate_name.__func__)  # type: ignore[attr-defined]
+    _url = field_validator("base_url")(ProviderProfile.validate_url.__func__)  # type: ignore[attr-defined]
+    _capabilities = field_validator("capabilities")(ProviderProfile.validate_capabilities.__func__)  # type: ignore[attr-defined]
+    _credential = field_validator("credential_ref")(ProviderProfile.validate_api_key_ref.__func__)  # type: ignore[attr-defined]
+
+
+class ModelVariant(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1, max_length=64)
+    output_limit: int | None = Field(default=None, gt=0, le=MAX_PROVIDER_OUTPUT_BUDGET)
+    context_limit: int | None = Field(default=None, gt=0)
+    request_options: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    enabled: bool = True
+
+    _name = field_validator("name")(ProviderProfile.validate_name.__func__)  # type: ignore[attr-defined]
+
+    @field_validator("request_options")
+    @classmethod
+    def validate_request_options(
+        cls, value: dict[str, str | int | float | bool]
+    ) -> dict[str, str | int | float | bool]:
+        if not set(value) <= ALLOWED_MODEL_REQUEST_OPTIONS:
+            raise ValueError("model variant request options are not supported")
+        return value
+
+
+class ModelEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    connection_id: str = Field(min_length=1, max_length=64)
+    model_id: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=128)
+    context_limit: int | None = Field(default=None, gt=0)
+    output_limit: int = Field(gt=0, le=MAX_PROVIDER_OUTPUT_BUDGET)
+    capabilities: tuple[str, ...] = ("chat",)
+    enabled: bool = True
+    variants: tuple[ModelVariant, ...] = ()
+
+    _connection = field_validator("connection_id")(ProviderProfile.validate_name.__func__)  # type: ignore[attr-defined]
+    _model = field_validator("model_id")(ProviderProfile.validate_model.__func__)  # type: ignore[attr-defined]
+    _capabilities = field_validator("capabilities")(ProviderProfile.validate_capabilities.__func__)  # type: ignore[attr-defined]
+
+    @field_validator("variants")
+    @classmethod
+    def validate_variants(cls, value: tuple[ModelVariant, ...]) -> tuple[ModelVariant, ...]:
+        if len({variant.name for variant in value}) != len(value):
+            raise ValueError("model variant names must be unique")
+        return value
+
+
+class ModelSelector(BaseModel):
+    """Canonical, exact model identity; display indexes are never identities."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    connection_id: str
+    model_id: str
+    variant: str | None = None
+
+    _connection = field_validator("connection_id")(ProviderProfile.validate_name.__func__)  # type: ignore[attr-defined]
+    _model = field_validator("model_id")(ProviderProfile.validate_model.__func__)  # type: ignore[attr-defined]
+    @field_validator("variant")
+    @classmethod
+    def validate_variant(cls, value: str | None) -> str | None:
+        if value is not None:
+            ProviderProfile.validate_name(value)
+        return value
+
+    @classmethod
+    def parse(cls, value: str) -> "ModelSelector":
+        if "/" not in value or not value or any(character.isspace() for character in value):
+            raise ValueError("model selector must be connection_id/model_id[:variant]")
+        connection_id, model_part = value.split("/", 1)
+        if not connection_id or not model_part:
+            raise ValueError("model selector must be connection_id/model_id[:variant]")
+        # A colon is part of a valid model ID.  Only the control plane, which
+        # has the configured model list, can safely decide whether it is a variant.
+        return cls(connection_id=connection_id, model_id=model_part)
+
+    def __str__(self) -> str:
+        return f"{self.connection_id}/{self.model_id}" + (f":{self.variant}" if self.variant else "")
+
+
+class ResolvedModel(BaseModel):
+    """Redacted immutable live-model snapshot, safe to persist with a Run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    selector: str
+    source: Literal["explicit", "session", "global_default"]
+    connection_id: str
+    provider_type: Literal["openai_compatible"]
+    base_url: str
+    connection_revision: int = Field(ge=1)
+    model_id: str
+    display_name: str
+    capabilities: tuple[str, ...]
+    context_limit: int | None = Field(default=None, gt=0)
+    output_limit: int = Field(gt=0, le=MAX_PROVIDER_OUTPUT_BUDGET)
+    timeout_seconds: float = Field(gt=0, le=MAX_PROVIDER_TIMEOUT_SECONDS)
+    variant: str | None = None
+    request_options: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    _credential_ref: str | None = PrivateAttr(default=None)
+
+    def with_credential_reference(self, value: str) -> "ResolvedModel":
+        object.__setattr__(self, "_credential_ref", value)
+        return self
+
+    def credential_reference(self) -> str:
+        if self._credential_ref is None:
+            raise ValueError("resolved model credential is unavailable")
+        return self._credential_ref
 
 def _is_loopback(hostname: str | None) -> bool:
     if hostname is None:

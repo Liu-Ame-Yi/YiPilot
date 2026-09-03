@@ -76,6 +76,20 @@ def test_invalid_task_id_leaves_no_task_directory(tmp_path: Path) -> None:
     assert not list((tmp_path / ".yipilot" / "tasks").iterdir())
 
 
+def test_interactive_task_details_and_next_id_persist_without_a_run(tmp_path: Path) -> None:
+    store = FileTaskStore(tmp_path)
+    store.initialize_project()
+
+    first = store.create_next_task("终端任务", "验证任务向导")
+    store.create_next_task("下一任务", "保持顺序 ID")
+
+    assert (first.task_id, first.title, first.development_goal) == (
+        "1", "终端任务", "验证任务向导"
+    )
+    assert [task.task_id for task in store.list_tasks()] == ["1", "2"]
+    assert store.list_runs(first.task_id) == []
+
+
 def test_failed_project_write_leaves_no_partial_runtime_layout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

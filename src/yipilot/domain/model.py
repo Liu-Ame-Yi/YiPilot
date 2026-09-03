@@ -36,6 +36,7 @@ class ModelRequest(BaseModel):
     profile_revision: int = Field(ge=1)
     timeout_seconds: float = Field(gt=0, le=600, allow_inf_nan=False)
     output_budget_bytes: int = Field(gt=0, le=MAX_MODEL_OUTPUT_BYTES)
+    request_options: dict[str, str | int | float | bool] = Field(default_factory=dict)
     allowed_input_artifact_refs: tuple[ArtifactRef, ...] = ()
     input_fingerprint: Sha256
     user_instruction: Annotated[str, Field(min_length=1, max_length=32 * 1024)]

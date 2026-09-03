@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from yipilot.domain.errors import DomainError
 from yipilot.domain.models import RunStatus
 from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.task_store import (
@@ -45,8 +46,17 @@ class ProjectService:
         self._store.set_run_status(run.run_id, RunStatus.SUCCEEDED)
         return task
 
+    def create_interactive_task(self, title: str, development_goal: str) -> TaskRecord:
+        if not title.strip() or not development_goal.strip():
+            raise DomainError("TASK_DETAILS_REQUIRED", "task title and development goal are required")
+        self._store.initialize_project()
+        return self._store.create_next_task(title.strip(), development_goal.strip())
+
     def show_task(self, task_id: str) -> TaskRecord:
         return self._store.get_task(task_id)
+
+    def list_tasks(self) -> list[TaskRecord]:
+        return self._store.list_tasks()
 
     def list_runs(self, task_id: str) -> list[RunRecord]:
         return self._store.list_runs(task_id)

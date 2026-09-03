@@ -30,7 +30,8 @@ def test_provider_store_is_user_local_and_requires_new_revision(tmp_path) -> Non
         store.add(_profile())
     store.add(_profile(2))
     persisted = json.loads(store.path.read_text(encoding="utf-8"))
-    assert persisted["profiles"][0]["revision"] == 2
+    assert persisted["schema_version"] == 2
+    assert persisted["connections"][0]["revision"] == 2
     assert "YIPILOT_TEST_KEY" not in str(tmp_path / ".yipilot")
 
 
@@ -43,6 +44,14 @@ def test_fake_keyring_and_fake_env_read_without_system_credentials(tmp_path) -> 
     service = ProviderService(tmp_path, secrets=secrets)
     service.add(**_profile().model_dump())
     assert service.test("local").profile.name == "local"
+
+
+def test_auth_file_round_trip_is_separate_from_provider_settings(tmp_path) -> None:
+    secrets = SecretStore(settings_dir=tmp_path)
+    assert secrets.set_file("deepseek-1", "unit-file-secret") == "file:deepseek-1"
+    assert secrets.read("file:deepseek-1") == "unit-file-secret"
+    auth = json.loads((tmp_path / "auth.json").read_text(encoding="utf-8"))
+    assert auth == {"keys": {"deepseek-1": "unit-file-secret"}, "schema_version": 1}
 
 
 def test_redactor_hides_known_values_headers_and_url_credentials() -> None:

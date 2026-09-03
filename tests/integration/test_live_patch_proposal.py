@@ -96,7 +96,7 @@ def _providers(
     service = ProviderService(
         tmp_path / "settings",
         secrets=SecretStore(environ={"LIVE_KEY": "live-secret"}),
-        port_factory=lambda _profile, _secrets: port,
+        port_factory=lambda _model, _secrets, _reference: port,
     )
     service.add(
         name=name,
@@ -110,8 +110,8 @@ def _providers(
         revision=1,
         api_key_ref=api_key_ref,
     )
-    if enabled:
-        service.use(name)
+    if enabled and capabilities == ("chat",) and api_key_ref is not None:
+        service.model_selection.set_default(service.selector_for_profile(name))
     return service
 
 
@@ -170,13 +170,11 @@ def test_live_proposal_persists_only_evidence_and_selected_context(
     assert "artifacts/srs.md" in prompt and "artifacts/sdd.md" in prompt
     store = FileTaskStore(project)
     root = store.event_journal_path(result.run_id).parent
-    profile = json.loads(
-        (root / "artifacts/provider-profile.json").read_text(encoding="utf-8")
-    )
-    assert profile["model"] == "test-model"
-    assert profile["type"] == "openai_compatible"
-    assert "api_key_ref" not in profile
-    assert "live-secret" not in (root / "artifacts/provider-profile.json").read_text(
+    profile = json.loads((root / "artifacts/resolved-model.json").read_text(encoding="utf-8"))
+    assert profile["model_id"] == "test-model"
+    assert profile["provider_type"] == "openai_compatible"
+    assert "credential_ref" not in profile
+    assert "live-secret" not in (root / "artifacts/resolved-model.json").read_text(
         encoding="utf-8"
     )
     manifest = (root / "artifacts/live-context.md").read_text(encoding="utf-8")
@@ -184,7 +182,7 @@ def test_live_proposal_persists_only_evidence_and_selected_context(
     assert "artifacts/srs.md" in manifest and "artifacts/test-plan.md" in manifest
     records = FileArtifactStore(store).list("1001", result.run_id)
     assert {record.relative_path for record in records} >= {
-        "artifacts/provider-profile.json",
+        "artifacts/resolved-model.json",
         "artifacts/live-context.md",
         "artifacts/live-model-response.json",
         "artifacts/live-model-call.json",

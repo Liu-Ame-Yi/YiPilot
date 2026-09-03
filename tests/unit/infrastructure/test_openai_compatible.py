@@ -7,7 +7,7 @@ import pytest
 from yipilot.application.provider_service import ProviderService
 from yipilot.domain.errors import DomainError
 from yipilot.domain.model import ModelRequest, ModelResponse
-from yipilot.domain.provider import ProviderProfile
+from yipilot.domain.provider import ProviderProfile, ResolvedModel
 from yipilot.infrastructure.model_port import FakeModelPort
 from yipilot.infrastructure.openai_compatible import OpenAICompatibleModelPort
 from yipilot.infrastructure.secret_store import SecretStore
@@ -63,11 +63,16 @@ def _request(profile: ProviderProfile, *, budget: int = 128) -> ModelRequest:
 
 def _port(profile: ProviderProfile, handler, **kwargs: object) -> OpenAICompatibleModelPort:
     return OpenAICompatibleModelPort(
-        profile,
+        _resolved(profile),
         SecretStore(environ={"YIPILOT_TEST_KEY": _SECRET}),
+        credential_ref="env:YIPILOT_TEST_KEY",
         transport=httpx.MockTransport(handler),
         **kwargs,
     )
+
+
+def _resolved(profile: ProviderProfile) -> ResolvedModel:
+    return ResolvedModel(selector=f"{profile.name}/{profile.model}", source="explicit", connection_id=profile.name, provider_type=profile.provider_type, base_url=profile.base_url, connection_revision=profile.revision, model_id=profile.model, display_name=profile.model, capabilities=profile.capabilities, output_limit=profile.output_budget, timeout_seconds=profile.timeout_seconds)
 
 
 def test_streams_sse_only_to_fixed_path_and_controlled_body() -> None:
@@ -96,6 +101,43 @@ def test_streams_sse_only_to_fixed_path_and_controlled_body() -> None:
         "messages": [{"role": "user", "content": _PROMPT}],
     }
     assert seen["headers"]["authorization"] == f"Bearer {_SECRET}"
+
+
+def test_stream_accepts_a_standard_role_chunk_without_text_content() -> None:
+    profile = _profile()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _response(
+            200,
+            content=(
+                b'data: {"choices":[{"delta":{"role":"assistant","content":null}}]}\n'
+                b'data: {"choices":[{"delta":{"content":"OK"}}]}\n'
+                b"data: [DONE]\n"
+            ),
+        )
+
+    assert "".join(chunk.content for chunk in _port(profile, handler).stream(_request(profile))) == "OK"
+
+
+def test_provider_probe_uses_a_non_streaming_chat_completion() -> None:
+    profile = _profile()
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return _response(
+            200,
+            headers={"content-type": "application/json"},
+            content=b'{"choices":[{"message":{"content":"OK"}}]}',
+        )
+
+    assert "".join(chunk.content for chunk in _port(profile, handler).probe(_request(profile))) == "OK"
+    assert seen["body"] == {
+        "model": "test-model",
+        "stream": False,
+        "max_tokens": 128,
+        "messages": [{"role": "user", "content": _PROMPT}],
+    }
 
 
 def test_non_streaming_json_fallback_has_the_same_chunk_semantics() -> None:
@@ -208,7 +250,7 @@ def test_provider_service_only_uses_a_port_for_explicit_request(tmp_path) -> Non
     profile = _profile()
     calls = 0
 
-    def factory(profile: ProviderProfile, secrets: SecretStore) -> FakeModelPort:
+    def factory(model: ResolvedModel, secrets: SecretStore, reference: str) -> FakeModelPort:
         nonlocal calls
         calls += 1
         return FakeModelPort(ModelResponse(chunks=()))
@@ -217,7 +259,7 @@ def test_provider_service_only_uses_a_port_for_explicit_request(tmp_path) -> Non
         tmp_path, secrets=SecretStore(environ={"YIPILOT_TEST_KEY": _SECRET}), port_factory=factory
     )
     service.add(**profile.model_dump())
-    service.use(profile.name)
+    service.model_selection.set_default(service.selector_for_profile(profile.name))
     assert service.test().status == "local_validation_passed"
     assert calls == 0
     assert service.test(request=True).status == "request_passed"

@@ -3,16 +3,18 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import ValidationError
 
+from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.domain.errors import DomainError
 from yipilot.domain.model import ModelPort
-from yipilot.domain.provider import ProviderProfile
-from yipilot.infrastructure.openai_compatible import (
-    OpenAICompatibleModelPort,
-    provider_probe_request,
+from yipilot.domain.provider import (
+    ModelEntry,
+    ProviderConnection,
+    ProviderProfile,
+    ResolvedModel,
 )
 from yipilot.infrastructure.provider_store import FileProviderStore
 from yipilot.infrastructure.secret_store import SecretStore
@@ -40,11 +42,15 @@ class ProviderService:
         settings_dir: Path | None = None,
         *,
         secrets: SecretStore | None = None,
-        port_factory: Callable[[ProviderProfile, SecretStore], ModelPort] | None = None,
+        port_factory: Callable[[ResolvedModel, SecretStore, str], ModelPort] | None = None,
     ) -> None:
         self._store = FileProviderStore(settings_dir)
-        self._secrets = secrets or SecretStore()
-        self._port_factory = port_factory or OpenAICompatibleModelPort
+        self._secrets = secrets or SecretStore(settings_dir=settings_dir)
+        self._selection = ModelSelectionService(
+            settings_dir,
+            secrets=self._secrets,
+            port_factory=port_factory,
+        )
 
     @property
     def path(self) -> Path:
@@ -57,13 +63,20 @@ class ProviderService:
             raise DomainError(
                 "PROVIDER_PROFILE_INVALID", "provider profile is invalid"
             ) from error
-        return self._store.add(profile)
+        self._selection.add(
+            ProviderConnection(connection_id=profile.name, type=profile.provider_type, base_url=profile.base_url, capabilities=profile.capabilities, enabled=profile.enabled, timeout_seconds=profile.timeout_seconds, credential_ref=profile.api_key_ref, revision=profile.revision),
+            ModelEntry(connection_id=profile.name, model_id=profile.model, display_name=profile.model, output_limit=profile.output_budget, capabilities=profile.capabilities, enabled=profile.enabled),
+        )
+        return self._store.get(profile.name)
 
     def list(self) -> dict[str, object]:
         settings = self._store.load()
         return {
-            "default_profile": settings.default_profile,
-            "profiles": [profile.public_value() for profile in settings.profiles],
+            "default_profile": (
+                settings.default_model_selector.split("/", 1)[0]
+                if settings.default_model_selector else None
+            ),
+            "profiles": [profile.public_value() for profile in self._store.list()],
         }
 
     def show(self, name: str) -> ProviderProfile:
@@ -73,64 +86,33 @@ class ProviderService:
         return self._store.use(name)
 
     def set_key(self, name: str, value: str) -> ProviderProfile:
-        profile = self._store.get(name)
-        reference = self._secrets.set_keyring(profile.name, value)
-        return self._store.replace(
-            profile.model_copy(
-                update={"api_key_ref": reference, "revision": profile.revision + 1}
-            )
-        )
+        connection = self._store.get_connection(name)
+        reference = self._secrets.set_file(name, value)
+        self._store.add_connection(connection.model_copy(update={"credential_ref": reference, "revision": connection.revision + 1}))
+        return self._store.get(name)
 
-    def resolve_chat(self, name: str | None = None) -> ProviderProfile:
-        """Resolve one usable profile before a live Run reserves a workspace."""
-        settings = self._store.load()
-        selected = name or settings.default_profile
-        if selected is None:
-            raise DomainError("PROVIDER_NOT_FOUND", "no provider profile is selected")
-        profile = self._store.get(selected)
-        if not profile.enabled:
-            raise DomainError("PROVIDER_DISABLED", "provider profile is disabled")
-        if "chat" not in profile.capabilities:
-            raise DomainError(
-                "PROVIDER_CAPABILITY_UNAVAILABLE", "provider does not support chat"
-            )
-        if profile.api_key_ref is None:
-            raise DomainError(
-                "SECRET_REF_MISSING", "provider profile has no secret reference"
-            )
-        self._secrets.read(profile.api_key_ref)
-        return profile
+    @property
+    def model_selection(self) -> ModelSelectionService:
+        return self._selection
 
-    def model_port(self, profile: ProviderProfile) -> ModelPort:
-        """Build the configured adapter only after local profile validation."""
-        return self._port_factory(profile, self._secrets)
+    def selector_for_profile(self, name: str) -> str:
+        profile = self.show(name)
+        return f"{profile.name}/{profile.model}"
 
     def test(
         self, name: str | None = None, *, request: bool = False
     ) -> ProviderTestResult:
         settings = self._store.load()
-        selected = name or settings.default_profile
+        selected = name or (
+            settings.default_model_selector.split("/", 1)[0]
+            if settings.default_model_selector else None
+        )
         if selected is None:
             raise DomainError("PROVIDER_NOT_FOUND", "no provider profile is selected")
         profile = self._store.get(selected)
-        if profile.api_key_ref is None:
-            raise DomainError(
-                "SECRET_REF_MISSING", "provider profile has no secret reference"
-            )
-        self._secrets.read(profile.api_key_ref)
-        if not request:
-            return ProviderTestResult(
-                profile,
-                "local_validation_passed",
-                "local profile and secret validation passed",
-            )
-        port = self._port_factory(profile, self._secrets)
-        try:
-            port.stream(provider_probe_request(profile))
-        finally:
-            close = getattr(port, "close", None)
-            if callable(close):
-                close()
+        result = self._selection.test(self.selector_for_profile(selected), request=request)
         return ProviderTestResult(
-            profile, "request_passed", "minimal provider probe completed"
+            profile,
+            cast(Literal["local_validation_passed", "request_passed"], result["status"]),
+            "minimal provider probe completed" if request else "local profile and secret validation passed",
         )

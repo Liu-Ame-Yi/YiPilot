@@ -1,5 +1,6 @@
 import json
 import math
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -10,17 +11,20 @@ from pydantic import BaseModel, ValidationError
 
 from yipilot import __version__
 from yipilot.application.code_service import CodeService
+from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.application.project_service import ProjectService
 from yipilot.application.provider_service import ProviderService
 from yipilot.application.quality_artifacts import QualityArtifactService
 from yipilot.application.repo_service import RepoMetadata, RepoService
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
+from yipilot.domain.provider import ProviderProfile
 from yipilot.harness.models import HarnessReport
 from yipilot.harness.quality import SddHarness, SrsHarness
 from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.git_runner import GitRunner
+from yipilot.infrastructure.secret_store import SecretStore
 from yipilot.infrastructure.task_store import FileTaskStore
 from yipilot.security.redaction import SecretRedactor
 from yipilot.transport.cli.events import (
@@ -28,10 +32,9 @@ from yipilot.transport.cli.events import (
     JsonlEventRenderer,
     is_terminal_event,
 )
+from yipilot.transport.cli.interactive import InteractiveSession
 
-app = typer.Typer(
-    no_args_is_help=True, add_completion=False, invoke_without_command=True
-)
+app = typer.Typer(no_args_is_help=False, add_completion=False, invoke_without_command=True)
 task_app = typer.Typer(no_args_is_help=True)
 run_app = typer.Typer(no_args_is_help=True)
 repo_app = typer.Typer(no_args_is_help=True)
@@ -40,6 +43,7 @@ code_app = typer.Typer(no_args_is_help=True)
 quality_app = typer.Typer(no_args_is_help=True)
 settings_app = typer.Typer(no_args_is_help=True)
 provider_app = typer.Typer(no_args_is_help=True)
+model_app = typer.Typer(no_args_is_help=True)
 app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
 app.add_typer(code_app, name="code")
@@ -48,33 +52,116 @@ app.add_typer(settings_app, name="settings")
 task_app.add_typer(repo_app, name="repo")
 task_app.add_typer(workspace_app, name="workspace")
 settings_app.add_typer(provider_app, name="provider")
+settings_app.add_typer(model_app, name="model")
 
 Result = TypeVar("Result")
 _DEFAULT_PROJECT = Path(".")
 
 
+@provider_app.callback()
+def provider_deprecation() -> None:
+    # Keep machine-readable --output json streams single-object compatible.
+    if sys.stderr.isatty():
+        typer.echo("DEPRECATION: settings provider is supported through M5 only; use settings model.", err=True)
+
+
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(False, "--version"),
     output: str = typer.Option("human", "--output"),
+    interactive: bool = typer.Option(False, "--interactive"),
+    project: Annotated[Path | None, typer.Option("--project")] = None,
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
 ) -> None:
-    if not version:
+    if not version and ctx.invoked_subcommand is not None:
         return
-
-    if output == "json":
+    if version and output == "json":
         typer.echo(
             json.dumps(
                 {"name": "yipilot", "version": __version__}, separators=(",", ":")
             )
         )
-    elif output == "human":
+    elif version and output == "human":
         typer.echo(f"yipilot {__version__}")
-    else:
+    elif version:
         raise typer.BadParameter(
             "must be either 'human' or 'json'", param_hint="--output"
         )
 
-    raise typer.Exit()
+    if version:
+        raise typer.Exit()
+    if output != "human":
+        raise typer.BadParameter("interactive session requires --output human", param_hint="--output")
+    if not interactive and not sys.stdin.isatty():
+        typer.echo("Interactive session requires a TTY; use --interactive with scripted stdin.")
+        return
+    InteractiveSession(settings_dir=settings_dir, project=project).run()
+
+
+@model_app.command("list")
+def model_list(
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    value = _settings_invoke(output, lambda: ModelSelectionService(settings_dir).list_public())
+    if value is not None:
+        models = cast(list[object], value["models"])
+        _render_value(output, value, f"Configured {len(models)} model(s).")
+
+
+@model_app.command("select")
+def model_select(
+    selector: str,
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    def action() -> dict[str, object]:
+        ModelSelectionService(settings_dir).set_default(selector)
+        return {"default_model_selector": selector}
+    value = _settings_invoke(output, action)
+    if value is not None:
+        _render_value(output, value, f"Global default model is {selector}.")
+
+
+@model_app.command("test")
+def model_test(
+    selector: str,
+    request: Annotated[bool, typer.Option("--request")] = False,
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    value = _settings_invoke(output, lambda: ModelSelectionService(settings_dir).test(selector, request=request))
+    if value is not None:
+        _render_value(output, value, f"Model {selector}: {value['status']}.")
+
+
+@model_app.command("configure")
+def model_configure(
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+) -> None:
+    """Configure one OpenAI-compatible connection and model."""
+    from yipilot.domain.provider import ModelEntry, ProviderConnection
+
+    service = ModelSelectionService(settings_dir)
+    connection_id = typer.prompt("Connection ID")
+    base_url = typer.prompt("OpenAI-compatible URL")
+    model_id = typer.prompt("Model ID")
+    use_auth_file = typer.confirm("Store API key in Yipilot auth.json", default=True)
+    reference = f"file:{connection_id}" if use_auth_file else f"env:{typer.prompt('Environment variable name')}"
+    key = typer.prompt("API key", hide_input=True) if use_auth_file else None
+    connection = ProviderConnection(connection_id=connection_id, base_url=base_url, timeout_seconds=60, credential_ref=reference, revision=1)
+    model = ModelEntry(connection_id=connection_id, model_id=model_id, display_name=model_id, output_limit=4096)
+    if key is not None:
+        SecretStore(settings_dir=settings_dir).set_file(connection_id, key)
+    if _settings_invoke("human", lambda: service.add(connection, model)) is None:
+        return
+    selector = f"{connection_id}/{model_id}"
+    if _settings_invoke("human", lambda: service.resolve(explicit_selector=selector)) is None:
+        return
+    if typer.confirm("Use this model as the global default", default=True):
+        _settings_invoke("human", lambda: service.set_default(selector))
+    typer.echo(f"Configured model {selector}.")
 
 
 @app.command("init")
@@ -330,6 +417,7 @@ def code_generate(
     alias: Annotated[str, typer.Option("--alias")],
     instruction: Annotated[str, typer.Option("--instruction")],
     planner: Annotated[str, typer.Option("--planner")],
+    model: Annotated[str | None, typer.Option("--model")] = None,
     provider_profile: Annotated[str | None, typer.Option("--provider-profile")] = None,
     context_file: Annotated[list[str] | None, typer.Option("--context-file")] = None,
     settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
@@ -337,6 +425,8 @@ def code_generate(
     project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
+    if provider_profile is not None and output == "human":
+        typer.echo("DEPRECATION: --provider-profile is supported through M5 only; use --model connection_id/model_id.", err=True)
     result = _invoke(
         output,
         lambda: CodeService(project, settings_dir=settings_dir).generate(
@@ -344,15 +434,19 @@ def code_generate(
             alias,
             instruction,
             planner,
-            request_id,
-            provider_profile,
-            context_file or (),
+            request_id=request_id,
+            provider_profile=provider_profile,
+            model_selector=model,
+            context_files=context_file or (),
         ),
     )
     if result is not None:
+        value = result.value()
+        if provider_profile is not None:
+            value["deprecation"] = "--provider-profile is supported through M5 only; use --model connection_id/model_id."
         _render_value(
             output,
-            result.value(),
+            value,
             f"Code generation run {result.run_id} is {result.status}.",
         )
         if result.status != "succeeded":
@@ -424,6 +518,63 @@ def provider_add(
         )
 
 
+@provider_app.command("configure")
+def provider_configure(
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+) -> None:
+    """Interactively create one Provider Profile and optionally verify it."""
+    service = ProviderService(settings_dir)
+    name = typer.prompt("Profile name")
+    base_url = typer.prompt("OpenAI-compatible base URL")
+    model = typer.prompt("Model ID")
+    use_auth_file = typer.confirm(
+        "Store API key in Yipilot auth.json", default=True
+    )
+    api_key_ref = None
+    if not use_auth_file:
+        api_key_ref = f"env:{typer.prompt('Environment variable name')}"
+    profile = _settings_invoke(
+        "human",
+        lambda: service.add(
+            name=name,
+            provider_type="openai_compatible",
+            base_url=base_url,
+            model=model,
+            timeout_seconds=60.0,
+            output_budget=4096,
+            capabilities=("chat",),
+            enabled=True,
+            revision=1,
+            api_key_ref=api_key_ref,
+        ),
+    )
+    if profile is None:
+        return
+    if use_auth_file:
+        key = typer.prompt("API key", hide_input=True)
+        profile = _settings_invoke("human", lambda: service.set_key(name, key))
+        if profile is None:
+            return
+    if typer.confirm("Use this profile as the default", default=True):
+        profile = _settings_invoke("human", lambda: service.use(name))
+        if profile is None:
+            return
+        def set_default() -> bool:
+            service.model_selection.set_default(service.selector_for_profile(name))
+            return True
+
+        if _settings_invoke("human", set_default) is None:
+            return
+    checked = _settings_invoke("human", lambda: service.test(name))
+    if checked is None:
+        return
+    typer.echo(f"Provider profile {profile.name} is configured and locally validated.")
+    if typer.confirm("Send a small live provider probe now", default=False):
+        probed = _settings_invoke("human", lambda: service.test(name, request=True))
+        if probed is not None:
+            typer.echo(f"Provider profile {profile.name}: {probed.status}.")
+
+
 @provider_app.command("list")
 def provider_list(
     settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
@@ -455,7 +606,13 @@ def provider_use(
     settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
-    profile = _settings_invoke(output, lambda: ProviderService(settings_dir).use(name))
+    def action() -> ProviderProfile:
+        service = ProviderService(settings_dir)
+        profile = service.use(name)
+        service.model_selection.set_default(service.selector_for_profile(name))
+        return profile
+
+    profile = _settings_invoke(output, action)
     if profile is not None:
         _render_value(
             output, profile.public_value(), f"Using provider profile {profile.name}."
