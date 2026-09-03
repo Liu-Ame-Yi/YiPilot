@@ -15,7 +15,7 @@ from yipilot.domain.execution import (
     ToolRequest,
     ToolResult,
     is_generic_python_executable,
-    is_quality_pytest_request,
+    is_registered_python_test_request,
 )
 
 
@@ -61,7 +61,9 @@ class ToolRegistry:
             )
         if is_generic_python_executable(
             tool.executable
-        ) and not is_quality_pytest_request(tool, request, self._policy.revision):
+        ) and not is_registered_python_test_request(
+            tool, request, self._policy.revision
+        ):
             raise DomainError(
                 "TOOL_EXECUTABLE_DENIED",
                 "generic Python interpreters are only allowed for registered test tools",

@@ -70,7 +70,12 @@ def _interactive_project(tmp_path: Path) -> Path:
     _git(source, "config", "user.name", "Yipilot Tests")
     _git(source, "config", "user.email", "tests@yipilot.invalid")
     (source / "tracked.py").write_text("value = 1\n", encoding="utf-8")
-    _git(source, "add", "tracked.py")
+    (source / "src").mkdir()
+    (source / "tests").mkdir()
+    (source / "src" / "__init__.py").write_text("", encoding="utf-8")
+    (source / "tests" / "test_smoke.py").write_text("def test_smoke():\n    assert True\n", encoding="utf-8")
+    (source / ".gitignore").write_text(".pytest_cache/\n__pycache__/\n", encoding="utf-8")
+    _git(source, "add", "tracked.py", "src", "tests", ".gitignore")
     _git(source, "commit", "-m", "initial")
     project = tmp_path / "project"
     project.mkdir()
@@ -134,6 +139,12 @@ def test_task_can_be_selected_again_after_restart_without_model(tmp_path) -> Non
 
     assert "已选择任务 1；选择仅保留在本次会话。" in output.getvalue()
     assert "当前任务：1 · 可恢复任务" in output.getvalue()
+
+
+def test_verify_without_a_task_creates_no_state(tmp_path) -> None:
+    output = StringIO()
+    InteractiveSession(project=tmp_path, input=StringIO("/verify\n/exit\n"), output=output).run()
+    assert "请先使用 /task 选择任务" in output.getvalue()
 
 
 def test_run_confirms_and_creates_a_live_patch_proposal_without_source_write(
@@ -225,6 +236,25 @@ def test_apply_rejection_creates_no_apply_run(tmp_path, monkeypatch) -> None:
         input=StringIO("/task\n2\n1\n0\n/apply\n1\nYEs\n/exit\n"), output=output).run()
     assert all(run.stage != "code_apply" for run in FileTaskStore(project).list_runs("1"))
     assert "未创建 apply Run，未写入任何文件。" in output.getvalue()
+
+
+def test_verify_replays_the_applied_diff_and_creates_a_change_handoff(tmp_path, monkeypatch) -> None:
+    project = _interactive_project(tmp_path)
+    settings = tmp_path / "settings"
+    monkeypatch.setenv("LIVE_KEY", "unit-secret")
+    models = ModelSelectionService(settings, port_factory=lambda *_: ProposalPort())
+    models.add(ProviderConnection(connection_id="local", base_url="https://example.test/v1", timeout_seconds=10, credential_ref="env:LIVE_KEY", revision=3), ModelEntry(connection_id="local", model_id="coder", display_name="Coder", output_limit=4096))
+    models.set_default("local/coder")
+    monkeypatch.setattr("yipilot.transport.cli.interactive.ModelSelectionService", lambda _path: models)
+    InteractiveSession(settings_dir=settings, project=project, input=StringIO("/task\n2\n1\n0\n/run\n1\ntracked.py\ny\n/exit\n"), output=StringIO()).run()
+    InteractiveSession(settings_dir=settings, project=project, input=StringIO("/task\n2\n1\n0\n/apply\n1\ny\n/exit\n"), output=StringIO()).run()
+    InteractiveSession(settings_dir=settings, project=project, input=StringIO("/task\n2\n1\n0\n/verify\ny\n/exit\n"), output=StringIO()).run()
+    run = next(run for run in FileTaskStore(project).list_runs("1") if run.stage == "change_verification")
+    root = project / ".yipilot/tasks/1/runs" / run.run_id
+    assert run.status.value == "succeeded"
+    assert len(list((root / "tool-runs").glob("*.json"))) == 3
+    assert (root / "artifacts/change-handoff.json").is_file()
+    assert (tmp_path / "source/tracked.py").read_text(encoding="utf-8") == "value = 1\n"
 
 
 def test_task_selector_uses_create_current_and_back_choices(tmp_path, monkeypatch) -> None:
