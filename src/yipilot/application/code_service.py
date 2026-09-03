@@ -4,17 +4,30 @@ import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from uuid import uuid4
 
 from yipilot.application.agent_runtime import AgentRuntime
+from yipilot.application.approval import ApprovalGate, approval_action_type
 from yipilot.application.model_planner import ModelPlanner
 from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.application.runtime_adapters import RegistryToolGateway
 from yipilot.application.tool_registry import ToolRegistry
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
-from yipilot.domain.execution import ExecutionPolicy
+from yipilot.domain.execution import (
+    ApprovalDecision,
+    ApprovalRecord,
+    ArgvRule,
+    ExecutionPolicy,
+    ExecutionTrustLevel,
+    ToolKind,
+    ToolPolicy,
+    ToolRequest,
+)
 from yipilot.domain.model import ModelPort, ModelRequest, model_request_fingerprint
+from yipilot.domain.patch_proposal import PatchProposal
 from yipilot.domain.provider import ResolvedModel
 from yipilot.harness.models import HarnessStatus
 from yipilot.harness.report_store import (
@@ -22,8 +35,10 @@ from yipilot.harness.report_store import (
     SRS_HARNESS_REPORT_NAME,
     HarnessReportStore,
 )
+from yipilot.infrastructure.approval_store import FileApprovalStore
 from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
+from yipilot.infrastructure.executors import LocalCommandRunner
 from yipilot.infrastructure.git_runner import GitRunner
 from yipilot.infrastructure.runtime_evidence import FileRuntimeEvidence
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
@@ -35,6 +50,10 @@ _CONTEXT_PATH = "artifacts/live-context.md"
 _MAX_CONTEXT_FILES = 16
 _MAX_CONTEXT_BYTES = 24 * 1024
 _MAX_FILE_BYTES = 8 * 1024
+_APPLY_POLICY_REVISION = "code-apply-v1"
+_APPLY_TOOL_ID = "git-apply-approved-proposal"
+_APPLY_PATCH_PATH = "artifacts/approved-patch-proposal.diff"
+_APPLY_EVIDENCE_PATH = "artifacts/apply-evidence.json"
 
 
 @dataclass(frozen=True)
@@ -56,6 +75,26 @@ class CodeGenerateResult:
             "run_id": self.run_id,
             "status": self.status,
             "task_id": self.task_id,
+        }
+
+
+@dataclass(frozen=True)
+class CodeApplyResult:
+    task_id: str
+    operation_id: str
+    run_id: str
+    proposal_run_id: str
+    status: str
+    error_code: str | None
+
+    def value(self) -> dict[str, object]:
+        return {
+            "task_id": self.task_id,
+            "operation_id": self.operation_id,
+            "run_id": self.run_id,
+            "proposal_run_id": self.proposal_run_id,
+            "status": self.status,
+            "error_code": self.error_code,
         }
 
 
@@ -111,6 +150,141 @@ class CodeService:
             return self._run(run, alias, instruction, fingerprint, resolved, port, tuple(context_files))
         finally:
             _close_port(port)
+
+    def proposals(self, task_id: str) -> list[dict[str, object]]:
+        """Return only verified, successful proposal Runs owned by this Task."""
+        self._store.get_task(task_id)
+        return [self._proposal_details(task_id, run.run_id) for run in self._store.list_runs(task_id)
+                if run.stage == "code_generate" and run.status.value == "succeeded"
+                if self._is_proposal(task_id, run.run_id)]
+
+    def apply(self, task_id: str, proposal_run_id: str, *, request_id: str | None = None) -> CodeApplyResult:
+        """Apply one verified Proposal once, through the approved Git tool only."""
+        proposal = self._proposal_details(task_id, proposal_run_id)
+        key = request_id or str(proposal["proposal_hash"])
+        operation = self._store.create_operation(
+            task_id, "code_apply",
+            f"code-apply:{task_id}:{proposal_run_id}:{key}",
+            {"proposal_run_id": proposal_run_id, "proposal_hash": proposal["proposal_hash"],
+             "repository_alias": proposal["repository_alias"], "request_id": key},
+        )
+        run, created = self._store.get_or_create_run(task_id, operation.operation_id, "code_apply")
+        if not created:
+            return _apply_result(run, proposal_run_id)
+        artifacts = FileArtifactStore(self._store)
+        journal = _journal(self._store, run)
+        try:
+            self._store.set_run_status(run.run_id, "running")
+            journal.append("run.started", {"proposal_run_id": proposal_run_id})
+            workspace = WorkspaceService(self._project_root, GitRunner()).prepare(
+                task_id, str(proposal["repository_alias"]), run.run_id
+            )
+            if workspace.base_sha != proposal["base_sha"]:
+                raise DomainError("PROPOSAL_BASE_SHA_DRIFT", "proposal base SHA no longer matches the repository")
+            if _git_output(GitRunner(), ["git", "status", "--porcelain=v1"], workspace.path):
+                raise DomainError("WORKSPACE_DIRTY", "new apply workspace is unexpectedly dirty")
+            source_path = Path(str(proposal["proposal_path"]))
+            patch_bytes = source_path.read_bytes()
+            parsed_proposal = PatchProposal.model_validate_json(patch_bytes)
+            diff_bytes = "".join(patch.unified_diff for patch in parsed_proposal.patches).encode("utf-8")
+            artifacts.write_bytes(
+                task_id, run.run_id, producer="code_apply", relative_path="artifacts/approved-patch-proposal.json",
+                content=patch_bytes, input_fingerprint=str(proposal["proposal_hash"]), operation_id=run.operation_id,
+            )
+            patch_ref = artifacts.write_bytes(
+                task_id, run.run_id, producer="code_apply", relative_path=_APPLY_PATCH_PATH,
+                content=diff_bytes, input_fingerprint=str(proposal["proposal_hash"]), operation_id=run.operation_id,
+            )
+            binding = _sha256(json.dumps({
+                "task_id": task_id, "operation_id": run.operation_id, "run_id": run.run_id,
+                "proposal_artifact_hash": proposal["proposal_hash"], "proposal_run_id": proposal_run_id,
+                "repository_alias": proposal["repository_alias"], "base_sha": workspace.base_sha,
+                "policy_revision": _APPLY_POLICY_REVISION,
+            }, sort_keys=True, separators=(",", ":")))
+            patch_path = self._store.event_journal_path(run.run_id).parent / _APPLY_PATCH_PATH
+            request = ToolRequest(
+                task_id=task_id, operation_id=run.operation_id, run_id=run.run_id,
+                workspace_relative_path=workspace.path.relative_to(self._project_root).as_posix(),
+                tool_id=_APPLY_TOOL_ID,
+                argv=("git", "apply", "--whitespace=nowarn", "--", str(patch_path)),
+                timeout_seconds=60, output_budget_bytes=128 * 1024,
+                input_artifact_refs=(_ref(patch_ref),), input_fingerprint=binding,
+            )
+            tool = ToolPolicy(
+                tool_id=_APPLY_TOOL_ID, kind=ToolKind.WORKSPACE_WRITE, executable="git",
+                argv_schema=(ArgvRule(literal="apply"), ArgvRule(literal="--whitespace=nowarn"),
+                             ArgvRule(literal="--"), ArgvRule(literal=str(patch_path))),
+                max_output_bytes=128 * 1024, max_timeout_seconds=60,
+            )
+            policy = ExecutionPolicy(revision=_APPLY_POLICY_REVISION, tools=(tool,))
+            approval = ApprovalRecord(
+                approval_id=str(uuid4()), task_id=task_id, operation_id=run.operation_id, run_id=run.run_id,
+                action_type=approval_action_type(tool, ExecutionTrustLevel.HOST_TRUSTED),
+                target_fingerprint=request.fingerprint, policy_revision=_APPLY_POLICY_REVISION,
+                decision=ApprovalDecision.APPROVED, decided_at=datetime.now(UTC),
+            )
+            FileApprovalStore(self._store).save(approval)
+            artifacts.write_bytes(task_id, run.run_id, producer="code_apply", relative_path="artifacts/apply-request.json",
+                content=json.dumps({"base_sha": workspace.base_sha, "proposal_run_id": proposal_run_id,
+                    "proposal_hash": proposal["proposal_hash"], "repository_alias": proposal["repository_alias"],
+                    "approval_id": approval.approval_id, "target_fingerprint": request.fingerprint,
+                    "policy_revision": _APPLY_POLICY_REVISION}, sort_keys=True).encode(),
+                input_fingerprint=binding, operation_id=run.operation_id)
+            GitRunner().run(["git", "apply", "--check", "--whitespace=nowarn", "--", str(patch_path)], cwd=workspace.path)
+            journal.append("stage.progress", {"message": "proposal verified; applying to isolated worktree"})
+            result = ToolRegistry(policy, LocalCommandRunner(artifacts, journal), ApprovalGate(FileApprovalStore(self._store))).execute(
+                self._project_root, request, approval_id=approval.approval_id, confirm_token=request.fingerprint)
+            if result.status.value != "succeeded":
+                raise DomainError("GIT_APPLY_FAILED", "approved patch could not be applied")
+            actual_diff = _git_output(GitRunner(), ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv", "--"], workspace.path)
+            expected_diff = "".join(patch.unified_diff for patch in parsed_proposal.patches)
+            if _canonical_diff(actual_diff) != _canonical_diff(expected_diff):
+                raise DomainError("APPLY_DIFF_MISMATCH", "actual worktree diff differs from the approved proposal")
+            paths = _git_output(GitRunner(), ["git", "diff", "--name-only", "--"], workspace.path).splitlines()
+            artifacts.write_bytes(task_id, run.run_id, producer="code_apply", relative_path="artifacts/applied.diff",
+                content=actual_diff.encode(), input_fingerprint=binding, operation_id=run.operation_id)
+            artifacts.write_bytes(task_id, run.run_id, producer="code_apply", relative_path=_APPLY_EVIDENCE_PATH,
+                content=json.dumps({"base_sha": workspace.base_sha, "head_sha": _git_output(GitRunner(), ["git", "rev-parse", "HEAD"], workspace.path).strip(),
+                    "proposal_run_id": proposal_run_id, "proposal_hash": proposal["proposal_hash"], "changed_paths": paths,
+                    "tool_run_id": result.tool_run_id, "approval_id": approval.approval_id}, sort_keys=True).encode(),
+                input_fingerprint=binding, operation_id=run.operation_id)
+            self._store.set_run_status(run.run_id, "succeeded")
+            journal.append("run.succeeded", {"proposal_run_id": proposal_run_id})
+        except DomainError as error:
+            if self._store.get_run(task_id, run.run_id).status.value == "running":
+                self._store.set_run_status(run.run_id, "failed", error_code=error.code)
+                journal.append("run.failed", {"error_code": error.code})
+        return _apply_result(self._store.get_run(task_id, run.run_id), proposal_run_id)
+
+    def _is_proposal(self, task_id: str, run_id: str) -> bool:
+        try:
+            self._proposal_details(task_id, run_id)
+        except DomainError:
+            return False
+        return True
+
+    def _proposal_details(self, task_id: str, run_id: str) -> dict[str, object]:
+        run = self._store.get_run(task_id, run_id)
+        if run.stage != "code_generate" or run.status.value != "succeeded":
+            raise DomainError("PATCH_PROPOSAL_NOT_FOUND", "proposal Run is not a successful code-generation Run")
+        artifacts = FileArtifactStore(self._store)
+        records = [record for record in artifacts.list(task_id, run_id) if record.relative_path == _PROPOSAL_PATH]
+        if len(records) != 1:
+            raise DomainError("PATCH_PROPOSAL_NOT_FOUND", "proposal evidence is missing")
+        record = artifacts.verify(task_id, run_id, records[0].artifact_id)
+        path = self._store.event_journal_path(run_id).parent / record.relative_path
+        try:
+            proposal = PatchProposal.model_validate_json(path.read_bytes())
+            payload = json.loads(self._store.get_operation(task_id, run.operation_id).request_json)["payload"]
+            alias = str(payload["alias"])
+            source_workspace = WorkspaceService(self._project_root, GitRunner()).prepare(task_id, alias, run_id)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise DomainError("PATCH_PROPOSAL_INVALID", "proposal evidence is invalid") from error
+        return {"proposal_run_id": run_id, "proposal": proposal, "proposal_hash": record.sha256,
+                "proposal_path": str(path), "repository_alias": alias, "base_sha": source_workspace.base_sha,
+                "summary": proposal.summary, "paths": [patch.path for patch in proposal.patches],
+                "model_selector": str(payload.get("model_selector", "unknown")),
+                "model_revision": payload.get("provider_revision", "unknown")}
 
     def _run(
         self,
@@ -213,6 +387,25 @@ def _result(store: FileTaskStore, run: RunRecord) -> CodeGenerateResult:
         plan_artifact_ref=_record_value(plan) if plan else None,
         patch_proposal_artifact_ref=_record_value(proposal) if proposal else None,
     )
+
+
+def _apply_result(run: RunRecord, proposal_run_id: str) -> CodeApplyResult:
+    return CodeApplyResult(
+        task_id=run.task_id, operation_id=run.operation_id, run_id=run.run_id,
+        proposal_run_id=proposal_run_id, status=run.status.value, error_code=run.error_code,
+    )
+
+
+def _git_output(git: GitRunner, argv: list[str], cwd: Path) -> str:
+    return git.run(argv, cwd=cwd).stdout
+
+
+def _canonical_diff(value: str) -> str:
+    """Compare proposal and Git diff content without Git's descriptive preamble."""
+    return "\n".join(
+        line for line in value.replace("\r\n", "\n").split("\n")
+        if not line.startswith(("diff --git ", "index "))
+    ).strip() + "\n"
 
 
 def _record_value(record: ArtifactRecord) -> dict[str, object]:
