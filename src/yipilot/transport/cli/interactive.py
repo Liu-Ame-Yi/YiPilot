@@ -264,7 +264,6 @@ class InteractiveSession:
                 task.task_id,
                 alias,
                 task.development_goal,
-                "live",
                 request_id=str(uuid4()),
                 model_selector=resolved.selector,
                 context_files=context_files,

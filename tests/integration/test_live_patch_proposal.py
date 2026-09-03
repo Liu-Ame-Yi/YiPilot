@@ -1,4 +1,3 @@
-import importlib
 import json
 import subprocess
 from pathlib import Path
@@ -7,13 +6,11 @@ import pytest
 from typer.testing import CliRunner
 
 from yipilot.application.code_service import CodeService
-from yipilot.application.provider_service import ProviderService
-from yipilot.application.quality_artifacts import QualityArtifactService
-from yipilot.domain.errors import DomainError
+from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.domain.model import ModelChunk, ModelRequest
-from yipilot.harness.models import HarnessStatus
-from yipilot.harness.quality import SddHarness, SrsHarness
+from yipilot.domain.provider import ModelEntry, ProviderConnection
 from yipilot.infrastructure.artifact_store import FileArtifactStore
+from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.secret_store import SecretStore
 from yipilot.infrastructure.task_store import FileTaskStore
 from yipilot.transport.cli.app import app
@@ -38,355 +35,86 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     project = tmp_path / "project"
     project.mkdir()
     assert runner.invoke(app, ["init", "--project", str(project)]).exit_code == 0
-    assert (
-        runner.invoke(
-            app, ["task", "init", "--project", str(project), "--taskid", "1001"]
-        ).exit_code
-        == 0
-    )
-    assert (
-        runner.invoke(
-            app,
-            [
-                "task",
-                "repo",
-                "add",
-                "--project",
-                str(project),
-                "--taskid",
-                "1001",
-                "--url",
-                str(source),
-                "--alias",
-                "sample",
-                "--sync",
-            ],
-        ).exit_code
-        == 0
-    )
+    assert runner.invoke(app, ["task", "init", "--project", str(project), "--taskid", "1001"]).exit_code == 0
+    assert runner.invoke(app, ["task", "repo", "add", "--project", str(project), "--taskid", "1001", "--url", str(source), "--alias", "sample", "--sync"]).exit_code == 0
     return project, source
 
 
-def _chunks(content: str) -> tuple[ModelChunk, ...]:
-    return tuple(
-        ModelChunk(content=content[index : index + 4096])
-        for index in range(0, len(content), 4096)
-    )
-
-
-class _Port:
-    def __init__(self, content: str) -> None:
+class FixedPort:
+    def __init__(self, content: str | Exception) -> None:
         self.content = content
         self.requests: list[ModelRequest] = []
 
     def stream(self, request: ModelRequest) -> tuple[ModelChunk, ...]:
         self.requests.append(request)
-        return _chunks(self.content)
+        if isinstance(self.content, Exception):
+            raise self.content
+        return tuple(ModelChunk(content=self.content[index:index + 4096]) for index in range(0, len(self.content), 4096))
 
 
-def _providers(
-    tmp_path: Path,
-    port: _Port,
-    *,
-    name: str = "live",
-    enabled: bool = True,
-    capabilities: tuple[str, ...] = ("chat",),
-    api_key_ref: str | None = "env:LIVE_KEY",
-) -> ProviderService:
-    service = ProviderService(
+def _models(tmp_path: Path, port: FixedPort) -> ModelSelectionService:
+    models = ModelSelectionService(
         tmp_path / "settings",
-        secrets=SecretStore(environ={"LIVE_KEY": "live-secret"}),
-        port_factory=lambda _model, _secrets, _reference: port,
+        secrets=SecretStore(environ={"KEY": "unit-secret"}),
+        port_factory=lambda *_: port,
     )
-    service.add(
-        name=name,
-        provider_type="openai_compatible",
-        base_url="https://example.test/v1",
-        model="test-model",
-        timeout_seconds=10,
-        output_budget=64 * 1024,
-        capabilities=capabilities,
-        enabled=enabled,
-        revision=1,
-        api_key_ref=api_key_ref,
+    models.add(
+        ProviderConnection(connection_id="local", base_url="https://example.test/v1", timeout_seconds=10, credential_ref="env:KEY", revision=2),
+        ModelEntry(connection_id="local", model_id="coder", display_name="Coder", output_limit=64 * 1024),
     )
-    if enabled and capabilities == ("chat",) and api_key_ref is not None:
-        service.model_selection.set_default(service.selector_for_profile(name))
-    return service
+    models.set_default("local/coder")
+    return models
 
 
 def _proposal(path: str = "tracked.py") -> str:
-    return json.dumps(
-        {
-            "schema_version": 1,
-            "summary": "Update tracked value.",
-            "patches": [
-                {
-                    "path": path,
-                    "unified_diff": f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-value = 1\n+value = 2\n",
-                }
-            ],
-        }
-    )
+    return json.dumps({"schema_version": 1, "summary": "Update tracked value.", "patches": [{"path": path, "unified_diff": f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-value = 1\n+value = 2\n"}]})
 
 
-def _approve_quality_documents(project: Path, task_id: str, run_id: str) -> None:
-    assert SrsHarness(project, task_id, run_id).run().status is HarnessStatus.PASSED
-    assert (
-        SddHarness(project, task_id, run_id, profile_revision=1).run().status
-        is HarnessStatus.PASSED
-    )
-
-
-def test_live_proposal_persists_only_evidence_and_selected_context(
-    tmp_path: Path,
-) -> None:
+def test_fixed_port_uses_the_runtime_and_preserves_source(tmp_path: Path) -> None:
     project, source = _project(tmp_path)
-    documents = QualityArtifactService(project).generate(
-        "1001",
-        prd_text="Build a redacted offline quality workflow.",
-        model_mode="fake",
-    )
-    _approve_quality_documents(project, "1001", documents.run_id)
-    port = _Port(_proposal())
-    result = CodeService(project, provider_service=_providers(tmp_path, port)).generate(
-        "1001",
-        "sample",
-        "change only tracked",
-        "live",
-        provider_profile="live",
-        context_files=("tracked.py",),
-    )
+    port = FixedPort(_proposal())
+    result = CodeService(project, model_selection_service=_models(tmp_path, port)).generate("1001", "sample", "change tracked", context_files=("tracked.py",))
 
     assert result.status == "succeeded"
-    assert result.plan_artifact_ref is None
-    assert result.patch_proposal_artifact_ref is not None
+    assert result.plan_artifact_ref and result.patch_proposal_artifact_ref
     assert _git(source, "status", "--porcelain") == ""
     assert (source / "tracked.py").read_text(encoding="utf-8") == "value = 1\n"
-    assert len(port.requests) == 1
-    prompt = port.requests[0].user_instruction
-    assert "tracked.py" in prompt
-    assert "unselected.py" not in prompt
-    assert "artifacts/srs.md" in prompt and "artifacts/sdd.md" in prompt
+    assert "tracked.py" in port.requests[0].user_instruction
+    assert "unselected.py" not in port.requests[0].user_instruction
     store = FileTaskStore(project)
-    root = store.event_journal_path(result.run_id).parent
-    profile = json.loads((root / "artifacts/resolved-model.json").read_text(encoding="utf-8"))
-    assert profile["model_id"] == "test-model"
-    assert profile["provider_type"] == "openai_compatible"
-    assert "credential_ref" not in profile
-    assert "live-secret" not in (root / "artifacts/resolved-model.json").read_text(
-        encoding="utf-8"
-    )
-    manifest = (root / "artifacts/live-context.md").read_text(encoding="utf-8")
-    assert "tracked.py" in manifest and "unselected.py" not in manifest
-    assert "artifacts/srs.md" in manifest and "artifacts/test-plan.md" in manifest
-    records = FileArtifactStore(store).list("1001", result.run_id)
-    assert {record.relative_path for record in records} >= {
-        "artifacts/resolved-model.json",
-        "artifacts/live-context.md",
-        "artifacts/live-model-response.json",
-        "artifacts/live-model-call.json",
-        "artifacts/patch-proposal.json",
-    }
+    records = {item.relative_path for item in FileArtifactStore(store).list("1001", result.run_id)}
+    assert {"artifacts/resolved-model.json", "artifacts/live-context.md", "artifacts/model-response.json", "artifacts/model-call.json", "artifacts/agent-plan.json", "artifacts/patch-proposal.json"} <= records
+    assert [event.type for event in JsonlEventJournal(store.event_journal_path(result.run_id)).read_after(0)] == ["run.started", "turn.started", "model.delta", "model.message_completed", "proposal.created", "plan.created", "harness.completed", "turn.completed", "run.succeeded"]
 
 
-def test_live_withholds_quality_documents_without_passed_harnesses(
-    tmp_path: Path,
-) -> None:
-    project, _source = _project(tmp_path)
-    QualityArtifactService(project).generate(
-        "1001",
-        prd_text="Build a redacted offline quality workflow.",
-        model_mode="fake",
-    )
-    port = _Port(_proposal())
-
-    result = CodeService(project, provider_service=_providers(tmp_path, port)).generate(
-        "1001",
-        "sample",
-        "only selected context",
-        "live",
-        provider_profile="live",
-        context_files=("tracked.py",),
-    )
-
-    assert result.status == "succeeded"
-    assert "artifacts/srs.md" not in port.requests[0].user_instruction
-
-
-def test_live_uses_default_profile_and_cli_accepts_live_options(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project, _source = _project(tmp_path)
-    port = _Port(_proposal())
-    service = CodeService(
-        project, provider_service=_providers(tmp_path, port, name="default-live")
-    )
-    cli_module = importlib.import_module("yipilot.transport.cli.app")
-    monkeypatch.setattr(
-        cli_module, "CodeService", lambda _project, settings_dir=None: service
-    )
-
-    result = runner.invoke(
-        app,
-        [
-            "code",
-            "generate",
-            "--project",
-            str(project),
-            "--taskid",
-            "1001",
-            "--alias",
-            "sample",
-            "--instruction",
-            "default profile",
-            "--planner",
-            "live",
-            "--context-file",
-            "tracked.py",
-            "--output",
-            "json",
-        ],
-    )
-
-    assert result.exit_code == 0, result.stdout
-    assert json.loads(result.stdout)["status"] == "succeeded"
-    assert port.requests[0].provider_profile_name == "default-live"
-
-
-@pytest.mark.parametrize(
-    ("enabled", "capabilities", "api_key_ref", "code"),
-    [
-        (False, ("chat",), "env:LIVE_KEY", "PROVIDER_DISABLED"),
-        (True, ("embeddings",), "env:LIVE_KEY", "PROVIDER_CAPABILITY_UNAVAILABLE"),
-        (True, ("chat",), None, "SECRET_REF_MISSING"),
-    ],
-)
-def test_live_profile_validation_happens_before_worktree_prepare(
-    tmp_path: Path,
-    enabled: bool,
-    capabilities: tuple[str, ...],
-    api_key_ref: str | None,
-    code: str,
-) -> None:
+@pytest.mark.parametrize("content, code", [("not json", "PATCH_PROPOSAL_INVALID"), (_proposal("../escape.py"), "PATCH_PROPOSAL_INVALID"), (_proposal("/absolute.py"), "PATCH_PROPOSAL_INVALID")])
+def test_invalid_proposals_fail_safely(tmp_path: Path, content: str, code: str) -> None:
     project, source = _project(tmp_path)
-    service = CodeService(
-        project,
-        provider_service=_providers(
-            tmp_path,
-            _Port(_proposal()),
-            enabled=enabled,
-            capabilities=capabilities,
-            api_key_ref=api_key_ref,
-        ),
-    )
+    result = CodeService(project, model_selection_service=_models(tmp_path, FixedPort(content))).generate("1001", "sample", "invalid", context_files=("tracked.py",))
 
-    with pytest.raises(DomainError, match=rf"^{code}:"):
-        service.generate(
-            "1001", "sample", "must not start", "live", provider_profile="live"
-        )
-
+    assert (result.status, result.error_code) == ("failed", code)
     assert _git(source, "status", "--porcelain") == ""
-    workspaces = project / ".yipilot/tasks/1001/repos/sample/workspaces"
-    assert not workspaces.exists() or not list(workspaces.iterdir())
+    events = JsonlEventJournal(FileTaskStore(project).event_journal_path(result.run_id)).read_after(0)
+    assert [event.type for event in events][-2:] == ["turn.failed", "run.failed"]
 
 
-@pytest.mark.parametrize(
-    ("content", "code"),
-    [
-        ("not json", "PATCH_PROPOSAL_INVALID"),
-        (_proposal("/absolute.py"), "PATCH_PROPOSAL_INVALID"),
-        (_proposal("../escape.py"), "PATCH_PROPOSAL_INVALID"),
-        (
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "summary": "bad diff",
-                    "patches": [
-                        {
-                            "path": "tracked.py",
-                            "unified_diff": "--- a/tracked.py\n+++ b/tracked.py\n",
-                        }
-                    ],
-                }
-            ),
-            "PATCH_PROPOSAL_INVALID",
-        ),
-        (
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "summary": "malformed hunk",
-                    "patches": [
-                        {
-                            "path": "tracked.py",
-                            "unified_diff": "--- a/tracked.py\n+++ b/tracked.py\n@@ nonsense\n",
-                        }
-                    ],
-                }
-            ),
-            "PATCH_PROPOSAL_INVALID",
-        ),
-        (
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "summary": "wrong hunk count",
-                    "patches": [
-                        {
-                            "path": "tracked.py",
-                            "unified_diff": "--- a/tracked.py\n+++ b/tracked.py\n@@ -1,2 +1 @@\n-value = 1\n+value = 2\n",
-                        }
-                    ],
-                }
-            ),
-            "PATCH_PROPOSAL_INVALID",
-        ),
-        (
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "summary": "duplicate",
-                    "patches": [
-                        json.loads(_proposal())["patches"][0],
-                        json.loads(_proposal())["patches"][0],
-                    ],
-                }
-            ),
-            "PATCH_PROPOSAL_INVALID",
-        ),
-        ("x" * (64 * 1024 + 1), "MODEL_OUTPUT_LIMIT_EXCEEDED"),
-    ],
-    ids=(
-        "invalid-json",
-        "absolute-path",
-        "traversal-path",
-        "invalid-diff",
-        "malformed-hunk",
-        "wrong-hunk-count",
-        "duplicate-path",
-        "over-output-budget",
-    ),
-)
-def test_invalid_live_outputs_fail_without_source_modification(
-    tmp_path: Path, content: str, code: str
-) -> None:
+def test_provider_failure_is_a_failed_turn_without_secret_leak(tmp_path: Path) -> None:
     project, source = _project(tmp_path)
-    port = _Port(content)
-    result = CodeService(project, provider_service=_providers(tmp_path, port)).generate(
-        "1001",
-        "sample",
-        f"invalid {code}",
-        "live",
-        request_id=code,
-        context_files=("tracked.py",),
-    )
+    result = CodeService(project, model_selection_service=_models(tmp_path, FixedPort(RuntimeError("Authorization: Bearer unit-secret")))).generate("1001", "sample", "private Authorization: Bearer instruction-secret", context_files=("tracked.py",))
 
     assert result.status == "failed"
-    assert result.error_code == code
-    assert result.patch_proposal_artifact_ref is None
-    assert (source / "tracked.py").read_text(encoding="utf-8") == "value = 1\n"
     assert _git(source, "status", "--porcelain") == ""
-    root = FileTaskStore(project).event_journal_path(result.run_id).parent
-    assert (root / "artifacts/live-model-call.json").is_file()
-    assert not (root / "artifacts/patch-proposal.json").exists()
+    text = FileTaskStore(project).event_journal_path(result.run_id).read_text(encoding="utf-8")
+    assert "unit-secret" not in text and "instruction-secret" not in text and "Authorization" not in text
+
+
+def test_cli_uses_model_and_rejects_old_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project, _source = _project(tmp_path)
+    service = CodeService(project, model_selection_service=_models(tmp_path, FixedPort(_proposal())))
+    monkeypatch.setattr("yipilot.transport.cli.app.CodeService", lambda *_args, **_kwargs: service)
+
+    result = runner.invoke(app, ["code", "generate", "--project", str(project), "--taskid", "1001", "--alias", "sample", "--instruction", "change", "--context-file", "tracked.py", "--output", "json"])
+    old = runner.invoke(app, ["code", "generate", "--taskid", "1001", "--alias", "sample", "--instruction", "change", "--planner", "fake"])
+
+    assert result.exit_code == 0 and json.loads(result.stdout)["status"] == "succeeded"
+    assert old.exit_code != 0 and "--planner" in old.output

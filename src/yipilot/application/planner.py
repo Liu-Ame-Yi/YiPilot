@@ -1,5 +1,5 @@
-"""Compatibility imports for restricted Runtime plan sources."""
+"""Compatibility import for the Runtime planning seam."""
 
-from yipilot.runtime.planner import FakePlanner, PlannerPort, RecordedReplayPlanner
+from yipilot.runtime.planner import PlannerPort
 
-__all__ = ["FakePlanner", "PlannerPort", "RecordedReplayPlanner"]
+__all__ = ["PlannerPort"]

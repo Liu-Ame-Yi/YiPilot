@@ -1,6 +1,5 @@
 """Compatibility facade for the Runtime ModelPort consumer."""
 
-from yipilot.domain.execution import ToolRequest
 from yipilot.domain.model import ModelPort, ModelRequest
 from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
@@ -17,7 +16,6 @@ class ModelPlanner(_ModelPlanner):
         self,
         port: ModelPort,
         request: ModelRequest,
-        base_request: ToolRequest,
         evidence: RuntimeEvidencePort | FileArtifactStore,
         journal: JsonlEventJournal | None = None,
         *,
@@ -32,7 +30,7 @@ class ModelPlanner(_ModelPlanner):
             if isinstance(evidence, FileArtifactStore):
                 raise TypeError("ModelPlanner requires RuntimeEvidencePort without a journal")
             runtime_evidence = evidence
-        super().__init__(port, request, base_request, runtime_evidence, redactor=redactor)
+        super().__init__(port, request, runtime_evidence, redactor=redactor)
 
 
 __all__ = ["ModelPlanner"]
