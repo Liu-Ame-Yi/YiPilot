@@ -183,6 +183,50 @@ def test_run_confirms_and_creates_a_live_patch_proposal_without_source_write(
     assert (project / ".yipilot/tasks/1/runs" / runs[0].run_id / "artifacts/patch-proposal.json").is_file()
 
 
+def test_apply_uses_only_a_new_worktree_after_exact_confirmation(tmp_path, monkeypatch) -> None:
+    project = _interactive_project(tmp_path)
+    settings = tmp_path / "settings"
+    monkeypatch.setenv("LIVE_KEY", "unit-secret")
+    models = ModelSelectionService(settings, port_factory=lambda *_: ProposalPort())
+    models.add(
+        ProviderConnection(connection_id="local", base_url="https://example.test/v1", timeout_seconds=10, credential_ref="env:LIVE_KEY", revision=3),
+        ModelEntry(connection_id="local", model_id="coder", display_name="Coder", output_limit=4096),
+    )
+    models.set_default("local/coder")
+    monkeypatch.setattr("yipilot.transport.cli.interactive.ModelSelectionService", lambda _path: models)
+    InteractiveSession(settings_dir=settings, project=project,
+        input=StringIO("/task\n2\n1\n0\n/run\n1\ntracked.py\ny\n/exit\n"), output=StringIO()).run()
+    output = StringIO()
+    InteractiveSession(settings_dir=settings, project=project,
+        input=StringIO("/task\n2\n1\n0\n/apply\n1\ny\n/exit\n"), output=output).run()
+
+    runs = FileTaskStore(project).list_runs("1")
+    apply_run = next(run for run in runs if run.stage == "code_apply")
+    workspace = project / ".yipilot/tasks/1/repos/sample/workspaces" / apply_run.run_id
+    assert apply_run.status.value == "succeeded"
+    assert (workspace / "tracked.py").read_text(encoding="utf-8") == "value = 2\n"
+    assert (tmp_path / "source/tracked.py").read_text(encoding="utf-8") == "value = 1\n"
+    assert "apply succeeded" in output.getvalue()
+    assert list((project / ".yipilot/tasks/1/runs" / apply_run.run_id / "approvals").glob("*.json"))
+
+
+def test_apply_rejection_creates_no_apply_run(tmp_path, monkeypatch) -> None:
+    project = _interactive_project(tmp_path)
+    settings = tmp_path / "settings"
+    monkeypatch.setenv("LIVE_KEY", "unit-secret")
+    models = ModelSelectionService(settings, port_factory=lambda *_: ProposalPort())
+    models.add(ProviderConnection(connection_id="local", base_url="https://example.test/v1", timeout_seconds=10, credential_ref="env:LIVE_KEY", revision=3), ModelEntry(connection_id="local", model_id="coder", display_name="Coder", output_limit=4096))
+    models.set_default("local/coder")
+    monkeypatch.setattr("yipilot.transport.cli.interactive.ModelSelectionService", lambda _path: models)
+    InteractiveSession(settings_dir=settings, project=project,
+        input=StringIO("/task\n2\n1\n0\n/run\n1\ntracked.py\ny\n/exit\n"), output=StringIO()).run()
+    output = StringIO()
+    InteractiveSession(settings_dir=settings, project=project,
+        input=StringIO("/task\n2\n1\n0\n/apply\n1\nYEs\n/exit\n"), output=output).run()
+    assert all(run.stage != "code_apply" for run in FileTaskStore(project).list_runs("1"))
+    assert "未创建 apply Run，未写入任何文件。" in output.getvalue()
+
+
 def test_task_selector_uses_create_current_and_back_choices(tmp_path, monkeypatch) -> None:
     session = InteractiveSession(project=tmp_path, input=StringIO("键盘任务\n验证选择器\n"), output=StringIO())
     monkeypatch.setattr(InteractiveSession, "_selector_enabled", lambda _: True)

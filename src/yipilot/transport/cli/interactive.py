@@ -14,6 +14,7 @@ from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.application.project_service import ProjectService
 from yipilot.application.repo_service import RepoMetadata, RepoService
 from yipilot.domain.errors import DomainError
+from yipilot.domain.patch_proposal import PatchProposal
 from yipilot.domain.provider import ModelEntry, ProviderConnection
 from yipilot.infrastructure.git_runner import GitRunner
 from yipilot.infrastructure.secret_store import SecretStore
@@ -87,7 +88,7 @@ class InteractiveSession:
                 return
             if command == "/help":
                 self._write("/task：创建或选择任务；/model：为未来 Run 选择模型；/status：查看当前选择；/exit：退出。")
-                self._write("/run：确认后生成仅供审阅的 live PatchProposal；/logs、/cancel 当前不可用。")
+                self._write("/run：生成仅供审阅的 live PatchProposal；/apply：批准并应用一个 Proposal；/logs、/cancel 当前不可用。")
             elif command == "/status":
                 self._write(self._status_line())
                 self._show_current_task()
@@ -97,6 +98,8 @@ class InteractiveSession:
                 self._task_screen()
             elif command == "/run":
                 self._run_live_proposal()
+            elif command == "/apply":
+                self._apply_proposal()
             elif command in {"/logs", "/cancel"}:
                 self._write(f"{command} 当前不可用。")
             elif command:
@@ -279,6 +282,64 @@ class InteractiveSession:
             return
         self._write(f"Run {result.run_id} failed — {result.error_code or 'LIVE_PROPOSAL_FAILED'}")
         self._write("No source files were changed. Review the Run evidence, then use /status.")
+
+    def _apply_proposal(self) -> None:
+        if self.session_task_id is None:
+            self._write("TASK_SELECTION_REQUIRED: 请先使用 /task 选择任务。")
+            return
+        service = CodeService(self.project or Path("."), settings_dir=self.settings_dir, model_selection_service=self.models)
+        try:
+            task = self.tasks.show_task(self.session_task_id)
+            proposals = service.proposals(task.task_id)
+        except DomainError as error:
+            self._error(error)
+            return
+        if not proposals:
+            self._write("PATCH_PROPOSAL_NOT_FOUND: 当前任务没有成功且有效的 PatchProposal Run。")
+            return
+        selected = self._choose_proposal(proposals)
+        if selected is None:
+            return
+        proposal = cast(PatchProposal, selected["proposal"])
+        self._write(f"Task: {task.task_id} · {task.title or '未命名任务'}")
+        self._write(f"Proposal Run: {selected['proposal_run_id']}")
+        self._write(f"Model: {selected['model_selector']} (revision {selected['model_revision']})")
+        self._write(f"Summary: {selected['summary']}")
+        self._write("Files: " + ", ".join(cast(list[str], selected["paths"])))
+        for patch in proposal.patches:
+            self._write(f"\n--- {patch.path}\n{patch.unified_diff}", end="")
+        self._write(f"Proposal hash: {selected['proposal_hash']}")
+        self._write(f"Repository: {selected['repository_alias']}  Base SHA: {selected['base_sha']}")
+        self._write("权限：仅写入新的隔离 worktree；不修改 source checkout，不提交、不推送、不创建 PR。")
+        self._write("Approve this exact proposal? [y/N] ", end="")
+        if self._readline().strip() not in {"y", "Y"}:
+            self._write("未创建 apply Run，未写入任何文件。")
+            return
+        self._write("Apply Run started — 正在验证 Proposal")
+        self._write("正在应用到隔离 worktree")
+        try:
+            result = service.apply(task.task_id, str(selected["proposal_run_id"]), request_id=str(uuid4()))
+        except DomainError as error:
+            self._error(error)
+            return
+        self._write("正在验证 diff")
+        if result.status == "succeeded":
+            self._write(f"apply succeeded — Run {result.run_id}")
+        else:
+            self._write(f"apply failed — Run {result.run_id}: {result.error_code or 'APPLY_FAILED'}")
+
+    def _choose_proposal(self, proposals: list[dict[str, object]]) -> dict[str, object] | None:
+        rows = [(str(item["proposal_run_id"]), f"{item['proposal_run_id']} · {item['summary']}") for item in proposals]
+        if self._selector_enabled():
+            chosen = self._pick("选择 PatchProposal", "↑/↓ 选择 · Enter 确定 · Esc 返回", rows)
+            return next((item for item in proposals if item["proposal_run_id"] == chosen), None)
+        self._write("选择 PatchProposal")
+        for index, (_, label) in enumerate(rows, 1):
+            self._write(f"{index}. {label}")
+        self._write("0. 返回")
+        self._write("请选择：", end="")
+        choice = self._readline().strip()
+        return proposals[int(choice) - 1] if choice.isdigit() and 1 <= int(choice) <= len(proposals) else None
 
     def _choose_repository(self, repositories: list[RepoMetadata]) -> str | None:
         rows = [(repository.alias, repository.alias) for repository in repositories]
