@@ -110,6 +110,20 @@ class RepoService:
             raise DomainError("REPO_NOT_FOUND", "task repository metadata was not found")
         return self._load_metadata(path)
 
+    def list_metadata(self, task_id: str) -> list[RepoMetadata]:
+        """Return registered Task repositories in stable alias order."""
+        self._task_store.get_task(task_id)
+        directory = project_path(
+            self._project_root, ".yipilot", "tasks", task_id, "repos"
+        )
+        if not directory.is_dir():
+            return []
+        return [
+            self.get_metadata(task_id, path.name)
+            for path in sorted(directory.iterdir(), key=lambda item: item.name)
+            if path.is_dir() and not path.name.startswith(".")
+        ]
+
     def _metadata_path(self, task_id: str, alias: str) -> Path:
         return project_path(
             self._project_root,

@@ -3,15 +3,19 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO, cast
+from uuid import uuid4
 
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import choice, prompt
 from prompt_toolkit.styles import Style
 
+from yipilot.application.code_service import CodeService
 from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.application.project_service import ProjectService
+from yipilot.application.repo_service import RepoMetadata, RepoService
 from yipilot.domain.errors import DomainError
 from yipilot.domain.provider import ModelEntry, ProviderConnection
+from yipilot.infrastructure.git_runner import GitRunner
 from yipilot.infrastructure.secret_store import SecretStore
 from yipilot.infrastructure.task_store import TaskRecord
 
@@ -63,6 +67,7 @@ class InteractiveSession:
         self.output = self.output or sys.stdout
         self.models = ModelSelectionService(self.settings_dir)
         self.tasks = ProjectService(self.project or Path("."))
+        self.repos = RepoService(self.project or Path("."), GitRunner())
         self.session_selector: str | None = None
         self.selected_selector: str | None = None
         self.session_task_id: str | None = None
@@ -82,7 +87,7 @@ class InteractiveSession:
                 return
             if command == "/help":
                 self._write("/task：创建或选择任务；/model：为未来 Run 选择模型；/status：查看当前选择；/exit：退出。")
-                self._write("/run、/logs、/cancel 当前不可用；/run 尚未实现。")
+                self._write("/run：确认后生成仅供审阅的 live PatchProposal；/logs、/cancel 当前不可用。")
             elif command == "/status":
                 self._write(self._status_line())
                 self._show_current_task()
@@ -91,7 +96,7 @@ class InteractiveSession:
             elif command == "/task":
                 self._task_screen()
             elif command == "/run":
-                self._write("/run 尚未实现；当前不会创建或启动 Run。")
+                self._run_live_proposal()
             elif command in {"/logs", "/cancel"}:
                 self._write(f"{command} 当前不可用。")
             elif command:
@@ -211,6 +216,98 @@ class InteractiveSession:
         recent = runs[-1]
         self._write(f"任务状态：{recent.status}")
         self._write(f"最近 Run：{recent.stage} · {recent.status} · {recent.run_id}")
+
+    def _run_live_proposal(self) -> None:
+        if self.session_task_id is None:
+            self._write("TASK_SELECTION_REQUIRED: 请先使用 /task 选择任务。")
+            return
+        try:
+            task = self.tasks.show_task(self.session_task_id)
+            resolved = self.models.resolve(session_selector=self.session_selector)
+            repositories = self.repos.list_metadata(task.task_id)
+        except DomainError as error:
+            self._error(error)
+            return
+        if not repositories:
+            self._write("REPO_NOT_FOUND: 当前任务没有已注册仓库；请先使用 task repo add 注册仓库。")
+            return
+        alias = self._choose_repository(repositories)
+        if alias is None:
+            return
+        context_files = self._context_files()
+        if context_files is None:
+            return
+        self._write("About to start a live PatchProposal Run")
+        self._write(
+            f"Task: {task.task_id}   Model: {resolved.selector} (revision {resolved.connection_revision})"
+        )
+        self._write(
+            "Input: task development goal + "
+            f"{len(context_files)} selected files ({', '.join(context_files) or 'none'}) "
+            "+ passed task documents (if any)"
+        )
+        self._write(f"Repository: {alias}")
+        self._write("Authority: proposal only; no source file, Git, or shell action is allowed")
+        self._write("Continue? [y/N] ", end="")
+        if self._readline().strip().casefold() not in {"y", "yes"}:
+            self._write("已取消；未创建或启动 Run。")
+            return
+        self._write(f"Run starting — {resolved.selector} (revision {resolved.connection_revision})")
+        self._write("Turn 1 started — requesting a PatchProposal")
+        self._write("Model response in progress …")
+        try:
+            result = CodeService(
+                self.project or Path("."),
+                settings_dir=self.settings_dir,
+                model_selection_service=self.models,
+            ).generate(
+                task.task_id,
+                alias,
+                task.development_goal,
+                "live",
+                request_id=str(uuid4()),
+                model_selector=resolved.selector,
+                context_files=context_files,
+            )
+        except DomainError as error:
+            self._error(error)
+            return
+        if result.status == "succeeded" and result.patch_proposal_artifact_ref:
+            evidence = result.patch_proposal_artifact_ref["relative_path"]
+            self._write(f"Run {result.run_id} started — {resolved.selector} (revision {resolved.connection_revision})")
+            self._write("Turn 1 completed — proposal validated")
+            self._write(f"Run succeeded — PatchProposal evidence is ready for review: {evidence}")
+            return
+        self._write(f"Run {result.run_id} failed — {result.error_code or 'LIVE_PROPOSAL_FAILED'}")
+        self._write("No source files were changed. Review the Run evidence, then use /status.")
+
+    def _choose_repository(self, repositories: list[RepoMetadata]) -> str | None:
+        rows = [(repository.alias, repository.alias) for repository in repositories]
+        if self._selector_enabled():
+            return self._pick(
+                "选择任务仓库",
+                "选择本次 PatchProposal 的受控工作区。\n\n↑/↓ 选择 · Enter 确定 · Esc 返回",
+                rows,
+            )
+        self._write("选择任务仓库")
+        for index, (_, label) in enumerate(rows, 1):
+            self._write(f"{index}. {label}")
+        self._write("0. 返回")
+        self._write("请选择：", end="")
+        choice = self._readline().strip()
+        return rows[int(choice) - 1][0] if choice.isdigit() and 1 <= int(choice) <= len(rows) else None
+
+    def _context_files(self) -> tuple[str, ...] | None:
+        self._write("本次发送的工作区文件（逗号分隔，可留空；输入 :cancel 取消）：", end="")
+        value = self._readline().strip()
+        if value == ":cancel":
+            self._write("已取消；未创建或启动 Run。")
+            return None
+        files = tuple(item.strip() for item in value.split(",") if item.strip())
+        if value and len(files) != len(value.split(",")):
+            self._write("MODEL_CONTEXT_INVALID: 文件列表不能包含空路径。")
+            return None
+        return files
 
     def _model_screen(self) -> None:
         if self._selector_enabled():
