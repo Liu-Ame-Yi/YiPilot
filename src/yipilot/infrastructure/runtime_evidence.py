@@ -5,6 +5,7 @@ from collections.abc import Mapping
 
 from yipilot.domain.execution import AgentPlan, ArtifactRef
 from yipilot.domain.model import ModelCallRecord, ModelRequest
+from yipilot.domain.patch_proposal import PatchProposal
 from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
 
@@ -64,6 +65,21 @@ class FileRuntimeEvidence:
             content=record.model_dump_json(exclude_none=True).encode("utf-8"),
             input_fingerprint=record.input_fingerprint,
             operation_id=record.operation_id,
+        )
+
+    def write_patch_proposal(
+        self, request: ModelRequest, proposal: PatchProposal
+    ) -> ArtifactRef:
+        return _artifact_ref(
+            self._artifacts.write_bytes(
+                request.task_id,
+                request.run_id,
+                producer="agent_runtime",
+                relative_path="artifacts/patch-proposal.json",
+                content=proposal.model_dump_json().encode("utf-8"),
+                input_fingerprint=request.input_fingerprint,
+                operation_id=request.operation_id,
+            )
         )
 
     def verify_input_artifact(self, reference: ArtifactRef) -> ArtifactRef:

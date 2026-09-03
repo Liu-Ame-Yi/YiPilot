@@ -416,73 +416,32 @@ def code_generate(
     task_id: Annotated[str, typer.Option("--taskid")],
     alias: Annotated[str, typer.Option("--alias")],
     instruction: Annotated[str, typer.Option("--instruction")],
-    planner: Annotated[str, typer.Option("--planner")],
     model: Annotated[str | None, typer.Option("--model")] = None,
-    provider_profile: Annotated[str | None, typer.Option("--provider-profile")] = None,
     context_file: Annotated[list[str] | None, typer.Option("--context-file")] = None,
     settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
     request_id: Annotated[str | None, typer.Option("--request-id")] = None,
     project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
-    if provider_profile is not None and output == "human":
-        typer.echo("DEPRECATION: --provider-profile is supported through M5 only; use --model connection_id/model_id.", err=True)
     result = _invoke(
         output,
         lambda: CodeService(project, settings_dir=settings_dir).generate(
             task_id,
             alias,
             instruction,
-            planner,
             request_id=request_id,
-            provider_profile=provider_profile,
             model_selector=model,
             context_files=context_file or (),
         ),
     )
     if result is not None:
-        value = result.value()
-        if provider_profile is not None:
-            value["deprecation"] = "--provider-profile is supported through M5 only; use --model connection_id/model_id."
         _render_value(
             output,
-            value,
+            result.value(),
             f"Code generation run {result.run_id} is {result.status}.",
         )
         if result.status != "succeeded":
             raise typer.Exit(code=1)
-
-
-@code_app.command("apply")
-def code_apply(
-    task_id: Annotated[str, typer.Option("--taskid")],
-    run_id: Annotated[str, typer.Option("--run-id")],
-    prepare_only: Annotated[bool, typer.Option("--prepare-only")] = False,
-    request_id: Annotated[str | None, typer.Option("--request-id")] = None,
-    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
-    output: Annotated[str, typer.Option("--output")] = "human",
-) -> None:
-    if not prepare_only:
-        _render_value(
-            output,
-            {
-                "code": "PREPARE_ONLY_REQUIRED",
-                "message": "code apply only supports --prepare-only",
-            },
-            "PREPARE_ONLY_REQUIRED: code apply only supports --prepare-only",
-        )
-        raise typer.Exit(code=1)
-    result = _invoke(
-        output, lambda: CodeService(project).prepare_only(task_id, run_id, request_id)
-    )
-    if result is not None:
-        _render_value(
-            output,
-            result.value(),
-            f"Prepared handoff for run {result.run_id}; no Git apply was performed.",
-        )
-
-
 @provider_app.command("add")
 def provider_add(
     name: Annotated[str, typer.Option("--name")],

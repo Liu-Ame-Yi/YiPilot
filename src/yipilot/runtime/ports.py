@@ -6,6 +6,7 @@ from typing import Protocol
 from yipilot.domain.execution import AgentPlan, ArtifactRef, ToolRequest, ToolResult
 from yipilot.domain.model import ModelCallRecord, ModelRequest
 from yipilot.domain.models import RunStatus
+from yipilot.domain.patch_proposal import PatchProposal
 
 
 class RuntimeOperation(Protocol):
@@ -42,6 +43,10 @@ class RuntimeEvidencePort(Protocol):
     def write_model_response(self, request: ModelRequest, content: str) -> ArtifactRef: ...
 
     def write_model_call(self, record: ModelCallRecord) -> None: ...
+
+    def write_patch_proposal(
+        self, request: ModelRequest, proposal: PatchProposal
+    ) -> ArtifactRef: ...
 
     def verify_input_artifact(self, reference: ArtifactRef) -> ArtifactRef: ...
 

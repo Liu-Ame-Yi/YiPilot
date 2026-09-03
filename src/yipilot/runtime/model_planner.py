@@ -1,38 +1,21 @@
 """Consume a ModelPort stream into the Runtime's restricted AgentPlan."""
 
-import hashlib
 import json
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 
 from yipilot.domain.errors import DomainError
-from yipilot.domain.execution import AgentPlan, ArtifactRef, PlanStep, ToolRequest
+from yipilot.domain.execution import AgentPlan, ArtifactRef
 from yipilot.domain.model import (
     ModelCallRecord,
     ModelCallStatus,
     ModelPort,
     ModelRequest,
 )
+from yipilot.domain.patch_proposal import PatchProposal
 from yipilot.runtime.ports import RuntimeEvidencePort
 from yipilot.security.redaction import SecretRedactor
-
-
-class _ModelStep(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    tool_id: str = Field(pattern=r"^fake-diagnostic$")
-    args: dict[str, str]
-
-    def request(self, base: ToolRequest) -> ToolRequest:
-        if self.args != {"scope": "workspace"}:
-            raise ValueError("model step arguments are not allowed")
-        return base.model_copy(update={"tool_id": self.tool_id})
-
-
-class _ModelPlan(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    schema_version: int = Field(ge=1, le=1)
-    steps: tuple[_ModelStep, ...] = Field(min_length=1)
 
 
 class ModelPlanner:
@@ -42,22 +25,16 @@ class ModelPlanner:
         self,
         port: ModelPort,
         request: ModelRequest,
-        base_request: ToolRequest,
         evidence: RuntimeEvidencePort,
         *,
         redactor: SecretRedactor | None = None,
     ) -> None:
         self._port = port
         self._request = request
-        self._base_request = base_request
         self._evidence = evidence
         self._redactor = redactor or SecretRedactor()
 
     def plan(self, *, instruction_fingerprint: str) -> AgentPlan:
-        if instruction_fingerprint != hashlib.sha256(
-            self._request.user_instruction.encode("utf-8")
-        ).hexdigest():
-            raise DomainError("MODEL_INPUT_MISMATCH", "model input fingerprint does not match Runtime")
         started_at = datetime.now(UTC)
         response_ref = None
         try:
@@ -68,14 +45,33 @@ class ModelPlanner:
                 "model.message_completed",
                 {"response_artifact_ref": response_ref.model_dump(mode="json")},
             )
-            plan = self._parse(content, instruction_fingerprint)
+            proposal = self._parse(content)
+            proposal_ref = self._evidence.write_patch_proposal(self._request, proposal)
+            self._evidence.append_event(
+                "proposal.created",
+                {"patch_proposal_artifact_ref": proposal_ref.model_dump(mode="json")},
+            )
         except (DomainError, ValidationError, ValueError, json.JSONDecodeError) as error:
-            code = error.code if isinstance(error, DomainError) else "MODEL_PLAN_INVALID"
+            code = error.code if isinstance(error, DomainError) else "PATCH_PROPOSAL_INVALID"
             self._record(started_at, ModelCallStatus.FAILED, response_ref, code)
             self._evidence.append_event("model.failed", {"error_code": code})
             raise DomainError(code, "model response could not produce an allowed plan") from error
+        except Exception as error:
+            self._record(
+                started_at, ModelCallStatus.FAILED, response_ref, "MODEL_CALL_FAILED"
+            )
+            self._evidence.append_event(
+                "model.failed", {"error_code": "MODEL_CALL_FAILED"}
+            )
+            raise DomainError("MODEL_CALL_FAILED", "model call failed") from error
         self._record(started_at, ModelCallStatus.SUCCEEDED, response_ref, "model response stored")
-        return plan
+        return AgentPlan(
+            task_id=self._request.task_id,
+            operation_id=self._request.operation_id,
+            run_id=self._request.run_id,
+            instruction_fingerprint=instruction_fingerprint,
+            steps=(),
+        )
 
     def _stream_content(self) -> str:
         parts: list[str] = []
@@ -96,22 +92,14 @@ class ModelPlanner:
             if verified != reference or not verified.relative_path.casefold().endswith(".md"):
                 raise DomainError("MODEL_INPUT_ARTIFACT_INVALID", "model input artifact is not approved Markdown")
 
-    def _parse(self, content: str, instruction_fingerprint: str) -> AgentPlan:
-        parsed = _ModelPlan.model_validate_json(content)
-        return AgentPlan(
-            task_id=self._request.task_id,
-            operation_id=self._request.operation_id,
-            run_id=self._request.run_id,
-            instruction_fingerprint=instruction_fingerprint,
-            steps=tuple(
-                PlanStep(
-                    step_id=index,
-                    summary="execute recorded diagnostic",
-                    tool_request=step.request(self._base_request),
-                )
-                for index, step in enumerate(parsed.steps, start=1)
-            ),
-        )
+    @staticmethod
+    def _parse(content: str) -> PatchProposal:
+        try:
+            return PatchProposal.model_validate_json(content)
+        except ValidationError as error:
+            raise DomainError(
+                "PATCH_PROPOSAL_INVALID", "model response is not a valid patch proposal"
+            ) from error
 
     def _record(
         self,

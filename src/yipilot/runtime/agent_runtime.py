@@ -68,6 +68,7 @@ class AgentRuntime:
         fingerprint = hashlib.sha256(instruction.encode("utf-8")).hexdigest()
         results: list[ToolResult] = []
         plan_ref: ArtifactRef | None = None
+        self._evidence.append_event("turn.started", {"turn": 1})
         try:
             plan = self._planner.plan(instruction_fingerprint=fingerprint)
         except Exception as error:  # noqa: BLE001 - faults become an auditable Run failure
@@ -151,14 +152,19 @@ class AgentRuntime:
         self._evidence.append_event("approval.required", {"step_id": step_id, "error_code": error_code})
         return self._result(run, RunStatus.PAUSED, error_code, plan_ref, results)
 
-    @staticmethod
     def _result(
+        self,
         run: RuntimeRun,
         terminal_status: RunStatus,
         error_code: str | None,
         plan_ref: ArtifactRef | None,
         results: list[ToolResult],
     ) -> AgentRuntimeResult:
+        event = "turn.completed" if terminal_status is RunStatus.SUCCEEDED else "turn.failed"
+        payload: dict[str, object] = {"turn": 1}
+        if error_code is not None:
+            payload["error_code"] = error_code
+        self._evidence.append_event(event, payload)
         return AgentRuntimeResult(run, terminal_status, error_code, plan_ref, tuple(results))
 
 
@@ -170,6 +176,8 @@ def _planner_error_code(error: Exception) -> str:
         "MODEL_REPLAY_NOT_FOUND": "MODEL_REPLAY_NOT_FOUND",
         "MODEL_DISABLED": "MODEL_DISABLED",
         "MODEL_OUTPUT_LIMIT_EXCEEDED": "MODEL_OUTPUT_LIMIT_EXCEEDED",
-        "MODEL_PLAN_INVALID": "MODEL_PLAN_INVALID",
+        "PATCH_PROPOSAL_INVALID": "PATCH_PROPOSAL_INVALID",
         "MODEL_INPUT_MISMATCH": "MODEL_INPUT_MISMATCH",
+        "MODEL_INPUT_ARTIFACT_INVALID": "MODEL_INPUT_ARTIFACT_INVALID",
+        "MODEL_CALL_FAILED": "MODEL_CALL_FAILED",
     }.get(error.code, "PLANNER_FAILED")
