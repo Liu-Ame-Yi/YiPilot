@@ -155,7 +155,7 @@ class CodeService:
         """Return only verified, successful proposal Runs owned by this Task."""
         self._store.get_task(task_id)
         return [self._proposal_details(task_id, run.run_id) for run in self._store.list_runs(task_id)
-                if run.stage == "code_generate" and run.status.value == "succeeded"
+                if run.stage in {"code_generate", "code_repair"} and run.status.value == "succeeded"
                 if self._is_proposal(task_id, run.run_id)]
 
     def apply(self, task_id: str, proposal_run_id: str, *, request_id: str | None = None) -> CodeApplyResult:
@@ -183,6 +183,12 @@ class CodeService:
                 raise DomainError("PROPOSAL_BASE_SHA_DRIFT", "proposal base SHA no longer matches the repository")
             if _git_output(GitRunner(), ["git", "status", "--porcelain=v1"], workspace.path):
                 raise DomainError("WORKSPACE_DIRTY", "new apply workspace is unexpectedly dirty")
+            parent_diff = str(proposal.get("parent_diff", ""))
+            if parent_diff:
+                _apply_diff(GitRunner(), workspace.path, parent_diff)
+                parent_actual = _git_output(GitRunner(), ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv", "--"], workspace.path)
+                if _canonical_diff(parent_actual) != _canonical_diff(parent_diff):
+                    raise DomainError("APPLY_PARENT_DIFF_MISMATCH", "repair parent diff cannot be reconstructed")
             source_path = Path(str(proposal["proposal_path"]))
             patch_bytes = source_path.read_bytes()
             parsed_proposal = PatchProposal.model_validate_json(patch_bytes)
@@ -238,7 +244,7 @@ class CodeService:
                 raise DomainError("GIT_APPLY_FAILED", "approved patch could not be applied")
             actual_diff = _git_output(GitRunner(), ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv", "--"], workspace.path)
             expected_diff = "".join(patch.unified_diff for patch in parsed_proposal.patches)
-            if _canonical_diff(actual_diff) != _canonical_diff(expected_diff):
+            if not parent_diff and _canonical_diff(actual_diff) != _canonical_diff(expected_diff):
                 raise DomainError("APPLY_DIFF_MISMATCH", "actual worktree diff differs from the approved proposal")
             paths = _git_output(GitRunner(), ["git", "diff", "--name-only", "--"], workspace.path).splitlines()
             artifacts.write_bytes(task_id, run.run_id, producer="code_apply", relative_path="artifacts/applied.diff",
@@ -246,7 +252,9 @@ class CodeService:
             artifacts.write_bytes(task_id, run.run_id, producer="code_apply", relative_path=_APPLY_EVIDENCE_PATH,
                 content=json.dumps({"base_sha": workspace.base_sha, "head_sha": _git_output(GitRunner(), ["git", "rev-parse", "HEAD"], workspace.path).strip(),
                     "proposal_run_id": proposal_run_id, "proposal_hash": proposal["proposal_hash"], "changed_paths": paths,
-                    "tool_run_id": result.tool_run_id, "approval_id": approval.approval_id}, sort_keys=True).encode(),
+                    "tool_run_id": result.tool_run_id, "approval_id": approval.approval_id,
+                    "parent_diff_hash": proposal.get("parent_diff_hash"),
+                    "root_proposal_run_id": proposal.get("root_proposal_run_id", proposal_run_id)}, sort_keys=True).encode(),
                 input_fingerprint=binding, operation_id=run.operation_id)
             self._store.set_run_status(run.run_id, "succeeded")
             journal.append("run.succeeded", {"proposal_run_id": proposal_run_id})
@@ -265,7 +273,7 @@ class CodeService:
 
     def _proposal_details(self, task_id: str, run_id: str) -> dict[str, object]:
         run = self._store.get_run(task_id, run_id)
-        if run.stage != "code_generate" or run.status.value != "succeeded":
+        if run.stage not in {"code_generate", "code_repair"} or run.status.value != "succeeded":
             raise DomainError("PATCH_PROPOSAL_NOT_FOUND", "proposal Run is not a successful code-generation Run")
         artifacts = FileArtifactStore(self._store)
         records = [record for record in artifacts.list(task_id, run_id) if record.relative_path == _PROPOSAL_PATH]
@@ -276,15 +284,24 @@ class CodeService:
         try:
             proposal = PatchProposal.model_validate_json(path.read_bytes())
             payload = json.loads(self._store.get_operation(task_id, run.operation_id).request_json)["payload"]
-            alias = str(payload["alias"])
-            source_workspace = WorkspaceService(self._project_root, GitRunner()).prepare(task_id, alias, run_id)
+            if run.stage == "code_repair":
+                chain = _repair_chain(self._store, task_id, run_id)
+                alias = str(chain["repository_alias"])
+                base_sha = str(chain["base_sha"])
+            else:
+                alias = str(payload["alias"])
+                base_sha = WorkspaceService(self._project_root, GitRunner()).prepare(task_id, alias, run_id).base_sha
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise DomainError("PATCH_PROPOSAL_INVALID", "proposal evidence is invalid") from error
-        return {"proposal_run_id": run_id, "proposal": proposal, "proposal_hash": record.sha256,
-                "proposal_path": str(path), "repository_alias": alias, "base_sha": source_workspace.base_sha,
+        result = {"proposal_run_id": run_id, "proposal": proposal, "proposal_hash": record.sha256,
+                "proposal_path": str(path), "repository_alias": alias, "base_sha": base_sha,
                 "summary": proposal.summary, "paths": [patch.path for patch in proposal.patches],
                 "model_selector": str(payload.get("model_selector", "unknown")),
                 "model_revision": payload.get("provider_revision", "unknown")}
+        if run.stage == "code_repair":
+            result.update({"parent_diff": str(chain["parent_diff"]), "parent_diff_hash": str(chain["parent_diff_hash"]),
+                "root_proposal_run_id": str(chain["root_proposal_run_id"])})
+        return result
 
     def _run(
         self,
@@ -406,6 +423,34 @@ def _canonical_diff(value: str) -> str:
         line for line in value.replace("\r\n", "\n").split("\n")
         if not line.startswith(("diff --git ", "index "))
     ).strip() + "\n"
+
+
+def _apply_diff(git: GitRunner, workspace: Path, diff: str) -> None:
+    """Replay verified parent evidence only inside a new isolated worktree."""
+    patch = workspace / ".yipilot-parent.diff"
+    try:
+        patch.write_text(diff, encoding="utf-8", newline="\n")
+        git.run(["git", "apply", "--check", "--whitespace=nowarn", "--", str(patch)], cwd=workspace)
+        git.run(["git", "apply", "--whitespace=nowarn", "--", str(patch)], cwd=workspace)
+    finally:
+        patch.unlink(missing_ok=True)
+
+
+def _repair_chain(store: FileTaskStore, task_id: str, run_id: str) -> dict[str, object]:
+    artifacts = FileArtifactStore(store)
+    record = next((item for item in artifacts.list(task_id, run_id)
+                   if item.relative_path == "artifacts/repair-chain.json"), None)
+    if record is None:
+        raise DomainError("REPAIR_CHAIN_MISSING", "repair proposal chain evidence is missing")
+    artifacts.verify(task_id, run_id, record.artifact_id)
+    try:
+        value = json.loads((store.event_journal_path(run_id).parent / record.relative_path).read_text(encoding="utf-8"))
+        required = ("repository_alias", "base_sha", "parent_diff", "parent_diff_hash", "root_proposal_run_id")
+        if not all(isinstance(value.get(key), str) and value[key] for key in required):
+            raise ValueError
+        return value
+    except (OSError, ValueError, TypeError) as error:
+        raise DomainError("REPAIR_CHAIN_INVALID", "repair proposal chain evidence is invalid") from error
 
 
 def _record_value(record: ArtifactRecord) -> dict[str, object]:

@@ -396,10 +396,13 @@ class VerificationService:
             raise DomainError(
                 "APPLY_EVIDENCE_INVALID", "apply evidence is invalid"
             ) from error
-        if _canonical_diff(proposal) != _canonical_diff(applied):
+        parent_diff_hash = evidence.get("parent_diff_hash")
+        if parent_diff_hash is None and _canonical_diff(proposal) != _canonical_diff(applied):
             raise DomainError(
                 "APPLY_DIFF_MISMATCH", "applied diff does not match approved proposal"
             )
+        if parent_diff_hash is not None and (not isinstance(parent_diff_hash, str) or len(parent_diff_hash) != 64):
+            raise DomainError("APPLY_EVIDENCE_INVALID", "repair parent diff evidence is invalid")
         workspace = WorkspaceService(self._project_root, self._git).prepare(
             task_id, alias, apply_run_id
         )
@@ -407,7 +410,7 @@ class VerificationService:
             raise DomainError(
                 "APPLY_BASE_SHA_DRIFT", "apply workspace base SHA drifted"
             )
-        self._check_workspace(workspace, proposal)
+        self._check_workspace(workspace, applied)
         expected_paths = evidence.get("changed_paths")
         paths = _git(
             self._git, ["git", "diff", "--name-only", "--"], workspace.path
@@ -416,15 +419,21 @@ class VerificationService:
             raise DomainError(
                 "APPLY_EVIDENCE_DRIFT", "apply changed-path evidence drifted"
             )
-        return {
+        result = {
             "apply_run_id": apply_run_id,
             "proposal_run_id": proposal_run_id,
             "proposal_hash": proposal_hash,
             "repository_alias": alias,
             "base_sha": base_sha,
-            "diff_hash": _hash(_canonical_diff(proposal).encode()),
-            "diff": proposal,
+            "diff_hash": _hash(_canonical_diff(applied).encode()),
+            "diff": applied,
         }
+        if parent_diff_hash is not None:
+            root = evidence.get("root_proposal_run_id")
+            if not isinstance(root, str) or not root:
+                raise DomainError("APPLY_EVIDENCE_INVALID", "repair root proposal evidence is invalid")
+            result["root_proposal_run_id"] = root
+        return result
 
     def _apply_alias(self, task_id: str, run: RunRecord) -> str:
         try:

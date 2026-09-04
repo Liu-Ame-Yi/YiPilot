@@ -12,6 +12,7 @@ from prompt_toolkit.styles import Style
 from yipilot.application.code_service import CodeService
 from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.application.project_service import ProjectService
+from yipilot.application.repair_service import RepairCandidate, RepairService
 from yipilot.application.repo_service import RepoMetadata, RepoService
 from yipilot.application.verification_service import (
     VerificationCandidate,
@@ -92,7 +93,7 @@ class InteractiveSession:
                 return
             if command == "/help":
                 self._write("/task：创建或选择任务；/model：为未来 Run 选择模型；/status：查看当前选择；/exit：退出。")
-                self._write("/run：生成仅供审阅的 live PatchProposal；/apply：批准并应用一个 Proposal；/verify：验证已应用变更；/logs、/cancel 当前不可用。")
+                self._write("/run：生成仅供审阅的 live PatchProposal；/apply：批准并应用一个 Proposal；/verify：验证已应用变更；/repair：为失败验证生成有限修复 Proposal；/logs、/cancel 当前不可用。")
             elif command == "/status":
                 self._write(self._status_line())
                 self._show_current_task()
@@ -106,6 +107,8 @@ class InteractiveSession:
                 self._apply_proposal()
             elif command == "/verify":
                 self._verify_change()
+            elif command == "/repair":
+                self._repair_change()
             elif command in {"/logs", "/cancel"}:
                 self._write(f"{command} 当前不可用。")
             elif command:
@@ -228,6 +231,9 @@ class InteractiveSession:
         verification = VerificationService(self.project or Path(".")).latest_status(task.task_id)
         if verification is not None:
             self._write(verification)
+        repair = RepairService(self.project or Path("."), settings_dir=self.settings_dir, model_selection_service=self.models).latest_status(task.task_id)
+        if repair is not None:
+            self._write(repair)
 
     def _run_live_proposal(self) -> None:
         if self.session_task_id is None:
@@ -383,6 +389,66 @@ class InteractiveSession:
             status = {"succeeded": "passed", "failed": "failed", "timed_out": "timed_out", "cancelled": "timed_out"}[item.status.value]
             self._write(f"{label}：{status}")
         self._write("Change Handoff 已生成" if result.status == "succeeded" else "验证失败，未生成成功 Handoff")
+
+    def _repair_change(self) -> None:
+        if self.session_task_id is None:
+            self._write("请先使用 /task 选择任务")
+            return
+        service = RepairService(self.project or Path("."), settings_dir=self.settings_dir, model_selection_service=self.models)
+        try:
+            task = self.tasks.show_task(self.session_task_id)
+            candidates = service.candidates(task.task_id)
+        except DomainError as error:
+            self._error(error)
+            return
+        if not candidates:
+            self._write("当前任务没有可修复的验证失败记录")
+            return
+        selected = candidates[0] if len(candidates) == 1 else self._choose_repair(candidates)
+        if selected is None:
+            return
+        try:
+            resolved = self.models.resolve(session_selector=self.session_selector)
+        except DomainError as error:
+            self._error(error)
+            return
+        self._write("即将开始有限 AI 修复 Proposal")
+        self._write(f"任务：{task.task_id} · {task.title or '未命名任务'}")
+        self._write(f"失败验证 Run：{selected.verification_run_id}")
+        self._write(f"当前修复次数：{selected.attempt} / 2")
+        self._write(f"模型：{resolved.selector}（revision {resolved.connection_revision}）")
+        self._write("输入范围：\n- 原始开发目标\n- 当前已应用 diff 摘要\n- 已批准任务文档\n- 失败 pytest / ruff / mypy 的脱敏、截断诊断\n- 受限 worktree 上下文")
+        self._write("限制：\n- 最多 2 次修复\n- 有限模型输出、上下文、文件数、diff 大小与总时长\n- 仅生成 Repair PatchProposal\n- 不修改源代码\n- 不执行 shell\n- 不提交、不推送、不创建 PR")
+        self._write("继续？[y/N] ", end="")
+        if self._readline().strip() not in {"y", "Y"}:
+            self._write("已取消；未创建 Repair Run，未调用模型，未修改源代码")
+            return
+        try:
+            result = service.repair(task.task_id, selected.verification_run_id, model_selector=resolved.selector, request_id=str(uuid4()))
+        except DomainError as error:
+            self._error(error)
+            return
+        self._write(f"Repair Run {result.run_id} 已启动")
+        self._write("Turn turn-1 已启动 — 正在分析验证失败")
+        self._write("模型响应处理中…")
+        if result.status == "succeeded":
+            self._write("Turn turn-1 已完成 — Repair PatchProposal 已校验")
+            self._write("Repair Proposal 已准备好；请审阅后使用 /apply 批准应用")
+        else:
+            self._write(f"Repair Run 失败：{result.error_code or 'REPAIR_FAILED'}")
+
+    def _choose_repair(self, candidates: list[RepairCandidate]) -> RepairCandidate | None:
+        rows = [(item.verification_run_id, f"{item.verification_run_id} · {item.repository_alias} · {item.parent_diff_hash[:12]}") for item in candidates]
+        if self._selector_enabled():
+            selected = self._pick("选择失败 verification Run", "↑/↓ 选择 · Enter 确定 · Esc 返回", rows)
+            return next((item for item in candidates if item.verification_run_id == selected), None)
+        self._write("选择失败 verification Run")
+        for index, (_, label) in enumerate(rows, 1):
+            self._write(f"{index}. {label}")
+        self._write("0. 返回")
+        self._write("请选择：", end="")
+        choice = self._readline().strip()
+        return candidates[int(choice) - 1] if choice.isdigit() and 1 <= int(choice) <= len(candidates) else None
 
     def _choose_verification(self, candidates: list[VerificationCandidate]) -> VerificationCandidate | None:
         rows = [(item.apply_run_id, f"{item.apply_run_id} · {item.repository_alias} · {item.diff_hash[:12]}") for item in candidates]
