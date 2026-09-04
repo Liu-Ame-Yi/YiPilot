@@ -74,7 +74,9 @@ class RepairService:
             try:
                 details = self._verification_details(task_id, run)
                 attempt = self._attempts(task_id, details["root_proposal_run_id"])
-                if attempt >= MAX_REPAIR_ATTEMPTS or self._expired(run.created_at):
+                if attempt >= MAX_REPAIR_ATTEMPTS or self._expired(
+                    self._chain_started(task_id, details["root_proposal_run_id"], run.created_at)
+                ):
                     continue
                 values.append(RepairCandidate(run.run_id, details["apply_run_id"], details["proposal_run_id"],
                     details["root_proposal_run_id"], details["repository_alias"], details["base_sha"],
@@ -90,7 +92,7 @@ class RepairService:
         attempt = self._attempts(task_id, details["root_proposal_run_id"])
         if attempt >= MAX_REPAIR_ATTEMPTS:
             raise DomainError("REPAIR_ATTEMPT_LIMIT", "repair attempt limit has been reached")
-        if self._expired(verification.created_at):
+        if self._expired(self._chain_started(task_id, details["root_proposal_run_id"], verification.created_at)):
             raise DomainError("REPAIR_TIME_LIMIT", "repair chain time limit has been reached")
         resolved = self._models.resolve(explicit_selector=model_selector)
         port = self._models.model_port(resolved)
@@ -234,6 +236,18 @@ class RepairService:
             except DomainError:
                 continue
         return count
+
+    def _chain_started(self, task_id: str, root_proposal_run_id: str, fallback: str) -> str:
+        values = [fallback]
+        for run in self._store.list_runs(task_id):
+            if run.stage != "code_repair":
+                continue
+            try:
+                if self._chain(task_id, run.run_id)["root_proposal_run_id"] == root_proposal_run_id:
+                    values.append(run.created_at)
+            except DomainError:
+                continue
+        return min(values)
 
     def _chain(self, task_id: str, run_id: str) -> dict[str, object]:
         artifacts = FileArtifactStore(self._store)
