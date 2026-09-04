@@ -59,6 +59,34 @@ class ProposalPort:
         pass
 
 
+class RepairLoopPort:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def stream(self, request):
+        self.calls += 1
+        if self.calls == 1:
+            diff = ("--- a/tests/test_smoke.py\n+++ b/tests/test_smoke.py\n@@ -1,2 +1,2 @@\n def test_smoke():\n"
+                "-    assert True\n+    assert False\n")
+        else:
+            diff = ("--- a/tests/test_smoke.py\n+++ b/tests/test_smoke.py\n@@ -1,2 +1,3 @@\n def test_smoke():\n"
+                "-    assert False\n+    assert True\n+# repaired\n")
+        return (
+            ModelChunk(
+                content=json.dumps(
+                    {
+                        "schema_version": 1,
+                        "summary": "Repair the failing smoke test.",
+                        "patches": [{"path": "tests/test_smoke.py", "unified_diff": diff}],
+                    }
+                )
+            ),
+        )
+
+    def close(self) -> None:
+        pass
+
+
 def _git(path: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
 
@@ -144,6 +172,12 @@ def test_task_can_be_selected_again_after_restart_without_model(tmp_path) -> Non
 def test_verify_without_a_task_creates_no_state(tmp_path) -> None:
     output = StringIO()
     InteractiveSession(project=tmp_path, input=StringIO("/verify\n/exit\n"), output=output).run()
+    assert "请先使用 /task 选择任务" in output.getvalue()
+
+
+def test_repair_without_a_task_creates_no_state(tmp_path) -> None:
+    output = StringIO()
+    InteractiveSession(project=tmp_path, input=StringIO("/repair\n/exit\n"), output=output).run()
     assert "请先使用 /task 选择任务" in output.getvalue()
 
 
@@ -255,6 +289,43 @@ def test_verify_replays_the_applied_diff_and_creates_a_change_handoff(tmp_path, 
     assert len(list((root / "tool-runs").glob("*.json"))) == 3
     assert (root / "artifacts/change-handoff.json").is_file()
     assert (tmp_path / "source/tracked.py").read_text(encoding="utf-8") == "value = 1\n"
+
+
+def test_repair_replays_the_parent_diff_before_human_approved_apply(tmp_path, monkeypatch) -> None:
+    project = _interactive_project(tmp_path)
+    settings = tmp_path / "settings"
+    monkeypatch.setenv("LIVE_KEY", "unit-secret")
+    port = RepairLoopPort()
+    models = ModelSelectionService(settings, port_factory=lambda *_: port)
+    models.add(ProviderConnection(connection_id="local", base_url="https://example.test/v1", timeout_seconds=10,
+        credential_ref="env:LIVE_KEY", revision=3), ModelEntry(connection_id="local", model_id="coder",
+        display_name="Coder", output_limit=4096))
+    models.set_default("local/coder")
+    monkeypatch.setattr("yipilot.transport.cli.interactive.ModelSelectionService", lambda _path: models)
+    InteractiveSession(settings_dir=settings, project=project,
+        input=StringIO("/task\n2\n1\n0\n/run\n1\ntests/test_smoke.py\ny\n/exit\n"), output=StringIO()).run()
+    InteractiveSession(settings_dir=settings, project=project,
+        input=StringIO("/task\n2\n1\n0\n/apply\n1\ny\n/exit\n"), output=StringIO()).run()
+    InteractiveSession(settings_dir=settings, project=project,
+        input=StringIO("/task\n2\n1\n0\n/verify\ny\n/exit\n"), output=StringIO()).run()
+    failed = next(run for run in FileTaskStore(project).list_runs("1") if run.stage == "change_verification")
+    assert failed.status.value == "failed"
+    output = StringIO()
+    InteractiveSession(settings_dir=settings, project=project,
+        input=StringIO("/task\n2\n1\n0\n/repair\ny\n/exit\n"), output=output).run()
+    assert "Repair Proposal 已准备好" in output.getvalue()
+    InteractiveSession(settings_dir=settings, project=project,
+        input=StringIO("/task\n2\n1\n0\n/apply\n2\ny\n/exit\n"), output=StringIO()).run()
+    repairs = [run for run in FileTaskStore(project).list_runs("1") if run.stage == "code_repair"]
+    apply = [run for run in FileTaskStore(project).list_runs("1") if run.stage == "code_apply"][-1]
+    workspace = project / ".yipilot/tasks/1/repos/sample/workspaces" / apply.run_id
+    assert repairs[-1].status.value == "succeeded"
+    assert "assert True\n# repaired\n" in (workspace / "tests/test_smoke.py").read_text(encoding="utf-8")
+    assert (tmp_path / "source/tests/test_smoke.py").read_text(encoding="utf-8").endswith("assert True\n")
+    InteractiveSession(settings_dir=settings, project=project,
+        input=StringIO("/task\n2\n1\n0\n/verify\n2\ny\n/exit\n"), output=StringIO()).run()
+    verified = [run for run in FileTaskStore(project).list_runs("1") if run.stage == "change_verification"][-1]
+    assert verified.status.value == "succeeded"
 
 
 def test_task_selector_uses_create_current_and_back_choices(tmp_path, monkeypatch) -> None:
