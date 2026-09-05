@@ -1,5 +1,7 @@
 """Run-bound inputs and evidence contracts; no execution backend is provided."""
 
+import hashlib
+import json
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path, PureWindowsPath
@@ -40,6 +42,10 @@ class SandboxErrorCode(StrEnum):
     CONFLICT = "SANDBOX_CONFLICT"
     COPY_FAILED = "SANDBOX_COPY_FAILED"
     MANIFEST_INVALID = "SANDBOX_MANIFEST_INVALID"
+    OUTPUT_INVALID = "SANDBOX_OUTPUT_INVALID"
+    OUTPUT_DRIFT = "SANDBOX_OUTPUT_DRIFT"
+    OUTPUT_UNAPPROVED = "SANDBOX_OUTPUT_UNAPPROVED"
+    EVIDENCE_FAILED = "SANDBOX_EVIDENCE_FAILED"
 
 
 class SandboxBudgets(BaseModel):
@@ -226,3 +232,54 @@ class SourceManifest(SandboxAssociation):
         if paths != sorted(paths) or len({p.casefold() for p in paths}) != len(paths):
             raise ValueError("manifest paths must be sorted and unique")
         return self
+
+
+class SandboxOutputManifest(SandboxAssociation):
+    """Canonical content facts; hash covers canonical_bytes, without a clock value."""
+
+    request_fingerprint: Sha256
+    baseline_manifest_hash: Sha256
+    files: tuple[SourceFile, ...]
+
+    @model_validator(mode="after")
+    def validate_files(self) -> Self:
+        paths = [file.path for file in self.files]
+        if paths != sorted(paths) or len({p.casefold() for p in paths}) != len(paths):
+            raise ValueError("output files must be sorted and unique")
+        return self
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return (
+            json.dumps(
+                self.model_dump(mode="json"),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+
+    @property
+    def fingerprint(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+
+class SandboxDiffEvidence(SandboxAssociation):
+    """Trusted output evidence, not a Change Handoff or execution attestation."""
+
+    request_fingerprint: Sha256
+    result_fingerprint: Sha256
+    policy_revision: Identifier
+    baseline_manifest_hash: Sha256
+    output_manifest_hash: Sha256
+    patch_sha256: Sha256
+    approval_id: Identifier
+    created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def validate_created_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("created_at must include timezone")
+        return value

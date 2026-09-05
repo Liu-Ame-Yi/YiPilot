@@ -13,9 +13,12 @@ from yipilot.domain.execution import (
 )
 from yipilot.domain.sandbox import (
     SandboxBudgets,
+    SandboxDiffEvidence,
     SandboxMode,
+    SandboxOutputManifest,
     SandboxRequest,
     SandboxResult,
+    SourceFile,
 )
 
 
@@ -217,3 +220,38 @@ def test_result_rejects_incomplete_or_cross_run_evidence(
 ) -> None:
     with pytest.raises(ValidationError):
         result(tmp_path, **{field: value})
+
+
+def test_output_manifest_hash_is_stable_and_content_bound(tmp_path):
+    req = request(tmp_path)
+    manifest = SandboxOutputManifest(
+        task_id=req.task_id,
+        operation_id=req.operation_id,
+        run_id=req.run_id,
+        request_fingerprint=req.fingerprint,
+        baseline_manifest_hash=req.baseline_manifest_hash,
+        files=(
+            SourceFile(
+                path="app.py", sha256="a" * 64, size_bytes=10, git_mode="100644"
+            ),
+        ),
+    )
+    assert (
+        SandboxOutputManifest.model_validate_json(manifest.canonical_bytes) == manifest
+    )
+    assert (
+        manifest.model_copy(update={"run_id": "other"}).fingerprint
+        != manifest.fingerprint
+    )
+    assert manifest.model_copy(update={"files": ()}).fingerprint != manifest.fingerprint
+    with pytest.raises(ValidationError):
+        manifest.files[0].size_bytes = 11
+    with pytest.raises(ValidationError):
+        manifest.run_id = "other"
+
+
+def test_output_evidence_requires_timestamp_and_hashes():
+    with pytest.raises(ValidationError):
+        SandboxDiffEvidence.model_validate(
+            {"task_id": "1", "operation_id": "op", "run_id": "run"}
+        )

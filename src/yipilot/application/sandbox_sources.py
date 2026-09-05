@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import stat
@@ -95,6 +96,86 @@ def _text(content: bytes) -> None:
         ) from error
     if b"\x00" in content or len(content) > _MAX_FILE_BYTES:
         raise DomainError(Code.SOURCE_DENIED, "binary or oversized source denied")
+
+
+def scan_source_tree(
+    tree: Path, frozen_files: tuple[SourceFile, ...]
+) -> tuple[tuple[SourceFile, ...], dict[str, bytes]]:
+    """Read bounded regular-file facts after the Worker has stopped.
+
+    Windows does not expose Git executable bits; existing Git modes are preserved
+    and new files are non-executable. POSIX mode changes are represented explicitly.
+    """
+    _plain_path(tree)
+    if not tree.is_dir():
+        raise DomainError(Code.MANIFEST_INVALID, "source tree missing")
+    modes = {f.path: f.git_mode for f in frozen_files}
+    files: list[SourceFile] = []
+    contents = {}
+    seen: set[str] = set()
+    pending = [tree]
+    total = 0
+    while pending:
+        for path in pending.pop().iterdir():
+            _plain_path(path)
+            relative = source_path(path.relative_to(tree).as_posix())
+            if relative.casefold() in seen or len(seen) >= _MAX_FILES * 2:
+                raise DomainError(Code.PATH_DENIED, "case alias or oversized tree")
+            seen.add(relative.casefold())
+            if _excluded(relative):
+                raise DomainError(Code.SOURCE_DENIED, "excluded source entry")
+            if path.is_dir():
+                pending.append(path)
+                continue
+            before = path.lstat()
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise DomainError(
+                    Code.PATH_DENIED, "source is no longer a regular file"
+                )
+            if before.st_size > _MAX_FILE_BYTES or len(files) >= _MAX_FILES:
+                raise DomainError(Code.SOURCE_DENIED, "oversized source")
+            with path.open("rb") as handle:
+                opened = os.fstat(handle.fileno())
+                if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise DomainError(Code.OUTPUT_DRIFT, "source replaced during read")
+                data = handle.read(_MAX_FILE_BYTES + 1)
+            _plain_path(path)
+            after = path.lstat()
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_mode,
+                before.st_nlink,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_mode,
+                after.st_nlink,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ) or len(data) != before.st_size:
+                raise DomainError(Code.OUTPUT_DRIFT, "source changed during read")
+            _text(data)
+            total += len(data)
+            if total > _MAX_TREE_BYTES:
+                raise DomainError(Code.SOURCE_DENIED, "source tree budget exceeded")
+            mode = modes.get(relative, "100644")
+            if os.name != "nt":
+                mode = "100755" if before.st_mode & 0o111 else "100644"
+            files.append(
+                SourceFile(
+                    path=relative,
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    size_bytes=len(data),
+                    git_mode=mode,
+                )
+            )
+            contents[relative] = data
+    return tuple(sorted(files, key=lambda file: file.path)), contents
 
 
 class SandboxSourceService:
@@ -359,38 +440,8 @@ class SandboxSourceService:
             ):
                 raise ValueError("manifest changed")
             for tree in (prepared.baseline, prepared.execution):
-                if not tree.is_dir():
-                    raise ValueError("source tree missing")
-                actual = {}
-                pending = [tree]
-                seen: set[str] = set()
-                total = 0
-                while pending:
-                    for path in pending.pop().iterdir():
-                        _plain_path(path)
-                        relative = source_path(path.relative_to(tree).as_posix())
-                        if relative.casefold() in seen or len(seen) >= _MAX_FILES * 2:
-                            raise ValueError("case alias or oversized tree")
-                        seen.add(relative.casefold())
-                        if _excluded(relative):
-                            raise ValueError("excluded source entry")
-                        if path.is_dir():
-                            pending.append(path)
-                        else:
-                            if path.stat().st_size > _MAX_FILE_BYTES:
-                                raise ValueError("oversized source")
-                            total += path.stat().st_size
-                            if total > _MAX_TREE_BYTES:
-                                raise ValueError("source tree budget exceeded")
-                            data = path.read_bytes()
-                            _text(data)
-                            actual[relative] = (
-                                hashlib.sha256(data).hexdigest(),
-                                len(data),
-                            )
-                if tree == prepared.baseline and actual != {
-                    f.path: (f.sha256, f.size_bytes) for f in manifest.files
-                }:
+                actual, _ = scan_source_tree(tree, manifest.files)
+                if tree == prepared.baseline and actual != manifest.files:
                     raise ValueError("baseline changed")
         except (OSError, ValueError, ValidationError) as error:
             raise DomainError(

@@ -27,7 +27,14 @@ _REPOSITORY_ENVIRONMENT_VARIABLES = frozenset(
     }
 )
 _CONTROLLED_NO_INDEX_OPTIONS = frozenset(
-    {"--no-index", "--binary", "--stat", "--no-ext-diff", "--no-textconv"}
+    {
+        "--no-index",
+        "--binary",
+        "--stat",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-prefix",
+    }
 )
 _Output = TypeVar("_Output", str, bytes)
 
