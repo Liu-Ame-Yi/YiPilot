@@ -1,4 +1,4 @@
-"""Run-bound inputs and evidence contracts; no execution backend is provided."""
+"""Run-bound inputs and evidence contracts for offline Docker execution."""
 
 import hashlib
 import json
@@ -46,6 +46,8 @@ class SandboxErrorCode(StrEnum):
     OUTPUT_DRIFT = "SANDBOX_OUTPUT_DRIFT"
     OUTPUT_UNAPPROVED = "SANDBOX_OUTPUT_UNAPPROVED"
     EVIDENCE_FAILED = "SANDBOX_EVIDENCE_FAILED"
+    CANCELLED = "SANDBOX_CANCELLED"
+    CLEANUP_FAILED = "SANDBOX_CLEANUP_FAILED"
 
 
 class SandboxBudgets(BaseModel):
@@ -133,7 +135,7 @@ class SandboxRequest(SandboxAssociation):
 
 
 class SandboxResult(SandboxAssociation):
-    """Required facts from a future Worker; never substitutes for trusted validation."""
+    """Required Worker facts; never substitutes for trusted output validation."""
 
     request_fingerprint: Sha256
     container_id: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
