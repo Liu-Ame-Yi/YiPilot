@@ -21,7 +21,6 @@ from yipilot.domain.execution import (
     ExecutionPolicy,
     Sha256,
     TaskId,
-    _fingerprint_model,
 )
 
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")]
@@ -86,10 +85,18 @@ class SandboxRequest(SandboxAssociation):
     tool_id: Identifier
     argv: tuple[str, ...] = Field(min_length=1, max_length=64)
     budgets: SandboxBudgets
+    input_manifest_hash: Sha256 | None = None
 
     @property
     def fingerprint(self) -> str:
-        return _fingerprint_model(self)
+        values = self.model_dump(mode="json")
+        if self.input_manifest_hash is None:
+            values.pop("input_manifest_hash")
+        return hashlib.sha256(
+            json.dumps(
+                values, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            ).encode()
+        ).hexdigest()
 
     @model_validator(mode="after")
     def validate_request(self, info: ValidationInfo) -> Self:

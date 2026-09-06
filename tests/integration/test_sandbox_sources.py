@@ -473,6 +473,48 @@ def approve_output(s):
     FileApprovalStore(s.store).save(s.approval)
 
 
+@pytest.mark.parametrize("invalid", ["missing", "wrong_run", "wrong_hash", "unbound"])
+def test_worker_rejects_invalid_seed_before_any_docker_command(
+    output_setup, monkeypatch, invalid
+):
+    from yipilot.domain.execution import _fingerprint_model
+    from yipilot.infrastructure.docker_worker import DockerSandboxWorker
+
+    s = output_setup
+    seed = s.copies.manifest.model_copy(
+        update={
+            "files": module.scan_source_tree(
+                s.copies.execution, s.copies.manifest.files
+            )[0]
+        }
+    )
+    if invalid == "wrong_run":
+        seed = seed.model_copy(update={"run_id": "another-run"})
+    (s.root / "input-manifest.json").write_text(
+        seed.model_dump_json(), encoding="utf-8"
+    )
+    request = s.request.model_copy(
+        update={"input_manifest_hash": _fingerprint_model(seed)}
+    )
+    if invalid == "wrong_hash":
+        request = request.model_copy(update={"input_manifest_hash": "d" * 64})
+    elif invalid == "unbound":
+        request = request.model_copy(update={"input_manifest_hash": None})
+    worker = DockerSandboxWorker(
+        s.project,
+        s.policy,
+        s.copies,
+        input_manifest=None if invalid == "missing" else seed,
+    )
+
+    def forbidden(*args):
+        pytest.fail("invalid seed must not reach Docker")
+
+    monkeypatch.setattr(worker, "_cli", forbidden)
+    with pytest.raises(DomainError, match="SANDBOX_MANIFEST_INVALID"):
+        worker.execute(request)
+
+
 def collect_output(s):
     return s.output.collect(
         s.copies,

@@ -97,6 +97,8 @@ def test_immutable_registered_request_and_json_roundtrip(tmp_path: Path) -> None
         ("argv", ["python", "-m", "pytest"]),
         ("baseline_manifest_hash", "a" * 63),
         ("baseline_manifest_hash", "a" * 64 + "\n"),
+        ("input_manifest_hash", "x" * 64),
+        ("input_manifest_hash", 123),
         ("image_digest", "python:latest"),
         ("image_digest", "sha256:" + "G" * 64),
         ("execution_directory", "relative/execution"),
@@ -109,6 +111,14 @@ def test_request_rejects_invalid_inputs(
 ) -> None:
     with pytest.raises(ValidationError):
         request(tmp_path, **{field: value})
+
+
+def test_seed_hash_is_immutable_and_changes_request_binding(tmp_path):
+    original = request(tmp_path)
+    seeded = request(tmp_path, input_manifest_hash="c" * 64)
+    assert seeded.fingerprint != original.fingerprint
+    with pytest.raises(ValidationError):
+        seeded.input_manifest_hash = "d" * 64
 
 
 @pytest.mark.parametrize(

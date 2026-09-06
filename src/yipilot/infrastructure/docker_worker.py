@@ -20,8 +20,13 @@ from yipilot.application.sandbox_sources import (
     scan_source_tree,
 )
 from yipilot.domain.errors import DomainError
-from yipilot.domain.execution import ArtifactRef, ExecutionPolicy
-from yipilot.domain.sandbox import SandboxOutputManifest, SandboxRequest, SandboxResult
+from yipilot.domain.execution import ArtifactRef, ExecutionPolicy, _fingerprint_model
+from yipilot.domain.sandbox import (
+    SandboxOutputManifest,
+    SandboxRequest,
+    SandboxResult,
+    SourceManifest,
+)
 from yipilot.infrastructure.artifact_store import FileArtifactStore
 from yipilot.infrastructure.filesystem import atomic_write_bytes, project_path
 from yipilot.infrastructure.git_runner import GitRunner, _safe_stderr_summary
@@ -86,7 +91,12 @@ class DockerSandboxWorker:
     """Run one validated request; Control Plane state and Git stay outside Docker."""
 
     def __init__(
-        self, project_root: Path, policy: ExecutionPolicy, prepared: PreparedSources
+        self,
+        project_root: Path,
+        policy: ExecutionPolicy,
+        prepared: PreparedSources,
+        *,
+        input_manifest: SourceManifest | None = None,
     ) -> None:
         self._sources = SandboxSourceService(project_root, GitRunner())
         self._root = project_root.resolve(strict=True)
@@ -94,6 +104,7 @@ class DockerSandboxWorker:
         self._artifacts = FileArtifactStore(self._store)
         self._policy = policy
         self._prepared = prepared
+        self._input_manifest = input_manifest
         executable = (
             Path(os.environ.get("ProgramFiles", "C:/Program Files"))
             / "Docker/Docker/resources/bin/docker.exe"
@@ -277,7 +288,31 @@ class DockerSandboxWorker:
                 "SANDBOX_ASSOCIATION_INVALID", "Worker input does not belong to Run"
             )
         self._sources.validate(prepared)
-        if scan_source_tree(prepared.execution, manifest.files)[0] != manifest.files:
+        expected = manifest
+        if request.input_manifest_hash is not None:
+            candidate = self._input_manifest
+            path = prepared.execution.parent / "input-manifest.json"
+            _plain_path(path)
+            if (
+                candidate is None
+                or candidate.model_dump(exclude={"files"})
+                != manifest.model_dump(exclude={"files"})
+                or _fingerprint_model(candidate) != request.input_manifest_hash
+            ):
+                raise DomainError(
+                    "SANDBOX_MANIFEST_INVALID", "seed manifest is not bound to this Run"
+                )
+            try:
+                if SourceManifest.model_validate_json(path.read_bytes()) != candidate:
+                    raise ValueError("seed changed")
+            except (OSError, ValueError) as error:
+                raise DomainError(
+                    "SANDBOX_MANIFEST_INVALID", "seed evidence changed"
+                ) from error
+            expected = candidate
+        elif self._input_manifest is not None:
+            raise DomainError("SANDBOX_MANIFEST_INVALID", "unbound seed manifest")
+        if scan_source_tree(prepared.execution, expected.files)[0] != expected.files:
             raise DomainError(
                 "SANDBOX_MANIFEST_INVALID", "Worker input is not the frozen baseline"
             )

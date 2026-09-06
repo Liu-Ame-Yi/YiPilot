@@ -13,6 +13,10 @@ from yipilot.application.sandbox_output import (
     output_approval_fingerprint,
 )
 from yipilot.application.sandbox_sources import SandboxSourceService
+from yipilot.application.sandbox_verification import (
+    REVISION,
+    SandboxVerificationService,
+)
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     ApprovalDecision,
@@ -48,6 +52,7 @@ def worker_setup(tmp_path):
             git.run(["git", *args], cwd=source)
         (source / "worker.py").write_text(script, encoding="utf-8")
         for name, content in (files or {}).items():
+            (source / name).parent.mkdir(parents=True, exist_ok=True)
             (source / name).write_text(content, encoding="utf-8")
         git.run(["git", "add", "--", "worker.py", *(files or {})], cwd=source)
         git.run(["git", "commit", "-m", "fixture"], cwd=source)
@@ -420,3 +425,193 @@ def test_trusted_apply_rejects_filtered_base_without_materializing_credentials(
     assert not (
         worker._root / f".yipilot/tasks/1/repos/repo/workspaces/{request.run_id}"
     ).exists()
+
+
+def verification_fixture(worker_setup, *, test_code=None, value="value: int = 2\n"):
+    worker, request, copies = worker_setup(
+        "from pathlib import Path\nPath('src/value.py').write_text("
+        + repr(value)
+        + ")\n",
+        files={
+            "src/value.py": "value: int = 1\n",
+            "ruff.toml": '[lint]\nselect = ["E4", "E7", "E9", "F"]\n',
+            "tests/test_value.py": test_code
+            or "from pathlib import Path\n\ndef test_value():\n    assert '2' in Path('src/value.py').read_text()\n",
+        },
+    )
+    accepted = approve_fixture_output(worker, request, copies, worker.execute(request))
+    workspace = SandboxApplyService(worker._root, GitRunner()).apply(
+        copies, request, worker._policy, accepted
+    )
+    service = SandboxVerificationService(worker._root)
+    preparation = service.prepare(copies, request, worker._policy, accepted)
+    FileApprovalStore(worker._store).save(
+        ApprovalRecord(
+            approval_id="verification-approval",
+            task_id=request.task_id,
+            operation_id=preparation.operation_id,
+            run_id=preparation.run_id,
+            action_type="sandbox_verification",
+            policy_revision=REVISION,
+            target_fingerprint=preparation.approval_fingerprint,
+            decision=ApprovalDecision.APPROVED,
+            decided_at=datetime.now(UTC),
+        )
+    )
+    return worker, request, copies, accepted, workspace, service, preparation
+
+
+def test_sandbox_verification_creates_fresh_handoff(worker_setup):
+    worker, request, copies, accepted, workspace, service, preparation = (
+        verification_fixture(worker_setup)
+    )
+    record = service.run(
+        copies,
+        request,
+        worker._policy,
+        accepted,
+        preparation.run_id,
+        approval_id="verification-approval",
+    )
+    assert (
+        service.handoff(copies, request, worker._policy, accepted, preparation.run_id)
+        == record
+    )
+    root = worker._store.event_journal_path(preparation.run_id).parent
+    handoff = json.loads((root / record.relative_path).read_bytes())
+    assert handoff["trust_level"] == "sandboxed"
+    assert len(handoff["tool_runs"]) == 3
+    assert len({r["container_id"] for r in handoff["tool_runs"]}) == 3
+    assert all(
+        r["exit_code"] == 0 and r["network"] == "none" for r in handoff["tool_runs"]
+    )
+    assert (workspace.path / "src/value.py").read_text() == "value: int = 2\n"
+    with pytest.raises(DomainError, match="SANDBOX_CONFLICT"):
+        service.run(
+            copies,
+            request,
+            worker._policy,
+            accepted,
+            preparation.run_id,
+            approval_id="verification-approval",
+        )
+    child_root = worker._store.event_journal_path(preparation.requests[0].run_id).parent
+    state_path = child_root / "docker-worker/container-after.json"
+    original_state = state_path.read_bytes()
+    state = json.loads(original_state)
+    state["State"]["Status"] = "created"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    with pytest.raises(DomainError):
+        service.handoff(copies, request, worker._policy, accepted, preparation.run_id)
+    state_path.write_bytes(original_state)
+    for path in (
+        root / "harness/sandbox-verification-report.json",
+        root / "approvals/verification-approval.json",
+        child_root / "artifacts/docker-worker/stdout.bin",
+        child_root / "input-manifest.json",
+        child_root / "docker-worker/cleanup.json",
+        workspace.path / ".git",
+    ):
+        original = path.read_bytes()
+        with path.open("r+b") as handle:
+            handle.write(b"corrupted")
+            handle.truncate()
+        with pytest.raises(DomainError):
+            service.handoff(
+                copies, request, worker._policy, accepted, preparation.run_id
+            )
+        with path.open("r+b") as handle:
+            handle.write(original)
+            handle.truncate()
+    (workspace.path / "src/value.py").write_text("drift")
+    with pytest.raises(DomainError):
+        service.handoff(copies, request, worker._policy, accepted, preparation.run_id)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["pytest", "ruff", "mypy", "mutation", "approval", "seed", "cancel", "handoff"],
+)
+def test_sandbox_verification_failure_cannot_create_handoff(
+    worker_setup, monkeypatch, failure
+):
+    test_code = None
+    if failure == "pytest":
+        test_code = "def test_bad():\n    assert False\n"
+    elif failure == "ruff":
+        test_code = "import os\n\ndef test_ok():\n    assert True\n"
+    elif failure == "mutation":
+        test_code = "from pathlib import Path\n\ndef test_mutate():\n    Path('src/value.py').write_text('changed')\n"
+    worker, request, copies, accepted, _, service, preparation = verification_fixture(
+        worker_setup,
+        test_code=test_code,
+        value="value: int = '2'\n" if failure == "mypy" else "value: int = 2\n",
+    )
+    root = worker._store.event_journal_path(preparation.run_id).parent
+    cancel = threading.Event()
+    if failure == "approval":
+        (root / "approvals/verification-approval.json").unlink()
+    elif failure == "seed":
+        from pathlib import Path
+
+        (Path(preparation.requests[0].execution_directory) / "src/value.py").write_text(
+            "unapproved"
+        )
+    elif failure == "cancel":
+        cancel.set()
+    elif failure == "handoff":
+        from yipilot.infrastructure.artifact_store import FileArtifactStore
+
+        original = FileArtifactStore.write_bytes
+
+        def write(self, *args, **kwargs):
+            if kwargs.get("relative_path") == "artifacts/change-handoff.json":
+                raise OSError("fixture handoff failure")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(FileArtifactStore, "write_bytes", write)
+    with pytest.raises(DomainError):
+        service.run(
+            copies,
+            request,
+            worker._policy,
+            accepted,
+            preparation.run_id,
+            approval_id="verification-approval",
+            cancel_event=cancel,
+        )
+    assert not (root / "artifacts/change-handoff.json").exists()
+    assert worker._store.get_run(request.task_id, preparation.run_id).status.value == (
+        "cancelled" if failure == "cancel" else "failed"
+    )
+    with pytest.raises(DomainError):
+        service.handoff(copies, request, worker._policy, accepted, preparation.run_id)
+
+
+def test_verification_preparation_failure_cancels_only_its_new_runs(
+    worker_setup, monkeypatch
+):
+    from yipilot.application import sandbox_verification as module
+
+    worker, request, copies, accepted, _, service, preparation = verification_fixture(
+        worker_setup
+    )
+    previous = {r.run_id for r in worker._store.list_runs(request.task_id)}
+    original = module.atomic_write_bytes
+
+    def fail_seed(path, data):
+        if path.name == "input-manifest.json":
+            raise OSError("fixture seed failure")
+        original(path, data)
+
+    monkeypatch.setattr(module, "atomic_write_bytes", fail_seed)
+    with pytest.raises(DomainError, match="SANDBOX_EVIDENCE_FAILED"):
+        service.prepare(copies, request, worker._policy, accepted)
+    created = [
+        r for r in worker._store.list_runs(request.task_id) if r.run_id not in previous
+    ]
+    assert created and all(r.status.value == "cancelled" for r in created)
+    assert (
+        worker._store.get_run(request.task_id, preparation.run_id).status.value
+        == "pending"
+    )

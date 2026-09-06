@@ -199,6 +199,9 @@ class SandboxApplyService:
                             "output_manifest_hash": evidence.output_manifest_hash,
                             "base_sha": source.base_sha,
                             "index_tree": tree.decode(),
+                            "git_pointer_sha256": hashlib.sha256(
+                                git_pointer
+                            ).hexdigest(),
                             "workspace": str(workspace.path),
                             "handoff_created": False,
                         },
@@ -225,6 +228,89 @@ class SandboxApplyService:
                         "SANDBOX_EVIDENCE_FAILED", "trusted apply failed"
                     ) from error
                 raise
+
+    def verify(
+        self,
+        prepared: PreparedSources,
+        request: SandboxRequest,
+        policy: ExecutionPolicy,
+        evidence: SandboxDiffEvidence,
+    ) -> PreparedWorkspace:
+        """Revalidate the receipt and live worktree before verification or delivery."""
+        self._output.verify(prepared, request, policy, evidence)
+        root = self._store.event_journal_path(request.run_id).parent
+        self._require_stopped_worker(root, request)
+        try:
+            receipt = root / "sandbox-apply/result.json"
+            _plain_path(receipt)
+            value = json.loads(receipt.read_bytes())
+            source = prepared.manifest
+            target = project_path(
+                self._root,
+                ".yipilot",
+                "tasks",
+                request.task_id,
+                "repos",
+                source.repository_alias,
+                "workspaces",
+                request.run_id,
+            )
+            for path in (target / ".git", target.parent / f"{request.run_id}.json"):
+                _plain_path(path)
+                if not path.is_file():
+                    raise ValueError("worktree missing")
+            workspace = WorkspaceService(self._root, self._git).prepare(
+                request.task_id,
+                source.repository_alias,
+                request.run_id,
+                base_sha=source.base_sha,
+            )
+            if (
+                workspace.path != target
+                or workspace.base_sha != source.base_sha
+                or value
+                != {
+                    "schema_version": 1,
+                    "task_id": request.task_id,
+                    "operation_id": request.operation_id,
+                    "run_id": request.run_id,
+                    "request_fingerprint": request.fingerprint,
+                    "approval_id": evidence.approval_id,
+                    "patch_sha256": evidence.patch_sha256,
+                    "output_manifest_hash": evidence.output_manifest_hash,
+                    "base_sha": source.base_sha,
+                    "index_tree": self._run(
+                        target, "rev-parse", f"{source.base_sha}^{{tree}}"
+                    )
+                    .decode()
+                    .strip(),
+                    "git_pointer_sha256": hashlib.sha256(
+                        (target / ".git").read_bytes()
+                    ).hexdigest(),
+                    "workspace": str(target),
+                    "handoff_created": False,
+                }
+            ):
+                raise ValueError("apply receipt changed")
+            self._check_git(target, source.base_sha, value["index_tree"].encode())
+            if (
+                self._run(target, "symbolic-ref", "--short", "HEAD").decode().strip()
+                != workspace.branch
+            ):
+                raise ValueError("worktree branch changed")
+            output = self._output.inspect(prepared, request, policy)
+            if (
+                scan_source_tree(
+                    target, source.files, git_pointer=(target / ".git").read_bytes()
+                )[0]
+                != output.manifest.files
+            ):
+                raise ValueError("applied worktree changed")
+            return workspace
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise DomainError(
+                "SANDBOX_EVIDENCE_FAILED", "apply evidence is stale"
+            ) from error
 
     def _check_git(self, workspace: Path, base: str, tree: bytes) -> None:
         if (
