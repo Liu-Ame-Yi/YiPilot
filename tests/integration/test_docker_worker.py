@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from yipilot.application.repo_service import RepoService
+from yipilot.application.sandbox_apply import SandboxApplyService
 from yipilot.application.sandbox_output import (
     SandboxOutputService,
     output_approval_fingerprint,
@@ -35,7 +36,7 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def worker_setup(tmp_path):
-    def prepare(script, *, timeout=10.0, output=8192):
+    def prepare(script, *, timeout=10.0, output=8192, files=None):
         source = tmp_path / "source"
         source.mkdir()
         git = GitRunner()
@@ -46,7 +47,9 @@ def worker_setup(tmp_path):
         ):
             git.run(["git", *args], cwd=source)
         (source / "worker.py").write_text(script, encoding="utf-8")
-        git.run(["git", "add", "worker.py"], cwd=source)
+        for name, content in (files or {}).items():
+            (source / name).write_text(content, encoding="utf-8")
+        git.run(["git", "add", "--", "worker.py", *(files or {})], cwd=source)
         git.run(["git", "commit", "-m", "fixture"], cwd=source)
         base = git.run(["git", "rev-parse", "HEAD"], cwd=source).stdout.strip()
         project = tmp_path / "project"
@@ -99,21 +102,7 @@ def worker_setup(tmp_path):
     return prepare
 
 
-def test_real_offline_non_root_worker_writes_only_execution(worker_setup):
-    worker, request, copies = worker_setup(
-        "from pathlib import Path\nPath('changed.txt').write_text('inside')\nprint('done')\n"
-    )
-    result = worker.execute(request)
-    assert result.exit_code == 0 and result.reason == "exited"
-    assert result.network == "none" and result.effective_uid == 10001
-    assert result.fallback_occurred is False
-    assert (copies.execution / "changed.txt").read_text() == "inside"
-    assert not (copies.baseline / "changed.txt").exists()
-    evidence = copies.execution.parent / "docker-worker"
-    assert json.loads((evidence / "cleanup.json").read_bytes())["container_removed"]
-    before = json.loads((evidence / "container-before.json").read_bytes())
-    assert before["HostConfig"]["ReadonlyRootfs"]
-    assert before["HostConfig"]["NetworkMode"] == "none"
+def approve_fixture_output(worker, request, copies, result):
     output = SandboxOutputService(worker._root, GitRunner())
     candidate = output.inspect(copies, request, worker._policy)
     FileApprovalStore(worker._store).save(
@@ -139,7 +128,39 @@ def test_real_offline_non_root_worker_writes_only_execution(worker_setup):
         approved_patch_sha256=candidate.patch_sha256,
         approval_id="fixture-output",
     )
-    assert b"+inside" in output.verify(copies, request, worker._policy, accepted)
+    output.verify(copies, request, worker._policy, accepted)
+    return accepted
+
+
+def test_real_offline_non_root_worker_writes_only_execution(worker_setup):
+    worker, request, copies = worker_setup(
+        "from pathlib import Path\nPath('changed.txt').write_text('inside')\nprint('done')\n"
+    )
+    result = worker.execute(request)
+    assert result.exit_code == 0 and result.reason == "exited"
+    assert result.network == "none" and result.effective_uid == 10001
+    assert result.fallback_occurred is False
+    assert (copies.execution / "changed.txt").read_text() == "inside"
+    assert not (copies.baseline / "changed.txt").exists()
+    evidence = copies.execution.parent / "docker-worker"
+    assert json.loads((evidence / "cleanup.json").read_bytes())["container_removed"]
+    before = json.loads((evidence / "container-before.json").read_bytes())
+    assert before["HostConfig"]["ReadonlyRootfs"]
+    assert before["HostConfig"]["NetworkMode"] == "none"
+    accepted = approve_fixture_output(worker, request, copies, result)
+    workspace = SandboxApplyService(worker._root, GitRunner()).apply(
+        copies, request, worker._policy, accepted
+    )
+    assert (workspace.path / "changed.txt").read_text() == "inside"
+    assert not (worker._root.parent / "source/changed.txt").exists()
+    assert (
+        GitRunner().run(["git", "rev-parse", "HEAD"], cwd=workspace.path).stdout.strip()
+        == copies.manifest.base_sha
+    )
+    with pytest.raises(DomainError, match="SANDBOX_CONFLICT"):
+        SandboxApplyService(worker._root, GitRunner()).apply(
+            copies, request, worker._policy, accepted
+        )
 
 
 def test_timeout_kills_container_and_descendants(worker_setup):
@@ -280,3 +301,122 @@ def test_worker_created_control_directory_is_rejected_after_cleanup(worker_setup
     assert json.loads((evidence / "cleanup.json").read_bytes())["container_removed"]
     assert not (evidence / "result.json").exists()
     assert not (copies.baseline / ".git").exists()
+
+
+@pytest.mark.parametrize("change", ["edit", "delete"])
+def test_trusted_apply_preserves_exact_worker_bytes(worker_setup, change):
+    script = (
+        "from pathlib import Path\nPath('worker.py').write_bytes(b'# updated\\r\\n')\n"
+        if change == "edit"
+        else "from pathlib import Path\nPath('worker.py').unlink()\nPath('empty.txt').touch()\n"
+    )
+    worker, request, copies = worker_setup(script)
+    accepted = approve_fixture_output(worker, request, copies, worker.execute(request))
+    workspace = SandboxApplyService(worker._root, GitRunner()).apply(
+        copies, request, worker._policy, accepted
+    )
+    if change == "edit":
+        assert (workspace.path / "worker.py").read_bytes() == b"# updated\r\n"
+    else:
+        assert not (workspace.path / "worker.py").exists()
+        assert (workspace.path / "empty.txt").read_bytes() == b""
+    assert (copies.baseline / "worker.py").read_text() == script
+
+
+@pytest.mark.parametrize(
+    "failure", ["cleanup", "approval", "drift", "destination", "evidence", "post_apply"]
+)
+def test_trusted_apply_fails_closed(worker_setup, monkeypatch, failure):
+    from yipilot.application import sandbox_apply as apply_module
+
+    worker, request, copies = worker_setup(
+        "from pathlib import Path\nPath('added').write_text('new')\n"
+    )
+    accepted = approve_fixture_output(worker, request, copies, worker.execute(request))
+    root = copies.execution.parent
+    service = SandboxApplyService(worker._root, GitRunner())
+    target = worker._root / f".yipilot/tasks/1/repos/repo/workspaces/{request.run_id}"
+    if failure == "cleanup":
+        (root / "docker-worker/cleanup.json").unlink()
+    elif failure == "approval":
+        (root / "approvals/fixture-output.json").unlink()
+    elif failure == "drift":
+        (copies.execution / "added").write_text("drift")
+    elif failure == "destination":
+        target.mkdir(parents=True)
+        (target / "owned.txt").write_text("preserve")
+    elif failure == "evidence":
+        original = apply_module.atomic_write_bytes
+
+        def fail_result(path, content):
+            if path == root / "sandbox-apply/result.json":
+                raise OSError("fixture disk failure")
+            original(path, content)
+
+        monkeypatch.setattr(apply_module, "atomic_write_bytes", fail_result)
+    else:
+        original_run = service._run
+
+        def drift(cwd, *args, **kwargs):
+            result = original_run(cwd, *args, **kwargs)
+            if args[0] == "write-tree" and (cwd / "added").exists():
+                (cwd / "added").write_text("unexpected")
+            return result
+
+        monkeypatch.setattr(service, "_run", drift)
+    with pytest.raises(DomainError):
+        service.apply(copies, request, worker._policy, accepted)
+    assert not (root / "sandbox-apply/result.json").exists()
+    if failure == "destination":
+        assert (target / "owned.txt").read_text() == "preserve"
+    elif failure in {"evidence", "post_apply"}:
+        assert (root / "sandbox-apply/failure.json").is_file()
+        with pytest.raises(DomainError, match="SANDBOX_CONFLICT"):
+            service.apply(copies, request, worker._policy, accepted)
+    else:
+        assert not target.exists()
+
+
+def test_trusted_apply_never_runs_checkout_hooks_or_filters(worker_setup, tmp_path):
+    worker, request, copies = worker_setup(
+        "from pathlib import Path\nPath('worker.py').write_text('# changed\\n')\n",
+        files={".gitattributes": "*.py filter=trap\n"},
+    )
+    accepted = approve_fixture_output(worker, request, copies, worker.execute(request))
+    git = GitRunner()
+    cache = RepoService(worker._root, git).get_metadata("1", "repo").cache_path
+    marker = tmp_path / "host-command-ran"
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    for name in ("post-checkout", "reference-transaction", "post-index-change"):
+        hook = hooks / name
+        hook.write_text(f'#!/bin/sh\necho unexpected > "{marker.as_posix()}"\n')
+        hook.chmod(0o755)
+    for key, value in (
+        ("core.hooksPath", str(hooks)),
+        ("filter.trap.smudge", f'echo unexpected > "{marker.as_posix()}"'),
+        ("filter.trap.clean", f'echo unexpected > "{marker.as_posix()}"'),
+        ("filter.trap.required", "true"),
+    ):
+        git.run(["git", "config", key, value], cwd=cache)
+    workspace = SandboxApplyService(worker._root, git).apply(
+        copies, request, worker._policy, accepted
+    )
+    assert not marker.exists()
+    assert (workspace.path / "worker.py").read_bytes() == b"# changed\n"
+
+
+def test_trusted_apply_rejects_filtered_base_without_materializing_credentials(
+    worker_setup,
+):
+    worker, request, copies = worker_setup(
+        "print('done')\n", files={".env": "fixture-secret"}
+    )
+    accepted = approve_fixture_output(worker, request, copies, worker.execute(request))
+    with pytest.raises(DomainError, match="SANDBOX_SOURCE_DENIED"):
+        SandboxApplyService(worker._root, GitRunner()).apply(
+            copies, request, worker._policy, accepted
+        )
+    assert not (
+        worker._root / f".yipilot/tasks/1/repos/repo/workspaces/{request.run_id}"
+    ).exists()

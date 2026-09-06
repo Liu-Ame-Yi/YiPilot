@@ -99,7 +99,10 @@ def _text(content: bytes) -> None:
 
 
 def scan_source_tree(
-    tree: Path, frozen_files: tuple[SourceFile, ...]
+    tree: Path,
+    frozen_files: tuple[SourceFile, ...],
+    *,
+    git_pointer: bytes | None = None,
 ) -> tuple[tuple[SourceFile, ...], dict[str, bytes]]:
     """Read bounded regular-file facts after the Worker has stopped.
 
@@ -109,6 +112,10 @@ def scan_source_tree(
     _plain_path(tree)
     if not tree.is_dir():
         raise DomainError(Code.MANIFEST_INVALID, "source tree missing")
+    if git_pointer is not None:
+        _plain_path(tree / ".git")
+        if not (tree / ".git").is_file() or (tree / ".git").read_bytes() != git_pointer:
+            raise DomainError(Code.OUTPUT_DRIFT, "worktree pointer missing or changed")
     modes = {f.path: f.git_mode for f in frozen_files}
     files: list[SourceFile] = []
     contents = {}
@@ -118,6 +125,12 @@ def scan_source_tree(
     while pending:
         for path in pending.pop().iterdir():
             _plain_path(path)
+            # Only a trusted consumer may supply the exact worktree pointer to skip.
+            # Worker trees always use the default, which denies every .git entry.
+            if path == tree / ".git" and git_pointer is not None:
+                if not path.is_file() or path.read_bytes() != git_pointer:
+                    raise DomainError(Code.OUTPUT_DRIFT, "worktree pointer changed")
+                continue
             relative = source_path(path.relative_to(tree).as_posix())
             if relative.casefold() in seen or len(seen) >= _MAX_FILES * 2:
                 raise DomainError(Code.PATH_DENIED, "case alias or oversized tree")

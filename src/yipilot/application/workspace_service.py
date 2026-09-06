@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -63,6 +64,7 @@ class WorkspaceService:
         run_id: str,
         *,
         base_sha: str | None = None,
+        checkout: bool = True,
     ) -> PreparedWorkspace:
         if not isinstance(run_id, str) or _RUN_ID.fullmatch(run_id) is None:
             raise DomainError("WORKSPACE_RUN_INVALID", "workspace run id is invalid")
@@ -116,13 +118,26 @@ class WorkspaceService:
                 )
 
             base = base_sha or metadata.head_sha
+            git_prefix = [
+                "git",
+                *([] if checkout else ["-c", f"core.hooksPath={os.devnull}"]),
+            ]
             self._git.run(
-                ["git", "rev-parse", "--verify", f"{base}^{{commit}}"],
+                [*git_prefix, "rev-parse", "--verify", f"{base}^{{commit}}"],
                 cwd=metadata.cache_path,
             )
-            self._git.run(["git", "branch", branch, base], cwd=metadata.cache_path)
             self._git.run(
-                ["git", "worktree", "add", str(workspace_path), branch],
+                [*git_prefix, "branch", branch, base], cwd=metadata.cache_path
+            )
+            self._git.run(
+                [
+                    *git_prefix,
+                    "worktree",
+                    "add",
+                    *([] if checkout else ["--no-checkout"]),
+                    str(workspace_path),
+                    branch,
+                ],
                 cwd=metadata.cache_path,
             )
             manifest = _WorkspaceManifestRecord(

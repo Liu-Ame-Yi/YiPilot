@@ -346,6 +346,20 @@ def test_hardlink_cannot_alias_baseline(setup) -> None:
         setup.service.validate(copies)
 
 
+def test_worktree_scan_exception_is_exact_and_never_applies_to_worker_tree(tmp_path):
+    pointer = b"gitdir: controller-owned\n"
+    (tmp_path / ".git").write_bytes(pointer)
+    with pytest.raises(DomainError, match="SANDBOX_SOURCE_DENIED"):
+        module.scan_source_tree(tmp_path, ())
+    assert module.scan_source_tree(tmp_path, (), git_pointer=pointer)[0] == ()
+    (tmp_path / ".git").write_bytes(b"gitdir: different\n")
+    with pytest.raises(DomainError, match="SANDBOX_OUTPUT_DRIFT"):
+        module.scan_source_tree(tmp_path, (), git_pointer=pointer)
+    (tmp_path / ".git").unlink()
+    with pytest.raises(DomainError, match="SANDBOX_OUTPUT_DRIFT"):
+        module.scan_source_tree(tmp_path, (), git_pointer=pointer)
+
+
 @pytest.fixture
 def output_setup(setup):
     s = setup
