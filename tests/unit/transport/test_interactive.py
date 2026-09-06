@@ -3,6 +3,7 @@ import subprocess
 from io import StringIO
 from pathlib import Path
 
+import pytest
 from prompt_toolkit.application.current import create_app_session
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -58,33 +59,6 @@ class ProposalPort:
     def close(self) -> None:
         pass
 
-
-class RepairLoopPort:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def stream(self, request):
-        self.calls += 1
-        if self.calls == 1:
-            diff = ("--- a/tests/test_smoke.py\n+++ b/tests/test_smoke.py\n@@ -1,2 +1,2 @@\n def test_smoke():\n"
-                "-    assert True\n+    assert False\n")
-        else:
-            diff = ("--- a/tests/test_smoke.py\n+++ b/tests/test_smoke.py\n@@ -1,2 +1,3 @@\n def test_smoke():\n"
-                "-    assert False\n+    assert True\n+# repaired\n")
-        return (
-            ModelChunk(
-                content=json.dumps(
-                    {
-                        "schema_version": 1,
-                        "summary": "Repair the failing smoke test.",
-                        "patches": [{"path": "tests/test_smoke.py", "unified_diff": diff}],
-                    }
-                )
-            ),
-        )
-
-    def close(self) -> None:
-        pass
 
 
 def _git(path: Path, *args: str) -> None:
@@ -228,31 +202,24 @@ def test_run_confirms_and_creates_a_live_patch_proposal_without_source_write(
     assert (project / ".yipilot/tasks/1/runs" / runs[0].run_id / "artifacts/patch-proposal.json").is_file()
 
 
-def test_apply_uses_only_a_new_worktree_after_exact_confirmation(tmp_path, monkeypatch) -> None:
+def test_apply_without_valid_image_fails_closed(tmp_path, monkeypatch) -> None:
     project = _interactive_project(tmp_path)
-    settings = tmp_path / "settings"
-    monkeypatch.setenv("LIVE_KEY", "unit-secret")
-    models = ModelSelectionService(settings, port_factory=lambda *_: ProposalPort())
-    models.add(
-        ProviderConnection(connection_id="local", base_url="https://example.test/v1", timeout_seconds=10, credential_ref="env:LIVE_KEY", revision=3),
-        ModelEntry(connection_id="local", model_id="coder", display_name="Coder", output_limit=4096),
-    )
-    models.set_default("local/coder")
-    monkeypatch.setattr("yipilot.transport.cli.interactive.ModelSelectionService", lambda _path: models)
-    InteractiveSession(settings_dir=settings, project=project,
-        input=StringIO("/task\n2\n1\n0\n/run\n1\ntracked.py\ny\n/exit\n"), output=StringIO()).run()
+    from yipilot.application.code_service import CodeService
+    from yipilot.domain.patch_proposal import PatchProposal
+    proposal = PatchProposal(summary="change", patches=({"path": "tracked.py",
+        "unified_diff": "--- a/tracked.py\n+++ b/tracked.py\n@@ -1 +1 @@\n-value = 1\n+value = 2\n"},))
+    monkeypatch.setattr(CodeService, "proposals", lambda *_: [{"proposal": proposal,
+        "proposal_run_id": "fixture", "model_selector": "fixture", "model_revision": 1,
+        "summary": "change", "paths": ["tracked.py"], "proposal_hash": "0" * 64,
+        "repository_alias": "sample", "base_sha": "0" * 40}])
+    monkeypatch.setenv("YIPILOT_SANDBOX_IMAGE_DIGEST", "mutable:tag")
+    monkeypatch.setattr(CodeService, "apply", lambda *_a, **_k: pytest.fail("host apply invoked"))
     output = StringIO()
-    InteractiveSession(settings_dir=settings, project=project,
-        input=StringIO("/task\n2\n1\n0\n/apply\n1\ny\n/exit\n"), output=output).run()
-
-    runs = FileTaskStore(project).list_runs("1")
-    apply_run = next(run for run in runs if run.stage == "code_apply")
-    workspace = project / ".yipilot/tasks/1/repos/sample/workspaces" / apply_run.run_id
-    assert apply_run.status.value == "succeeded"
-    assert (workspace / "tracked.py").read_text(encoding="utf-8") == "value = 2\n"
-    assert (tmp_path / "source/tracked.py").read_text(encoding="utf-8") == "value = 1\n"
-    assert "apply succeeded" in output.getvalue()
-    assert list((project / ".yipilot/tasks/1/runs" / apply_run.run_id / "approvals").glob("*.json"))
+    session = InteractiveSession(project=project, input=StringIO("1\ny\n"), output=output)
+    session.session_task_id = "1"
+    session._apply_proposal()
+    assert "succeeded" not in output.getvalue()
+    assert all(r.status.value != "running" for r in FileTaskStore(project).list_runs("1"))
 
 
 def test_apply_rejection_creates_no_apply_run(tmp_path, monkeypatch) -> None:
@@ -272,60 +239,20 @@ def test_apply_rejection_creates_no_apply_run(tmp_path, monkeypatch) -> None:
     assert "未创建 apply Run，未写入任何文件。" in output.getvalue()
 
 
-def test_verify_replays_the_applied_diff_and_creates_a_change_handoff(tmp_path, monkeypatch) -> None:
+def test_verify_does_not_reuse_host_runs_and_repair_fails_closed(tmp_path, monkeypatch) -> None:
     project = _interactive_project(tmp_path)
-    settings = tmp_path / "settings"
-    monkeypatch.setenv("LIVE_KEY", "unit-secret")
-    models = ModelSelectionService(settings, port_factory=lambda *_: ProposalPort())
-    models.add(ProviderConnection(connection_id="local", base_url="https://example.test/v1", timeout_seconds=10, credential_ref="env:LIVE_KEY", revision=3), ModelEntry(connection_id="local", model_id="coder", display_name="Coder", output_limit=4096))
-    models.set_default("local/coder")
-    monkeypatch.setattr("yipilot.transport.cli.interactive.ModelSelectionService", lambda _path: models)
-    InteractiveSession(settings_dir=settings, project=project, input=StringIO("/task\n2\n1\n0\n/run\n1\ntracked.py\ny\n/exit\n"), output=StringIO()).run()
-    InteractiveSession(settings_dir=settings, project=project, input=StringIO("/task\n2\n1\n0\n/apply\n1\ny\n/exit\n"), output=StringIO()).run()
-    InteractiveSession(settings_dir=settings, project=project, input=StringIO("/task\n2\n1\n0\n/verify\ny\n/exit\n"), output=StringIO()).run()
-    run = next(run for run in FileTaskStore(project).list_runs("1") if run.stage == "change_verification")
-    root = project / ".yipilot/tasks/1/runs" / run.run_id
-    assert run.status.value == "succeeded"
-    assert len(list((root / "tool-runs").glob("*.json"))) == 3
-    assert (root / "artifacts/change-handoff.json").is_file()
-    assert (tmp_path / "source/tracked.py").read_text(encoding="utf-8") == "value = 1\n"
-
-
-def test_repair_replays_the_parent_diff_before_human_approved_apply(tmp_path, monkeypatch) -> None:
-    project = _interactive_project(tmp_path)
-    settings = tmp_path / "settings"
-    monkeypatch.setenv("LIVE_KEY", "unit-secret")
-    port = RepairLoopPort()
-    models = ModelSelectionService(settings, port_factory=lambda *_: port)
-    models.add(ProviderConnection(connection_id="local", base_url="https://example.test/v1", timeout_seconds=10,
-        credential_ref="env:LIVE_KEY", revision=3), ModelEntry(connection_id="local", model_id="coder",
-        display_name="Coder", output_limit=4096))
-    models.set_default("local/coder")
-    monkeypatch.setattr("yipilot.transport.cli.interactive.ModelSelectionService", lambda _path: models)
-    InteractiveSession(settings_dir=settings, project=project,
-        input=StringIO("/task\n2\n1\n0\n/run\n1\ntests/test_smoke.py\ny\n/exit\n"), output=StringIO()).run()
-    InteractiveSession(settings_dir=settings, project=project,
-        input=StringIO("/task\n2\n1\n0\n/apply\n1\ny\n/exit\n"), output=StringIO()).run()
-    InteractiveSession(settings_dir=settings, project=project,
-        input=StringIO("/task\n2\n1\n0\n/verify\ny\n/exit\n"), output=StringIO()).run()
-    failed = next(run for run in FileTaskStore(project).list_runs("1") if run.stage == "change_verification")
-    assert failed.status.value == "failed"
+    from yipilot.application.repair_service import RepairService
+    from yipilot.application.verification_service import VerificationService
+    monkeypatch.setattr(VerificationService, "prepare", lambda *_a, **_k: pytest.fail("host verify invoked"))
+    monkeypatch.setattr(RepairService, "repair", lambda *_a, **_k: pytest.fail("host repair invoked"))
     output = StringIO()
-    InteractiveSession(settings_dir=settings, project=project,
-        input=StringIO("/task\n2\n1\n0\n/repair\ny\n/exit\n"), output=output).run()
-    assert "Repair Proposal 已准备好" in output.getvalue()
-    InteractiveSession(settings_dir=settings, project=project,
-        input=StringIO("/task\n2\n1\n0\n/apply\n2\ny\n/exit\n"), output=StringIO()).run()
-    repairs = [run for run in FileTaskStore(project).list_runs("1") if run.stage == "code_repair"]
-    apply = [run for run in FileTaskStore(project).list_runs("1") if run.stage == "code_apply"][-1]
-    workspace = project / ".yipilot/tasks/1/repos/sample/workspaces" / apply.run_id
-    assert repairs[-1].status.value == "succeeded"
-    assert "assert True\n# repaired\n" in (workspace / "tests/test_smoke.py").read_text(encoding="utf-8")
-    assert (tmp_path / "source/tests/test_smoke.py").read_text(encoding="utf-8").endswith("assert True\n")
-    InteractiveSession(settings_dir=settings, project=project,
-        input=StringIO("/task\n2\n1\n0\n/verify\n2\ny\n/exit\n"), output=StringIO()).run()
-    verified = [run for run in FileTaskStore(project).list_runs("1") if run.stage == "change_verification"][-1]
-    assert verified.status.value == "succeeded"
+    session = InteractiveSession(project=project, input=StringIO(""), output=output)
+    session.session_task_id = "1"
+    session._verify_change()
+    session._repair_change()
+    assert "APPLY_RUN_NOT_FOUND" in output.getvalue()
+    assert "SANDBOX_UNAVAILABLE" in output.getvalue()
+    assert FileTaskStore(project).list_runs("1") == []
 
 
 def test_task_selector_uses_create_current_and_back_choices(tmp_path, monkeypatch) -> None:

@@ -38,6 +38,61 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.mark.parametrize("outcome", ["passed", "declined", "patch_failed", "verify_declined"])
+def test_interactive_sandbox_apply_and_verification(worker_setup, monkeypatch, outcome):
+    from io import StringIO
+
+    from yipilot.application.code_service import CodeService
+    from yipilot.domain.patch_proposal import PatchProposal
+    from yipilot.transport.cli.interactive import InteractiveSession
+
+    worker, _, copies = worker_setup("# fixture\n", files={
+        "src/value.py": "value: int = 1\n",
+        "tests/test_value.py": "def test_value():\n    assert True\n",
+        "ruff.toml": '[lint]\nselect = ["E4", "E7", "E9", "F"]\n',
+    })
+    accept_output = outcome != "declined"
+    proposal = PatchProposal(summary="change", patches=({"path": "src/value.py",
+        "unified_diff": "--- a/src/value.py\n+++ b/src/value.py\n@@ -1 +1 @@\n-value: int = 1\n+value: int = 2\n"},))
+    if outcome == "patch_failed":
+        proposal = PatchProposal.model_validate_json(proposal.model_dump_json().replace("value: int = 1", "value: int = 999"))
+    monkeypatch.setattr(CodeService, "proposals", lambda *_: [{"proposal": proposal,
+        "proposal_run_id": "fixture", "model_selector": "fixture", "model_revision": 1,
+        "summary": "change", "paths": ["src/value.py"], "proposal_hash": "0" * 64,
+        "repository_alias": "repo", "base_sha": copies.manifest.base_sha}])
+    monkeypatch.setattr(CodeService, "apply", lambda *_a, **_k: pytest.fail("host apply invoked"))
+    monkeypatch.setenv("YIPILOT_SANDBOX_IMAGE_DIGEST", IMAGE)
+    output = StringIO()
+    session = InteractiveSession(project=worker._root,
+        input=StringIO("1\ny\ny\n" + ("y\n" if accept_output else "n\n")), output=output)
+    session.session_task_id = "1"
+    session._apply_proposal()
+    store = FileTaskStore(worker._root)
+    run = next(r for r in store.list_runs("1") if r.stage == "sandbox_apply")
+    expected = "failed" if outcome == "patch_failed" else "succeeded" if accept_output else "cancelled"
+    assert run.status.value == expected, output.getvalue()
+    root = store.event_journal_path(run.run_id).parent
+    assert not (root / "execution/yipilot-approved-patch.diff").exists()
+    assert (root / "baseline/src/value.py").read_text() == "value: int = 1\n"
+    if outcome == "patch_failed":
+        assert not (root / "sandbox-apply").exists()
+        assert not (root / "sandbox-output").exists()
+        return
+    if accept_output:
+        session.input = StringIO("n\n" if outcome == "verify_declined" else "y\n")
+        session._verify_change()
+        verified = next(r for r in store.list_runs("1") if r.stage == "sandbox_verification")
+        if outcome == "verify_declined":
+            assert all(r.status.value == "cancelled" for r in store.list_runs("1") if r.operation_id == verified.operation_id)
+            assert not (store.event_journal_path(verified.run_id).parent / "artifacts/change-handoff.json").exists()
+            return
+        assert verified.status.value == "succeeded", output.getvalue()
+        assert "Change Handoff 已生成并重新校验" in output.getvalue()
+    else:
+        assert not (root / "sandbox-apply").exists()
+        assert not (root / "sandbox-output").exists()
+
+
 @pytest.fixture
 def worker_setup(tmp_path):
     def prepare(script, *, timeout=10.0, output=8192, files=None):

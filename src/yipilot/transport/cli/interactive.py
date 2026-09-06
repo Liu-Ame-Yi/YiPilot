@@ -1,6 +1,8 @@
 """Small stdio-only terminal transport for future-run model selection."""
 
+import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO, cast
 from uuid import uuid4
@@ -12,15 +14,21 @@ from prompt_toolkit.styles import Style
 from yipilot.application.code_service import CodeService
 from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.application.project_service import ProjectService
-from yipilot.application.repair_service import RepairCandidate, RepairService
 from yipilot.application.repo_service import RepoMetadata, RepoService
-from yipilot.application.verification_service import (
-    VerificationCandidate,
-    VerificationService,
+from yipilot.application.sandbox_cli import SandboxCliService, apply_policy
+from yipilot.application.sandbox_output import (
+    SandboxOutputService,
+    output_approval_fingerprint,
+)
+from yipilot.application.sandbox_verification import (
+    REVISION,
+    SandboxVerificationService,
 )
 from yipilot.domain.errors import DomainError
+from yipilot.domain.execution import ApprovalDecision, ApprovalRecord
 from yipilot.domain.patch_proposal import PatchProposal
 from yipilot.domain.provider import ModelEntry, ProviderConnection
+from yipilot.infrastructure.approval_store import FileApprovalStore
 from yipilot.infrastructure.git_runner import GitRunner
 from yipilot.infrastructure.secret_store import SecretStore
 from yipilot.infrastructure.task_store import TaskRecord
@@ -228,12 +236,6 @@ class InteractiveSession:
         recent = runs[-1]
         self._write(f"任务状态：{recent.status}")
         self._write(f"最近 Run：{recent.stage} · {recent.status} · {recent.run_id}")
-        verification = VerificationService(self.project or Path(".")).latest_status(task.task_id)
-        if verification is not None:
-            self._write(verification)
-        repair = RepairService(self.project or Path("."), settings_dir=self.settings_dir, model_selection_service=self.models).latest_status(task.task_id)
-        if repair is not None:
-            self._write(repair)
 
     def _run_live_proposal(self) -> None:
         if self.session_task_id is None:
@@ -325,143 +327,114 @@ class InteractiveSession:
             self._write(f"\n--- {patch.path}\n{patch.unified_diff}", end="")
         self._write(f"Proposal hash: {selected['proposal_hash']}")
         self._write(f"Repository: {selected['repository_alias']}  Base SHA: {selected['base_sha']}")
-        self._write("权限：仅写入新的隔离 worktree；不修改 source checkout，不提交、不推送、不创建 PR。")
+        self._write("权限：在离线 Docker 副本应用；输出 diff 再次审批后写入新的任务 worktree。")
         self._write("Approve this exact proposal? [y/N] ", end="")
         if self._readline().strip() not in {"y", "Y"}:
             self._write("未创建 apply Run，未写入任何文件。")
             return
-        self._write("Apply Run started — 正在验证 Proposal")
-        self._write("正在应用到隔离 worktree")
+        sandbox = SandboxCliService(self.project or Path("."))
+        request = None
         try:
-            result = service.apply(task.task_id, str(selected["proposal_run_id"]), request_id=str(uuid4()))
-        except DomainError as error:
-            self._error(error)
-            return
-        self._write("正在验证 diff")
-        if result.status == "succeeded":
-            self._write(f"apply succeeded — Run {result.run_id}")
-        else:
-            self._write(f"apply failed — Run {result.run_id}: {result.error_code or 'APPLY_FAILED'}")
+            if "parent_diff" in selected:
+                raise DomainError("SANDBOX_UNAVAILABLE", "旧 Repair Proposal 尚未迁移；请生成新的 Proposal")
+            digest = os.environ.get("YIPILOT_SANDBOX_IMAGE_DIGEST", "")
+            if not digest:
+                self._write("本地已安装镜像的 sha256 digest：", end="")
+                digest = self._readline().strip()
+            request = sandbox.prepare(task.task_id, str(selected["repository_alias"]),
+                str(selected["base_sha"]), proposal, digest)
+            self._write(f"Run: {request.run_id}\nImage: {request.image_digest}")
+            self._write(f"network=none · UID 10001 · /workspace={request.execution_directory}")
+            self._write(f"预算：{request.budgets.model_dump_json()}")
+            approval = self._sandbox_approval(sandbox, request.task_id, request.operation_id,
+                request.run_id, "sandbox_execution", request.fingerprint, request.policy_revision)
+            if approval is None:
+                sandbox.cancel(task.task_id, request.run_id)
+                return
+            result = sandbox.execute(request, approval)
+            copies, _ = sandbox.load(task.task_id, request.run_id)
+            output = SandboxOutputService(sandbox.root, sandbox.git).inspect(copies, request, apply_policy())
+            self._write(output.patch.decode("utf-8"))
+            self._write(f"可信 diff SHA256: {output.patch_sha256}")
+            approval = self._sandbox_approval(sandbox, request.task_id, request.operation_id,
+                request.run_id, "sandbox_output", output_approval_fingerprint(request, output.patch_sha256),
+                request.policy_revision)
+            if approval is None:
+                sandbox.cancel(task.task_id, request.run_id)
+                return
+            sandbox.apply(request, result, output.patch_sha256, approval)
+            self._write(f"apply succeeded — Run {request.run_id}；使用 /verify 进行 Docker 验证")
+        except (DomainError, ValueError, OSError) as error:
+            self._error(error if isinstance(error, DomainError) else DomainError("SANDBOX_UNAVAILABLE", str(error)))
+        finally:
+            if request is not None:
+                sandbox.cancel(task.task_id, request.run_id)
+
+    def _sandbox_approval(self, service: SandboxCliService, task_id: str, operation_id: str,
+        run_id: str, action: str, fingerprint: str, revision: str) -> str | None:
+        self._write(f"批准 {action} · {fingerprint}？[y/N] ", end="")
+        if self._readline().strip() not in {"y", "Y"}:
+            self._write("已取消；不会回退到宿主机执行。")
+            return None
+        record = ApprovalRecord(approval_id=str(uuid4()), task_id=task_id,
+            operation_id=operation_id, run_id=run_id, action_type=action,
+            target_fingerprint=fingerprint, policy_revision=revision,
+            decision=ApprovalDecision.APPROVED, decided_at=datetime.now(UTC))
+        FileApprovalStore(service.store).save(record)
+        return record.approval_id
 
     def _verify_change(self) -> None:
         if self.session_task_id is None:
             self._write("TASK_SELECTION_REQUIRED: 请先使用 /task 选择任务")
             return
-        service = VerificationService(self.project or Path("."))
+        sandbox = SandboxCliService(self.project or Path("."))
+        prepared = None
         try:
-            task = self.tasks.show_task(self.session_task_id)
-            candidates = service.candidates(task.task_id)
-        except DomainError as error:
-            self._error(error)
-            return
-        if not candidates:
-            self._write("APPLY_RUN_NOT_FOUND: 当前任务没有可验证的已应用 Proposal")
-            return
-        selected = candidates[0] if len(candidates) == 1 else self._choose_verification(candidates)
-        if selected is None:
-            return
-        self._write("即将验证已应用变更")
-        self._write(f"任务：{task.task_id} · {task.title or '未命名任务'}")
-        self._write(f"Apply Run：{selected.apply_run_id}")
-        self._write(f"Proposal Run：{selected.proposal_run_id}")
-        self._write(f"Repository：{selected.repository_alias}")
-        self._write(f"基线 SHA：{selected.base_sha}")
-        self._write(f"当前 diff hash：{selected.diff_hash}")
-        self._write("将在隔离 worktree 中执行固定验证：")
-        self._write(f"- {__import__('sys').executable} -m pytest")
-        self._write("- ruff check src tests")
-        self._write("- mypy src")
-        self._write("权限范围：\n- 仅执行固定验证命令\n- 不调用模型\n- 不修改源代码\n- 不提交、不推送、不创建 PR")
-        self._write("继续？[y/N] ", end="")
-        if self._readline().strip() not in {"y", "Y"}:
-            self._write("已取消；未创建验证 Run，未执行命令，未修改源代码")
-            return
-        try:
-            prepared = service.prepare(task.task_id, selected.apply_run_id, request_id=str(uuid4()))
-            self._write(f"Verification Run {prepared.run_id} 已启动")
-            result = service.run(task.task_id, prepared.run_id, approvals=prepared.approvals,
-                on_progress=lambda tool_id: self._write(f"正在执行 {'pytest' if tool_id == 'verification-pytest' else tool_id.removeprefix('verification-')}…"))
-        except DomainError as error:
-            self._error(error)
-            return
-        for item in result.tool_results:
-            label = "pytest" if item.argv[1:] == ("-m", "pytest") else item.argv[0]
-            status = {"succeeded": "passed", "failed": "failed", "timed_out": "timed_out", "cancelled": "timed_out"}[item.status.value]
-            self._write(f"{label}：{status}")
-        self._write("Change Handoff 已生成" if result.status == "succeeded" else "验证失败，未生成成功 Handoff")
+            runs = [r for r in sandbox.store.list_runs(self.session_task_id)
+                if r.stage == "sandbox_apply" and r.status.value == "succeeded"]
+            if not runs:
+                self._write("APPLY_RUN_NOT_FOUND: 没有可验证的 sandbox apply Run；旧宿主机结果不能复用。")
+                return
+            for index, run in enumerate(runs, 1):
+                self._write(f"{index}. {run.run_id}")
+            if len(runs) == 1:
+                selected = runs[0]
+            else:
+                self._write("选择 Apply Run：", end="")
+                value = self._readline().strip()
+                if not value.isdigit() or not 1 <= int(value) <= len(runs):
+                    return
+                selected = runs[int(value) - 1]
+            copies, request, evidence = sandbox.accepted(self.session_task_id, selected.run_id)
+            service = SandboxVerificationService(sandbox.root)
+            prepared = service.prepare(copies, request, apply_policy(), evidence)
+            self._write(f"Apply Run: {selected.run_id} · diff: {evidence.patch_sha256}")
+            for item in prepared.requests:
+                self._write(f"{item.tool_id}: {' '.join(item.argv)} · image={item.image_digest}")
+                self._write(f"network=none · UID 10001 · 预算：{item.budgets.model_dump_json()}")
+            approval = self._sandbox_approval(sandbox, prepared.task_id, prepared.operation_id,
+                prepared.run_id, "sandbox_verification", prepared.approval_fingerprint, REVISION)
+            if approval is None:
+                for run in sandbox.store.list_runs(prepared.task_id):
+                    if run.operation_id == prepared.operation_id:
+                        sandbox.cancel(prepared.task_id, run.run_id)
+                return
+            service.run(copies, request, apply_policy(), evidence, prepared.run_id, approval_id=approval)
+            artifact = service.handoff(copies, request, apply_policy(), evidence, prepared.run_id)
+            self._write(f"Change Handoff 已生成并重新校验：{artifact.relative_path}")
+        except (DomainError, ValueError, OSError) as error:
+            self._error(error if isinstance(error, DomainError) else DomainError("SANDBOX_EVIDENCE_FAILED", str(error)))
+        finally:
+            if prepared is not None:
+                for run in sandbox.store.list_runs(prepared.task_id):
+                    if run.operation_id == prepared.operation_id:
+                        sandbox.cancel(prepared.task_id, run.run_id)
 
     def _repair_change(self) -> None:
         if self.session_task_id is None:
             self._write("请先使用 /task 选择任务")
             return
-        service = RepairService(self.project or Path("."), settings_dir=self.settings_dir, model_selection_service=self.models)
-        try:
-            task = self.tasks.show_task(self.session_task_id)
-            candidates = service.candidates(task.task_id)
-        except DomainError as error:
-            self._error(error)
-            return
-        if not candidates:
-            self._write("当前任务没有可修复的验证失败记录")
-            return
-        selected = candidates[0] if len(candidates) == 1 else self._choose_repair(candidates)
-        if selected is None:
-            return
-        try:
-            resolved = self.models.resolve(session_selector=self.session_selector)
-        except DomainError as error:
-            self._error(error)
-            return
-        self._write("即将开始有限 AI 修复 Proposal")
-        self._write(f"任务：{task.task_id} · {task.title or '未命名任务'}")
-        self._write(f"失败验证 Run：{selected.verification_run_id}")
-        self._write(f"当前修复次数：{selected.attempt} / 2")
-        self._write(f"模型：{resolved.selector}（revision {resolved.connection_revision}）")
-        self._write("输入范围：\n- 原始开发目标\n- 当前已应用 diff 摘要\n- 已批准任务文档\n- 失败 pytest / ruff / mypy 的脱敏、截断诊断\n- 受限 worktree 上下文")
-        self._write("限制：\n- 最多 2 次修复\n- 有限模型输出、上下文、文件数、diff 大小与总时长\n- 仅生成 Repair PatchProposal\n- 不修改源代码\n- 不执行 shell\n- 不提交、不推送、不创建 PR")
-        self._write("继续？[y/N] ", end="")
-        if self._readline().strip() not in {"y", "Y"}:
-            self._write("已取消；未创建 Repair Run，未调用模型，未修改源代码")
-            return
-        try:
-            result = service.repair(task.task_id, selected.verification_run_id, model_selector=resolved.selector, request_id=str(uuid4()))
-        except DomainError as error:
-            self._error(error)
-            return
-        self._write(f"Repair Run {result.run_id} 已启动")
-        self._write("Turn turn-1 已启动 — 正在分析验证失败")
-        self._write("模型响应处理中…")
-        if result.status == "succeeded":
-            self._write("Turn turn-1 已完成 — Repair PatchProposal 已校验")
-            self._write("Repair Proposal 已准备好；请审阅后使用 /apply 批准应用")
-        else:
-            self._write(f"Repair Run 失败：{result.error_code or 'REPAIR_FAILED'}")
-
-    def _choose_repair(self, candidates: list[RepairCandidate]) -> RepairCandidate | None:
-        rows = [(item.verification_run_id, f"{item.verification_run_id} · {item.repository_alias} · {item.parent_diff_hash[:12]}") for item in candidates]
-        if self._selector_enabled():
-            selected = self._pick("选择失败 verification Run", "↑/↓ 选择 · Enter 确定 · Esc 返回", rows)
-            return next((item for item in candidates if item.verification_run_id == selected), None)
-        self._write("选择失败 verification Run")
-        for index, (_, label) in enumerate(rows, 1):
-            self._write(f"{index}. {label}")
-        self._write("0. 返回")
-        self._write("请选择：", end="")
-        choice = self._readline().strip()
-        return candidates[int(choice) - 1] if choice.isdigit() and 1 <= int(choice) <= len(candidates) else None
-
-    def _choose_verification(self, candidates: list[VerificationCandidate]) -> VerificationCandidate | None:
-        rows = [(item.apply_run_id, f"{item.apply_run_id} · {item.repository_alias} · {item.diff_hash[:12]}") for item in candidates]
-        if self._selector_enabled():
-            selected = self._pick("选择已应用 Proposal", "↑/↓ 选择 · Enter 确定 · Esc 返回", rows)
-            return next((item for item in candidates if item.apply_run_id == selected), None)
-        self._write("选择已应用 Proposal")
-        for index, (_, label) in enumerate(rows, 1):
-            self._write(f"{index}. {label}")
-        self._write("0. 返回")
-        self._write("请选择：", end="")
-        choice = self._readline().strip()
-        return candidates[int(choice) - 1] if choice.isdigit() and 1 <= int(choice) <= len(candidates) else None
+        self._write("SANDBOX_UNAVAILABLE: /repair 尚未接入沙箱诊断；请审阅失败证据并使用 /run 生成新 Proposal。")
 
     def _choose_proposal(self, proposals: list[dict[str, object]]) -> dict[str, object] | None:
         rows = [(str(item["proposal_run_id"]), f"{item['proposal_run_id']} · {item['summary']}") for item in proposals]

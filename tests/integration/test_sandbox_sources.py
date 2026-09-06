@@ -90,6 +90,50 @@ def prepare(s):
     return s.service.prepare(s.task, "repo", s.run, s.base)
 
 
+def test_cli_prepares_frozen_patch_data_and_requires_exact_human_approval(setup, monkeypatch):
+    from yipilot.application.sandbox_cli import SandboxCliService
+    from yipilot.domain.patch_proposal import PatchProposal
+    from yipilot.infrastructure.docker_worker import DockerSandboxWorker
+
+    s = setup
+    monkeypatch.setattr(DockerSandboxWorker, "execute", lambda *_a, **_k: pytest.fail("Worker invoked"))
+    service = SandboxCliService(s.project)
+    proposal = PatchProposal(summary="change", patches=({"path": "app.py",
+        "unified_diff": "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-value = 1\n+value = 3\n"},))
+    request = service.prepare("1", "repo", s.base, proposal, "sha256:" + "a" * 64)
+    copies, loaded = service.load("1", request.run_id)
+    assert loaded == request
+    assert (copies.baseline / "app.py").read_bytes() == b"value = 1\n"
+    assert (copies.execution / "app.py").read_bytes() == b"value = 1\n"
+    assert request.input_manifest_hash
+    with pytest.raises(DomainError, match="approval"):
+        service.execute(request, "missing")
+    approval = ApprovalRecord(approval_id="fixture", task_id="1", operation_id=request.operation_id,
+        run_id=request.run_id, action_type="sandbox_execution", target_fingerprint=request.fingerprint,
+        policy_revision=request.policy_revision, decision=ApprovalDecision.APPROVED,
+        decided_at=datetime.now(UTC), simulation_only=True)
+    FileApprovalStore(s.store).save(approval)
+    with pytest.raises(DomainError, match="human approval"):
+        service.execute(request, approval.approval_id)
+    service.cancel("1", request.run_id)
+    assert s.store.get_run("1", request.run_id).status.value == "cancelled"
+
+
+def test_cli_invalid_input_cancels_new_run_without_worker(setup):
+    from yipilot.application.sandbox_cli import SandboxCliService
+    from yipilot.domain.patch_proposal import PatchProposal
+
+    s = setup
+    proposal = PatchProposal(summary="change", patches=({"path": "app.py",
+        "unified_diff": "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-value = 1\n+value = 3\n"},))
+    with pytest.raises(ValueError):
+        SandboxCliService(s.project).prepare("1", "repo", s.base, proposal, "mutable:tag")
+    new = next(r for r in s.store.list_runs("1") if r.stage == "sandbox_apply")
+    assert new.status.value == "cancelled"
+    assert not (s.store.event_journal_path(new.run_id).parent / "sandbox-cli-request.json").exists()
+    assert not (s.store.event_journal_path(new.run_id).parent / "execution").exists()
+
+
 def assert_clean(s) -> None:
     assert not (s.root / "baseline").exists()
     assert not (s.root / "execution").exists()

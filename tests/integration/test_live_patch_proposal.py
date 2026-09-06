@@ -70,7 +70,10 @@ def _proposal(path: str = "tracked.py") -> str:
     return json.dumps({"schema_version": 1, "summary": "Update tracked value.", "patches": [{"path": path, "unified_diff": f"--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-value = 1\n+value = 2\n"}]})
 
 
-def test_fixed_port_uses_the_runtime_and_preserves_source(tmp_path: Path) -> None:
+def test_fixed_port_uses_the_runtime_and_preserves_source(tmp_path: Path, monkeypatch) -> None:
+    from yipilot.application.workspace_service import WorkspaceService
+
+    monkeypatch.setattr(WorkspaceService, "prepare", lambda *_a, **_k: pytest.fail("host checkout invoked"))
     project, source = _project(tmp_path)
     port = FixedPort(_proposal())
     result = CodeService(project, model_selection_service=_models(tmp_path, port)).generate("1001", "sample", "change tracked", context_files=("tracked.py",))
@@ -82,6 +85,10 @@ def test_fixed_port_uses_the_runtime_and_preserves_source(tmp_path: Path) -> Non
     assert "tracked.py" in port.requests[0].user_instruction
     assert "unselected.py" not in port.requests[0].user_instruction
     store = FileTaskStore(project)
+    run_root = store.event_journal_path(result.run_id).parent
+    assert (run_root / "baseline/tracked.py").read_bytes() == b"value = 1\n"
+    assert not list((project / ".yipilot/tasks/1001/repos/sample").glob("workspaces/*"))
+    assert CodeService(project).proposals("1001")[0]["base_sha"] == _git(source, "rev-parse", "HEAD")
     records = {item.relative_path for item in FileArtifactStore(store).list("1001", result.run_id)}
     assert {"artifacts/resolved-model.json", "artifacts/live-context.md", "artifacts/model-response.json", "artifacts/model-call.json", "artifacts/agent-plan.json", "artifacts/patch-proposal.json"} <= records
     assert [event.type for event in JsonlEventJournal(store.event_journal_path(result.run_id)).read_after(0)] == ["run.started", "turn.started", "model.delta", "model.message_completed", "proposal.created", "plan.created", "harness.completed", "turn.completed", "run.succeeded"]

@@ -12,7 +12,9 @@ from yipilot.application.agent_runtime import AgentRuntime
 from yipilot.application.approval import ApprovalGate, approval_action_type
 from yipilot.application.model_planner import ModelPlanner
 from yipilot.application.model_selection_service import ModelSelectionService
+from yipilot.application.repo_service import RepoService
 from yipilot.application.runtime_adapters import RegistryToolGateway
+from yipilot.application.sandbox_sources import SandboxSourceService
 from yipilot.application.tool_registry import ToolRegistry
 from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
@@ -29,6 +31,7 @@ from yipilot.domain.execution import (
 from yipilot.domain.model import ModelPort, ModelRequest, model_request_fingerprint
 from yipilot.domain.patch_proposal import PatchProposal
 from yipilot.domain.provider import ResolvedModel
+from yipilot.domain.sandbox import SourceManifest
 from yipilot.harness.models import HarnessStatus
 from yipilot.harness.report_store import (
     SDD_HARNESS_REPORT_NAME,
@@ -39,6 +42,7 @@ from yipilot.infrastructure.approval_store import FileApprovalStore
 from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.infrastructure.event_journal import JsonlEventJournal
 from yipilot.infrastructure.executors import LocalCommandRunner
+from yipilot.infrastructure.filesystem import project_path
 from yipilot.infrastructure.git_runner import GitRunner
 from yipilot.infrastructure.runtime_evidence import FileRuntimeEvidence
 from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
@@ -290,7 +294,17 @@ class CodeService:
                 base_sha = str(chain["base_sha"])
             else:
                 alias = str(payload["alias"])
-                base_sha = WorkspaceService(self._project_root, GitRunner()).prepare(task_id, alias, run_id).base_sha
+                manifest_path = self._store.event_journal_path(run_id).parent / "source-manifest.json"
+                if manifest_path.is_file():
+                    manifest = SourceManifest.model_validate_json(manifest_path.read_bytes())
+                    if (manifest.task_id, manifest.operation_id, manifest.run_id, manifest.repository_alias) != (task_id, run.operation_id, run_id, alias):
+                        raise ValueError("proposal source association changed")
+                    base_sha = manifest.base_sha
+                else:
+                    # Legacy proposals may read an existing receipt, never create a checkout.
+                    receipt = project_path(self._project_root, ".yipilot", "tasks", task_id,
+                        "repos", alias, "workspaces", f"{run_id}.json")
+                    base_sha = str(json.loads(receipt.read_bytes())["base_sha"])
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise DomainError("PATCH_PROPOSAL_INVALID", "proposal evidence is invalid") from error
         result = {"proposal_run_id": run_id, "proposal": proposal, "proposal_hash": record.sha256,
@@ -316,10 +330,12 @@ class CodeService:
         artifacts = FileArtifactStore(self._store)
         journal = _journal(self._store, run)
         try:
-            workspace = WorkspaceService(self._project_root, GitRunner()).prepare(run.task_id, alias, run.run_id)
+            metadata = RepoService(self._project_root, GitRunner()).get_metadata(run.task_id, alias)
+            copies = SandboxSourceService(self._project_root, GitRunner()).prepare(
+                self._store.get_task(run.task_id), alias, run, metadata.head_sha)
             self._write_resolved(artifacts, run, resolved, fingerprint)
             documents = self._approved_documents(run.task_id)
-            files = _context_files(workspace, context_files)
+            files = _context_files(copies.baseline, context_files)
             prompt = _prompt(instruction, documents, files)
             context = artifacts.write_bytes(
                 run.task_id, run.run_id, producer="code_service", relative_path=_CONTEXT_PATH,
@@ -459,7 +475,8 @@ def _record_value(record: ArtifactRecord) -> dict[str, object]:
             "sha256": record.sha256, "task_id": record.task_id}
 
 
-def _context_files(workspace: PreparedWorkspace, values: tuple[str, ...]) -> list[tuple[str, str, str]]:
+def _context_files(workspace: PreparedWorkspace | Path, values: tuple[str, ...]) -> list[tuple[str, str, str]]:
+    root = workspace if isinstance(workspace, Path) else workspace.path
     if len(values) > _MAX_CONTEXT_FILES or len(set(values)) != len(values):
         raise DomainError("MODEL_CONTEXT_INVALID", "context files must be unique and within the file limit")
     selected: list[tuple[str, str, str]] = []
@@ -470,8 +487,8 @@ def _context_files(workspace: PreparedWorkspace, values: tuple[str, ...]) -> lis
                 or bool(windows.root) or ".." in posix.parts or ".." in windows.parts
                 or ".git" in {part.casefold() for part in posix.parts}):
             raise DomainError("MODEL_CONTEXT_PATH_DENIED", "context path is not in the task worktree")
-        candidate = workspace.path.joinpath(*posix.parts)
-        if candidate.is_symlink() or not candidate.is_file() or workspace.path not in candidate.resolve(strict=True).parents:
+        candidate = root.joinpath(*posix.parts)
+        if candidate.is_symlink() or not candidate.is_file() or root not in candidate.resolve(strict=True).parents:
             raise DomainError("MODEL_CONTEXT_PATH_DENIED", "context file must be a regular task-worktree file")
         raw = candidate.read_bytes()
         total += len(raw)
