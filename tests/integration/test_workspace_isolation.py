@@ -5,12 +5,12 @@ from typing import Self
 
 import pytest
 
-from yipilot.application import workspace_service as workspace_service_module
-from yipilot.application.repo_service import RepoService
-from yipilot.application.workspace_service import WorkspaceService
 from yipilot.domain.errors import DomainError
-from yipilot.infrastructure.git_runner import GitRunner
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.workspace import workspace_service as workspace_service_module
+from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.repo_service import RepoService
+from yipilot.workspace.workspace_service import WorkspaceService
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:

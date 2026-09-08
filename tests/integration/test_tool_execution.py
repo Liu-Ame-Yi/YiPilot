@@ -7,8 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from yipilot.application.approval import ApprovalGate, approval_action_type
-from yipilot.application.tool_registry import ToolRegistry
+from tests.helpers.fake_executor import FakeExecutor
 from yipilot.domain.execution import (
     ApprovalDecision,
     ApprovalRecord,
@@ -20,11 +19,13 @@ from yipilot.domain.execution import (
     ToolRequest,
     ToolRunStatus,
 )
-from yipilot.infrastructure.approval_store import FileApprovalStore
-from yipilot.infrastructure.artifact_store import FileArtifactStore
-from yipilot.infrastructure.event_journal import JsonlEventJournal
-from yipilot.infrastructure.executors import FakeExecutor, LocalCommandRunner
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.persistence.approval_store import FileApprovalStore
+from yipilot.persistence.artifact_store import FileArtifactStore
+from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.security.approval import ApprovalGate, approval_action_type
+from yipilot.workspace.executors import LocalCommandRunner
+from yipilot.workspace.tool_registry import ToolRegistry
 
 
 class _CompletedProcess:

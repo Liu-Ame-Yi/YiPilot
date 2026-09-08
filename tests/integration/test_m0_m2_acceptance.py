@@ -4,12 +4,12 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from yipilot.application.workspace_service import WorkspaceService
 from yipilot.harness.git_workspace import GitWorkspaceHarness
-from yipilot.infrastructure.event_journal import JsonlEventJournal
-from yipilot.infrastructure.git_runner import GitRunner
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.task_store import FileTaskStore
 from yipilot.transport.cli.app import app
+from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.workspace_service import WorkspaceService
 
 runner = CliRunner()
 

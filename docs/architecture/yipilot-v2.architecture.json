@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Yipilot V2 · 自动研发架构提案",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {"id": "execution", "label": "阶段执行", "focus": ["entry", "workflow", "session", "tools", "workspace"], "note": "业务工作流驱动阶段，Agent 在受控工作区内完成执行。"},
+      {"id": "delivery", "label": "交付与恢复", "focus": ["workflow", "state", "delivery", "remote"], "note": "状态事务保存推进事实；远端操作先对账，再决定重试。"}
+    ]
+  },
+  "components": [
+    {"id": "entry", "type": "frontend", "label": "CLI / 后台入口", "sublabel": "启动 · 查询 · 取消", "pos": [30, 270], "size": [150, 76]},
+    {"id": "workflow", "type": "backend", "label": "研发工作流", "sublabel": "阶段 · 质量门 · 授权", "pos": [270, 270], "size": [170, 76]},
+    {"id": "session", "type": "backend", "label": "Agent 会话", "sublabel": "上下文 · 循环 · 预算", "pos": [540, 270], "size": [170, 76]},
+    {"id": "tools", "type": "security", "label": "受控工具", "sublabel": "参数校验 · 策略执行", "pos": [810, 270], "size": [170, 76]},
+    {"id": "workspace", "type": "backend", "label": "任务工作区", "sublabel": "Docker · 快照 · 差异", "pos": [1080, 270], "size": [170, 76]},
+    {"id": "model", "type": "external", "label": "模型适配", "sublabel": "消息 · 流 · usage", "pos": [540, 65], "size": [170, 76]},
+    {"id": "state", "type": "database", "label": "SQLite + 工件", "sublabel": "事务状态 · 不可变证据", "pos": [270, 65], "size": [170, 76]},
+    {"id": "delivery", "type": "backend", "label": "交付集成", "sublabel": "提交 · PR · 检查 · 交接", "pos": [270, 480], "size": [170, 76]},
+    {"id": "remote", "type": "external", "label": "代码托管 / CI", "sublabel": "GitHub · Jenkins", "pos": [540, 480], "size": [170, 76]}
+  ],
+  "connections": [
+    {"from": "entry", "to": "workflow", "variant": "emphasis"},
+    {"from": "workflow", "to": "session", "label": "阶段输入", "variant": "emphasis"},
+    {"from": "session", "to": "tools", "label": "工具调用", "variant": "emphasis"},
+    {"from": "tools", "to": "workspace", "label": "执行", "variant": "emphasis"},
+    {"from": "session", "to": "model", "label": "推理", "fromSide": "top", "toSide": "bottom"},
+    {"from": "workflow", "to": "state", "label": "提交状态", "fromSide": "top", "toSide": "bottom"},
+    {"from": "workflow", "to": "delivery", "label": "交付决策", "fromSide": "bottom", "toSide": "top", "labelAt": [355, 410]},
+    {"from": "delivery", "to": "remote", "label": "操作与对账"}
+  ],
+  "cards": [
+    {"dot": "cyan", "title": "业务决定何时前进", "items": ["需求与设计评审绑定版本", "验证通过后按策略自动交付"]},
+    {"dot": "emerald", "title": "Agent 完成一个阶段", "items": ["模型、上下文与工具循环共用", "隔离执行保留现有校验能力"]},
+    {"dot": "amber", "title": "状态与权限独立于模型", "items": ["SQLite 保存工作流事务", "外部副作用不承诺恰好一次"]}
+  ]
+}

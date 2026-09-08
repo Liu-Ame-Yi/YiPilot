@@ -6,17 +6,6 @@ from datetime import UTC, datetime
 
 import pytest
 
-from yipilot.application.repo_service import RepoService
-from yipilot.application.sandbox_apply import SandboxApplyService
-from yipilot.application.sandbox_output import (
-    SandboxOutputService,
-    output_approval_fingerprint,
-)
-from yipilot.application.sandbox_sources import SandboxSourceService
-from yipilot.application.sandbox_verification import (
-    REVISION,
-    SandboxVerificationService,
-)
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     ApprovalDecision,
@@ -27,10 +16,21 @@ from yipilot.domain.execution import (
     ToolPolicy,
 )
 from yipilot.domain.sandbox import SandboxBudgets, SandboxMode, SandboxRequest
-from yipilot.infrastructure.approval_store import FileApprovalStore
-from yipilot.infrastructure.docker_worker import DockerSandboxWorker
-from yipilot.infrastructure.git_runner import GitRunner
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.persistence.approval_store import FileApprovalStore
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.workflow.sandbox_verification import (
+    REVISION,
+    SandboxVerificationService,
+)
+from yipilot.workspace.docker_worker import DockerSandboxWorker
+from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.repo_service import RepoService
+from yipilot.workspace.sandbox_apply import SandboxApplyService
+from yipilot.workspace.sandbox_output import (
+    SandboxOutputService,
+    output_approval_fingerprint,
+)
+from yipilot.workspace.sandbox_sources import SandboxSourceService
 
 IMAGE = os.environ.get("YIPILOT_DOCKER_TEST_IMAGE", "")
 pytestmark = pytest.mark.skipif(
@@ -42,9 +42,9 @@ pytestmark = pytest.mark.skipif(
 def test_interactive_sandbox_apply_and_verification(worker_setup, monkeypatch, outcome):
     from io import StringIO
 
-    from yipilot.application.code_service import CodeService
     from yipilot.domain.patch_proposal import PatchProposal
     from yipilot.transport.cli.interactive import InteractiveSession
+    from yipilot.workflow.code_service import CodeService
 
     worker, _, copies = worker_setup("# fixture\n", files={
         "src/value.py": "value: int = 1\n",
@@ -61,7 +61,7 @@ def test_interactive_sandbox_apply_and_verification(worker_setup, monkeypatch, o
         "summary": "change", "paths": ["src/value.py"], "proposal_hash": "0" * 64,
         "repository_alias": "repo", "base_sha": copies.manifest.base_sha}])
     monkeypatch.setattr(CodeService, "apply", lambda *_a, **_k: pytest.fail("host apply invoked"))
-    monkeypatch.setenv("YIPILOT_SANDBOX_IMAGE_DIGEST", IMAGE)
+    FileTaskStore(worker._root).set_sandbox_image_digest(IMAGE)
     output = StringIO()
     session = InteractiveSession(project=worker._root,
         input=StringIO("1\ny\ny\n" + ("y\n" if accept_output else "n\n")), output=output)
@@ -290,7 +290,7 @@ def test_network_credentials_and_docker_socket_unavailable(worker_setup):
 def test_missing_image_fails_closed(worker_setup):
     worker, request, copies = worker_setup("raise AssertionError('must not run')\n")
     request = request.model_copy(update={"image_digest": "sha256:" + "f" * 64})
-    with pytest.raises(DomainError, match="SANDBOX_UNAVAILABLE"):
+    with pytest.raises(DomainError, match="SANDBOX_IMAGE_MISSING"):
         worker.execute(request)
     assert not (
         copies.execution.parent / "docker-worker/container-before.json"
@@ -387,7 +387,7 @@ def test_trusted_apply_preserves_exact_worker_bytes(worker_setup, change):
     "failure", ["cleanup", "approval", "drift", "destination", "evidence", "post_apply"]
 )
 def test_trusted_apply_fails_closed(worker_setup, monkeypatch, failure):
-    from yipilot.application import sandbox_apply as apply_module
+    from yipilot.workspace import sandbox_apply as apply_module
 
     worker, request, copies = worker_setup(
         "from pathlib import Path\nPath('added').write_text('new')\n"
@@ -615,7 +615,7 @@ def test_sandbox_verification_failure_cannot_create_handoff(
     elif failure == "cancel":
         cancel.set()
     elif failure == "handoff":
-        from yipilot.infrastructure.artifact_store import FileArtifactStore
+        from yipilot.persistence.artifact_store import FileArtifactStore
 
         original = FileArtifactStore.write_bytes
 
@@ -635,6 +635,10 @@ def test_sandbox_verification_failure_cannot_create_handoff(
             approval_id="verification-approval",
             cancel_event=cancel,
         )
+    if failure == "pytest":
+        assert "assert False" in service.failed_diagnostics(
+            copies, request, worker._policy, accepted, preparation.run_id
+        )
     assert not (root / "artifacts/change-handoff.json").exists()
     assert worker._store.get_run(request.task_id, preparation.run_id).status.value == (
         "cancelled" if failure == "cancel" else "failed"
@@ -646,7 +650,7 @@ def test_sandbox_verification_failure_cannot_create_handoff(
 def test_verification_preparation_failure_cancels_only_its_new_runs(
     worker_setup, monkeypatch
 ):
-    from yipilot.application import sandbox_verification as module
+    from yipilot.workflow import sandbox_verification as module
 
     worker, request, copies, accepted, _, service, preparation = verification_fixture(
         worker_setup

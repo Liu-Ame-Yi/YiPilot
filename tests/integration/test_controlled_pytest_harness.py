@@ -6,10 +6,6 @@ from threading import Event
 
 import pytest
 
-from yipilot.application.approval import approval_action_type
-from yipilot.application.quality_artifacts import QualityArtifactService, _pytest_policy
-from yipilot.application.repo_service import RepoService
-from yipilot.application.workspace_service import WorkspaceService
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     QUALITY_PYTEST_POLICY_REVISION,
@@ -22,11 +18,15 @@ from yipilot.harness.report_store import (
     UNIT_TEST_HARNESS_REPORT_NAME,
     HarnessReportStore,
 )
-from yipilot.infrastructure.approval_store import FileApprovalStore
-from yipilot.infrastructure.executors import LocalCommandRunner
-from yipilot.infrastructure.git_runner import GitRunner
-from yipilot.infrastructure.task_store import FileTaskStore
-from yipilot.infrastructure.tool_run_store import FileToolRunStore
+from yipilot.persistence.approval_store import FileApprovalStore
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.persistence.tool_run_store import FileToolRunStore
+from yipilot.security.approval import approval_action_type
+from yipilot.workflow.quality_artifacts import QualityArtifactService, _pytest_policy
+from yipilot.workspace.executors import LocalCommandRunner
+from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.repo_service import RepoService
+from yipilot.workspace.workspace_service import WorkspaceService
 
 
 def _git(path: Path, *args: str) -> None:

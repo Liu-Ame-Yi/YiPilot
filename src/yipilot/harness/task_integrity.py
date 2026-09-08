@@ -16,10 +16,10 @@ from yipilot.harness.models import (
     aggregate_checks,
 )
 from yipilot.harness.report_store import HarnessReportStore
-from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
-from yipilot.infrastructure.event_journal import EventRecord, JsonlEventJournal
-from yipilot.infrastructure.filesystem import project_path
-from yipilot.infrastructure.task_store import FileTaskStore, RunRecord, TaskRecord
+from yipilot.persistence.artifact_store import ArtifactRecord, FileArtifactStore
+from yipilot.persistence.event_journal import EventRecord, JsonlEventJournal
+from yipilot.persistence.filesystem import project_path
+from yipilot.persistence.task_store import FileTaskStore, RunRecord, TaskRecord
 
 _HARNESS_NAME = "task_integrity"
 _HARNESS_VERSION = "1.1.1"

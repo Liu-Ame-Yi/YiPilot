@@ -1,3 +1,5 @@
+> **历史决策适用说明 — 文档整理：2026-09-07。** 保留当时决策及理由；accepted 不表示所有实现完成，也不覆盖新的产品范围。与 [V2 提案](../superpowers/specs/2026-09-07-yipilot-v2-architecture.md) 不同的实现按迁移方案处理，现状查 [状态页](../product/status.md)。
+
 # ADR: Agent Runtime three-layer seams
 
 - Status: accepted

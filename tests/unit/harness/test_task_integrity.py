@@ -12,9 +12,9 @@ from yipilot.harness.models import (
 )
 from yipilot.harness.report_store import HarnessReportStore
 from yipilot.harness.task_integrity import TaskIntegrityHarness
-from yipilot.infrastructure.artifact_store import FileArtifactStore
-from yipilot.infrastructure.event_journal import JsonlEventJournal
-from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
+from yipilot.persistence.artifact_store import FileArtifactStore
+from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.task_store import FileTaskStore, RunRecord
 
 
 def _seed_run(

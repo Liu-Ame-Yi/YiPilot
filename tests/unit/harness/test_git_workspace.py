@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from yipilot.application.repo_service import RepoService
-from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
 from yipilot.domain.errors import DomainError
 from yipilot.harness import git_workspace as git_workspace_module
 from yipilot.harness.git_workspace import GitWorkspaceHarness
 from yipilot.harness.models import HarnessCheck, HarnessReport
-from yipilot.infrastructure.git_runner import GitRunner
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.repo_service import RepoService
+from yipilot.workspace.workspace_service import PreparedWorkspace, WorkspaceService
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:

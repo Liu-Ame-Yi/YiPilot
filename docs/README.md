@@ -1,0 +1,34 @@
+# 文档入口
+
+文档分为产品目标、当前事实、技术提案和历史参考。**不要把整个 docs 目录合并成一份实施指令。**
+
+## 当前阅读顺序
+
+代码定位优先看 [当前代码与文件分级](architecture/code-layout.md)：记录 2026-09-08 已实施的目录归位、实际依赖约束及旧路径映射。第一轮职责重构合同保留其当时范围；后续文件分级以这份实施记录为准。
+
+**当前职责重构任务**请先读 [第一轮职责边界重构执行合同](superpowers/plans/2026-09-07-responsibility-refactor.md)。这是 plans 中的现行专项指引，区别于下文所述旧计划；它约束本轮范围，V2 仍作为完整目标架构。
+
+1. [产品定义与完整流程](product/vision.md)：单仓库、输入输出、PRD/SRS/SDD、阶段放行、人工介入及交接终点。
+2. [术语](../CONTEXT.md)：业务名词的统一含义。
+3. [当前实现状态](product/status.md)：源码已有能力与缺口。
+4. [V2 架构提案](superpowers/specs/2026-09-07-yipilot-v2-architecture.md)：模块/目录、状态、恢复、权限、迁移与验收。
+5. [实施路线](product/roadmap.md)：R0–R4 顺序。
+6. [当前使用指南](guides/README.md)：实际可运行入口；不能直接运行架构提案中的未来命令。
+
+[架构图](architecture/yipilot-v2.html) 是模块总览，完整业务阶段以产品定义和 V2 阶段表为准。[图检查记录](architecture/yipilot-v2.review.md) 只验证图，不验证业务实现。
+
+本轮迁移清单与验证范围见 [职责边界重构实施记录](architecture/responsibility-refactor.md)。
+
+## 历史与依据
+
+| 位置 | 如何使用 |
+| --- | --- |
+| [原始规划书](../规划书.md) | AI 对 Go 原项目的二次总结，混有重写建议；只作参考，不要求兼容所有协议、目录或功能 |
+| superpowers/specs 中其余日期规格、superpowers/plans、superpowers/decisions | 旧阶段设计/实施记录，已退出当前实施入口；保留源码背景，不续做旧清单 |
+| [ADR](adr/) | 历史技术决策及理由；适用范围与替代关系以当前架构明确说明为准，不因 accepted 标签覆盖新产品范围 |
+| [研究](research/) | 当日调查与证据；包括已放弃的自动合并、多仓库等讨论，不是产品承诺 |
+| [历史追踪矩阵](traceability-matrix.md) | 对应旧实现/提交的证据；旧路径和测试可能已迁移 |
+| [历史手测](manual-testing.md) | 旧 fake/replay/prepare-only 演练，不作为当前操作指南 |
+| diagrams/ | 历史设计图，不是当前拓扑或实施承诺 |
+
+冲突处理：用户最新明确决定优先；目标查产品定义，现状以当前代码/测试核验并修正状态页，设计查 V2。旧规格与研究不得扩大范围。[维护规则](DOCUMENTATION.md)。

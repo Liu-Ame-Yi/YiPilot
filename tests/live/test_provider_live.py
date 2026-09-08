@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from yipilot.application.provider_service import ProviderService
+from yipilot.models.service import ProviderService
 
 
 @pytest.mark.live

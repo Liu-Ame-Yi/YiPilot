@@ -10,22 +10,17 @@ import typer
 from pydantic import BaseModel, ValidationError
 
 from yipilot import __version__
-from yipilot.application.code_service import CodeService
-from yipilot.application.model_selection_service import ModelSelectionService
-from yipilot.application.project_service import ProjectService
-from yipilot.application.provider_service import ProviderService
-from yipilot.application.quality_artifacts import QualityArtifactService
-from yipilot.application.repo_service import RepoMetadata, RepoService
-from yipilot.application.workspace_service import PreparedWorkspace, WorkspaceService
+from yipilot.app import ProjectApplication
 from yipilot.domain.errors import DomainError
 from yipilot.domain.provider import ProviderProfile
 from yipilot.harness.models import HarnessReport
 from yipilot.harness.quality import SddHarness, SrsHarness
-from yipilot.infrastructure.artifact_store import FileArtifactStore
-from yipilot.infrastructure.event_journal import JsonlEventJournal
-from yipilot.infrastructure.git_runner import GitRunner
-from yipilot.infrastructure.secret_store import SecretStore
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.models.secrets import SecretStore
+from yipilot.models.selection import ModelSelectionService
+from yipilot.models.service import ProviderService
+from yipilot.persistence.artifact_store import FileArtifactStore
+from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.task_store import FileTaskStore
 from yipilot.security.redaction import SecretRedactor
 from yipilot.transport.cli.events import (
     HumanEventRenderer,
@@ -33,6 +28,12 @@ from yipilot.transport.cli.events import (
     is_terminal_event,
 )
 from yipilot.transport.cli.interactive import InteractiveSession
+from yipilot.workflow.project_service import ProjectService
+from yipilot.workflow.quality_artifacts import QualityArtifactService
+from yipilot.workflow.sandbox_application import inspect_sandbox, register_sandbox_image
+from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.repo_service import RepoMetadata, RepoService
+from yipilot.workspace.workspace_service import PreparedWorkspace, WorkspaceService
 
 app = typer.Typer(no_args_is_help=False, add_completion=False, invoke_without_command=True)
 task_app = typer.Typer(no_args_is_help=True)
@@ -44,10 +45,12 @@ quality_app = typer.Typer(no_args_is_help=True)
 settings_app = typer.Typer(no_args_is_help=True)
 provider_app = typer.Typer(no_args_is_help=True)
 model_app = typer.Typer(no_args_is_help=True)
+sandbox_app = typer.Typer(no_args_is_help=True)
 app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
 app.add_typer(code_app, name="code")
 app.add_typer(quality_app, name="quality")
+app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(settings_app, name="settings")
 task_app.add_typer(repo_app, name="repo")
 task_app.add_typer(workspace_app, name="workspace")
@@ -136,6 +139,33 @@ def model_test(
         _render_value(output, value, f"Model {selector}: {value['status']}.")
 
 
+@sandbox_app.command("doctor")
+def sandbox_doctor(
+    image_digest: Annotated[str | None, typer.Option("--image-digest")] = None,
+    project: Annotated[Path | None, typer.Option("--project")] = None,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    """Check Docker Desktop and a prepared image without pulling or building."""
+    result = _settings_invoke(
+        output,
+        lambda: inspect_sandbox(project, image_digest),
+    )
+    if result is not None:
+        _render_value(output, result, f"Sandbox preflight passed for {result['image_digest']}.")
+
+
+@sandbox_app.command("register")
+def sandbox_register(
+    project: Annotated[Path, typer.Option("--project")],
+    image_digest: Annotated[str, typer.Option("--image-digest")],
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    """Register the immutable local image used by interactive sandbox Runs."""
+    result = _settings_invoke(output, lambda: register_sandbox_image(project, image_digest))
+    if result is not None:
+        _render_value(output, result, f"Registered sandbox image for {project}.")
+
+
 @model_app.command("configure")
 def model_configure(
     settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
@@ -171,7 +201,11 @@ def init_project(
 ) -> None:
     record = _invoke(output, lambda: _project_service(project).initialize_project())
     if record is not None:
-        _render(output, record, "Initialized Yipilot project.")
+        _render_value(
+            output,
+            {"schema_version": record.schema_version},
+            "Initialized Yipilot project.",
+        )
 
 
 @task_app.command("init")
@@ -425,7 +459,7 @@ def code_generate(
 ) -> None:
     result = _invoke(
         output,
-        lambda: CodeService(project, settings_dir=settings_dir).generate(
+        lambda: ProjectApplication(project, settings_dir=settings_dir).generate(
             task_id,
             alias,
             instruction,

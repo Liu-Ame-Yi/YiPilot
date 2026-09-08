@@ -9,14 +9,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from yipilot.application import sandbox_output as output_module
-from yipilot.application import sandbox_sources as module
-from yipilot.application.repo_service import RepoService
-from yipilot.application.sandbox_output import (
-    SandboxOutputService,
-    output_approval_fingerprint,
-)
-from yipilot.application.sandbox_sources import SandboxSourceService
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     ApprovalDecision,
@@ -34,10 +26,18 @@ from yipilot.domain.sandbox import (
     SandboxResult,
     source_path,
 )
-from yipilot.infrastructure.approval_store import FileApprovalStore
-from yipilot.infrastructure.artifact_store import FileArtifactStore
-from yipilot.infrastructure.git_runner import GitRunner
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.persistence.approval_store import FileApprovalStore
+from yipilot.persistence.artifact_store import FileArtifactStore
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.workspace import sandbox_output as output_module
+from yipilot.workspace import sandbox_sources as module
+from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.repo_service import RepoService
+from yipilot.workspace.sandbox_output import (
+    SandboxOutputService,
+    output_approval_fingerprint,
+)
+from yipilot.workspace.sandbox_sources import SandboxSourceService
 
 
 def git(root: Path, *argv: str) -> str:
@@ -91,9 +91,9 @@ def prepare(s):
 
 
 def test_cli_prepares_frozen_patch_data_and_requires_exact_human_approval(setup, monkeypatch):
-    from yipilot.application.sandbox_cli import SandboxCliService
     from yipilot.domain.patch_proposal import PatchProposal
-    from yipilot.infrastructure.docker_worker import DockerSandboxWorker
+    from yipilot.workflow.sandbox_application import SandboxCliService
+    from yipilot.workspace.docker_worker import DockerSandboxWorker
 
     s = setup
     monkeypatch.setattr(DockerSandboxWorker, "execute", lambda *_a, **_k: pytest.fail("Worker invoked"))
@@ -120,8 +120,8 @@ def test_cli_prepares_frozen_patch_data_and_requires_exact_human_approval(setup,
 
 
 def test_cli_invalid_input_cancels_new_run_without_worker(setup):
-    from yipilot.application.sandbox_cli import SandboxCliService
     from yipilot.domain.patch_proposal import PatchProposal
+    from yipilot.workflow.sandbox_application import SandboxCliService
 
     s = setup
     proposal = PatchProposal(summary="change", patches=({"path": "app.py",
@@ -521,8 +521,8 @@ def approve_output(s):
 def test_worker_rejects_invalid_seed_before_any_docker_command(
     output_setup, monkeypatch, invalid
 ):
-    from yipilot.domain.execution import _fingerprint_model
-    from yipilot.infrastructure.docker_worker import DockerSandboxWorker
+    from yipilot.domain.execution import fingerprint_model
+    from yipilot.workspace.docker_worker import DockerSandboxWorker
 
     s = output_setup
     seed = s.copies.manifest.model_copy(
@@ -538,7 +538,7 @@ def test_worker_rejects_invalid_seed_before_any_docker_command(
         seed.model_dump_json(), encoding="utf-8"
     )
     request = s.request.model_copy(
-        update={"input_manifest_hash": _fingerprint_model(seed)}
+        update={"input_manifest_hash": fingerprint_model(seed)}
     )
     if invalid == "wrong_hash":
         request = request.model_copy(update={"input_manifest_hash": "d" * 64})

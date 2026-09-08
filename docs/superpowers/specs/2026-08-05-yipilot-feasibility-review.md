@@ -1,3 +1,5 @@
+> **Historical reference / Superseded — 文档整理：2026-09-07。** 本文保留旧阶段设计与实施记录，不再作为当前待办或产品范围。当前目标见 [产品定义](../../product/vision.md)，技术设计见 [V2](../specs/2026-09-07-yipilot-v2-architecture.md)，实际能力见 [状态页](../../product/status.md)。下文原状态、强制要求及命令仅在原历史范围内成立。
+
 # Yipilot Spec 可行性与边界审查
 
 - 审查日期：2026-08-05
@@ -33,7 +35,7 @@
 
 ## 4. 仍需在实施计划前冻结的决定
 
-1. 真实 Codex CLI 是否允许以 `host_trusted` 方式本机执行，还是 M3 必须先提供 Docker sandbox。
+1. Yipilot 内建 Agent Runtime 的本机受控工具执行是否允许以 `host_trusted` 方式启用，还是 M3 必须先提供 Docker sandbox。
 2. 首版数据根是否固定在被管理项目中的 `.yipilot/`；若需要集中式控制目录，应另立数据根策略。
 3. M4 的真实模型供应商、预算与凭据来源；在此之前仅实现 fake/replay。
 4. 首版目标平台是否只支持 Windows；若是，文件权限和锁的验收须以 Windows ACL/reparse point 为准，而非 POSIX 0600/symlink 假设。

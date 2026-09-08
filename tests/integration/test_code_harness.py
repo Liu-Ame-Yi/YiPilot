@@ -6,9 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from yipilot.application.approval import ApprovalGate, approval_action_type
-from yipilot.application.tool_registry import ToolRegistry
-from yipilot.application.workspace_service import PreparedWorkspace
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     ApprovalDecision,
@@ -21,11 +18,14 @@ from yipilot.domain.execution import (
     ToolRequest,
 )
 from yipilot.harness.code import CodeHarness
-from yipilot.infrastructure.approval_store import FileApprovalStore
-from yipilot.infrastructure.artifact_store import FileArtifactStore
-from yipilot.infrastructure.event_journal import JsonlEventJournal
-from yipilot.infrastructure.executors import ControlledWorkspaceWriter
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.persistence.approval_store import FileApprovalStore
+from yipilot.persistence.artifact_store import FileArtifactStore
+from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.security.approval import ApprovalGate, approval_action_type
+from yipilot.workspace.executors import ControlledWorkspaceWriter
+from yipilot.workspace.tool_registry import ToolRegistry
+from yipilot.workspace.workspace_service import PreparedWorkspace
 
 
 def _git(cwd: Path, *argv: str) -> None:

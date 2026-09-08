@@ -5,15 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from yipilot.application.quality_artifacts import QualityArtifactService
 from yipilot.domain.errors import DomainError
 from yipilot.domain.model import ModelChunk, ModelResponse
 from yipilot.domain.provider import ProviderProfile
 from yipilot.harness.models import HarnessStatus
 from yipilot.harness.quality import SddHarness, SrsHarness
-from yipilot.infrastructure.artifact_store import FileArtifactStore
-from yipilot.infrastructure.provider_store import FileProviderStore
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.models.store import FileProviderStore
+from yipilot.persistence.artifact_store import FileArtifactStore
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.workflow.quality_artifacts import QualityArtifactService
 
 
 def _project(tmp_path: Path) -> Path:

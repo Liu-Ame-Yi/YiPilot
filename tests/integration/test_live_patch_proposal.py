@@ -5,15 +5,15 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from yipilot.application.code_service import CodeService
-from yipilot.application.model_selection_service import ModelSelectionService
 from yipilot.domain.model import ModelChunk, ModelRequest
 from yipilot.domain.provider import ModelEntry, ProviderConnection
-from yipilot.infrastructure.artifact_store import FileArtifactStore
-from yipilot.infrastructure.event_journal import JsonlEventJournal
-from yipilot.infrastructure.secret_store import SecretStore
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.models.secrets import SecretStore
+from yipilot.models.selection import ModelSelectionService
+from yipilot.persistence.artifact_store import FileArtifactStore
+from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.task_store import FileTaskStore
 from yipilot.transport.cli.app import app
+from yipilot.workflow.code_service import CodeService
 
 runner = CliRunner()
 
@@ -71,7 +71,7 @@ def _proposal(path: str = "tracked.py") -> str:
 
 
 def test_fixed_port_uses_the_runtime_and_preserves_source(tmp_path: Path, monkeypatch) -> None:
-    from yipilot.application.workspace_service import WorkspaceService
+    from yipilot.workspace.workspace_service import WorkspaceService
 
     monkeypatch.setattr(WorkspaceService, "prepare", lambda *_a, **_k: pytest.fail("host checkout invoked"))
     project, source = _project(tmp_path)
@@ -117,8 +117,8 @@ def test_provider_failure_is_a_failed_turn_without_secret_leak(tmp_path: Path) -
 
 def test_cli_uses_model_and_rejects_old_planner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project, _source = _project(tmp_path)
-    service = CodeService(project, model_selection_service=_models(tmp_path, FixedPort(_proposal())))
-    monkeypatch.setattr("yipilot.transport.cli.app.CodeService", lambda *_args, **_kwargs: service)
+    models = _models(tmp_path, FixedPort(_proposal()))
+    monkeypatch.setattr("yipilot.app.ModelSelectionService", lambda *_: models)
 
     result = runner.invoke(app, ["code", "generate", "--project", str(project), "--taskid", "1001", "--alias", "sample", "--instruction", "change", "--context-file", "tracked.py", "--output", "json"])
     old = runner.invoke(app, ["code", "generate", "--taskid", "1001", "--alias", "sample", "--instruction", "change", "--planner", "fake"])

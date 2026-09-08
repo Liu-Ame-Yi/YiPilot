@@ -8,8 +8,6 @@ from uuid import uuid4
 
 from pydantic import JsonValue
 
-from yipilot.application.approval import approval_action_type
-from yipilot.application.workspace_service import PreparedWorkspace
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import ExecutionPolicy, ToolResult, ToolRunStatus
 from yipilot.harness.git_workspace import GitWorkspaceHarness
@@ -22,9 +20,11 @@ from yipilot.harness.models import (
 )
 from yipilot.harness.report_store import CODE_HARNESS_REPORT_NAME, HarnessReportStore
 from yipilot.harness.task_integrity import TaskIntegrityHarness
-from yipilot.infrastructure.approval_store import FileApprovalStore
-from yipilot.infrastructure.task_store import FileTaskStore
-from yipilot.infrastructure.tool_run_store import FileToolRunStore
+from yipilot.persistence.approval_store import FileApprovalStore
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.persistence.tool_run_store import FileToolRunStore
+from yipilot.security.approval import approval_action_type
+from yipilot.workspace.workspace_service import PreparedWorkspace
 
 _HARNESS_NAME = "code_harness"
 _HARNESS_VERSION = "1.0.0"

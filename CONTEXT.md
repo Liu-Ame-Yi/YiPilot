@@ -1,21 +1,70 @@
-# Yipilot Domain Context
+# Yipilot 领域术语
 
-## Purpose
+描述单仓库研发交付中的业务概念；这些定义不表示对应能力已经实现。
 
-Yipilot is a local-first, auditable controller for AI-assisted software-delivery work. It coordinates work; it is not itself an unrestricted coding agent.
+## 需求与交付
 
-## Ubiquitous language
+**PRD（产品需求文档）**：描述背景、目标、场景、产品行为与约束的来源材料。用户也可以直接提供需求文本。
+_避免_：把所有历史规划和参考资料都当成本次必须实现的要求。
 
-| Term | Meaning |
-| --- | --- |
-| Project | A local directory governed by one `.yipilot/config.yaml` file. |
-| Task | A long-lived, user-visible development unit identified by a decimal `task_id`. |
-| Stage | A stable business capability, such as `srs_generate` or `code_generate`. |
-| Operation | A durable record of one user intent to perform work. It may coordinate one or more runs. |
-| Run | One concrete attempt to execute a stage. It has a lifecycle, events and optional checkpoint. |
-| Artifact | A versioned output used as business input or evidence, such as an SRS, SDD, patch or report. |
-| Evidence | An immutable or append-only record that explains an observed action or result. |
-| Harness | Deterministic validation that produces an auditable quality-gate report for a stage; it is not an LLM self-review. |
-| Approval | An explicit, durable human decision needed before a high-risk side effect. |
-| Workspace | A task-owned Git worktree where an executor may modify code. |
-| Adapter | A replaceable implementation of an external-system port. It may be production, fake, recorded-replay or disabled. |
+**SRS（软件需求规格）**：经整理和评审的可执行需求基线，包含范围、行为、约束、验收标准与来源。
+_避免_：代码修改清单。
+
+**SDD（技术设计）**：基于 SRS 和仓库现状形成的实现方案，说明模块、接口、数据、实施步骤和验证方法。
+
+**需求版本**：一次明确的需求基线；它限定相关设计、评审和验证结论的适用范围。
+
+**评审报告（ReviewReport）**：对具体版本的需求、设计或代码提出的判断与问题。模型评审不等于执行授权。
+
+**交接（Change Handoff）**：变更和验证证据的可审阅集合；目标交付还包含远端分支与 PR/MR。
+
+**review_ready**：当前提交已发布并通过本地及已配置的必需检查，可以交接审阅的结果；不表示已经合并。
+
+**CI Result**：绑定具体提交或可核实合并候选的外部检查结果；未配置、缺失和未知都不是通过。
+
+## 任务与执行
+
+**Project**：保存项目配置与任务记录的本地管理边界。
+
+**Task**：长期存在的研发单元；当前产品中只涉及一个仓库。
+
+**Operation**：一次用户工作意图的持久化记录，可协调多个阶段执行。
+_避免_：把每个外部工具动作都称为 Operation。
+
+**Stage**：具有明确输入、输出与放行条件的业务阶段。
+
+**Run**：某阶段的一次具体执行尝试；不等于整个 Task 已完成。
+
+**Turn**：一次模型响应及其工具反馈轮次；修复可能跨多个 Turn 和 Run。
+
+**Artifact**：可作为后续输入或证据的版本化产物，例如 SRS、SDD、差异和报告。
+
+**Evidence**：解释来源、执行事实或结果的记录；只对它绑定的版本和对象有效。
+
+**Harness**：按确定规则执行的质量检查；结构检查不能代替需求语义评审。
+
+**Workspace**：任务拥有的隔离工作区，承载候选修改与验证。
+
+**PatchProposal**：模型生成的修改提案，本身没有执行和文件写入权限。
+
+## 权限与模型
+
+**PolicyDecision**：可信控制器依据有效授权范围得出的动作许可或拒绝，不由模型自签。
+
+**HumanApproval**：必要时由人作出的明确批准；现有代码中的 Approval 记录不意味着目标流程每一步都需要人审。
+
+**WaitItem**：需要补充信息、授权或外部结果才能继续的持久化等待事项。
+
+**ExternalAction**：推送、创建 PR 或触发 CI 等外部写动作；与一次用户意图 Operation 区分。
+
+**Control Plane**：拥有业务状态、权限判断、模型访问和可信证据校验职责的控制侧。
+
+**Sandbox Worker**：接收受限输入并返回待校验执行结果的隔离环境。
+
+**ProviderConnection**：模型供应商连接及凭据引用，不等于具体模型。
+
+**ModelEntry / ModelVariant**：连接下的模型及其命名配置变体。
+
+**ModelSelector**：精确模型选择符，形式为 connection_id/model_id，可带 :variant。
+
+**ResolvedModel**：某次执行已选定且冻结的模型配置。

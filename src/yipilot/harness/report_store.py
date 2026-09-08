@@ -6,8 +6,8 @@ from pydantic import ValidationError
 
 from yipilot.domain.errors import DomainError
 from yipilot.harness.models import HarnessReport
-from yipilot.infrastructure.filesystem import atomic_write_json, project_path
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.persistence.filesystem import atomic_write_json, project_path
+from yipilot.persistence.task_store import FileTaskStore
 from yipilot.security.redaction import SecretRedactor
 
 TASK_INTEGRITY_REPORT_NAME = "task-integrity-report.json"

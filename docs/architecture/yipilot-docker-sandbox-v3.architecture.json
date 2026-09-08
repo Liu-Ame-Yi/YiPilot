@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Yipilot：Docker 沙箱写入目标架构",
+    "locale": "zh-CN",
+    "output": "yipilot-docker-sandbox-v3.html",
+    "quality_profile": "showcase",
+    "viewBox": [1380, 720]
+  },
+  "components": [
+    { "id": "request", "type": "external", "label": "需求与工件", "sublabel": "范围、验收与上下文", "pos": [25, 330], "size": [170, 76] },
+    { "id": "provider", "type": "external", "label": "模型 Provider", "sublabel": "已实现：仅产生提案", "pos": [255, 95], "size": [190, 72] },
+    { "id": "control", "type": "backend", "label": "Control Plane", "sublabel": "Task / Run / ModelCall", "pos": [255, 330], "size": [200, 82] },
+    { "id": "policy", "type": "security", "label": "Policy 与 Approval", "sublabel": "密钥、边界与人工裁决", "pos": [255, 535], "size": [200, 72] },
+    { "id": "baseline", "type": "database", "label": "baseline 副本", "sublabel": "锁定 base commit，只读", "pos": [535, 225], "size": [190, 72] },
+    { "id": "execution", "type": "database", "label": "execution 副本", "sublabel": "唯一可写的 /workspace", "pos": [535, 455], "size": [190, 72] },
+    { "id": "worker", "type": "security", "label": "Docker Sandbox Worker", "sublabel": "后续：Linux 容器、无网络", "tag": "未实现", "pos": [800, 330], "size": [210, 82] },
+    { "id": "worker_output", "type": "messagebus", "label": "不可信 Worker 输出", "sublabel": "patch / test / stdout / hash", "pos": [1080, 225], "size": [205, 72] },
+    { "id": "handoff", "type": "security", "label": "Change Handoff", "sublabel": "控制面验证后的证据包", "pos": [1080, 455], "size": [205, 82] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "受信任宿主：控制面持有密钥、Git 证据与交接决定", "wraps": ["control", "policy", "baseline", "execution", "worker", "worker_output", "handoff"], "pad": 30 },
+    { "kind": "security-group", "label": "Docker 容器：只挂载 execution；网络关闭；rootfs 只读；非 root", "wraps": ["worker", "worker_output"], "pad": 26 }
+  ],
+  "connections": [
+    { "id": "request-control", "from": "request", "to": "control", "label": "获准输入", "variant": "emphasis" },
+    { "id": "control-provider", "from": "control", "to": "provider", "label": "请求", "variant": "security", "fromSide": "top", "toSide": "bottom" },
+    { "id": "provider-control", "from": "provider", "to": "control", "label": "提案", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
+    { "id": "policy-control", "from": "policy", "to": "control", "label": "Run 边界", "variant": "security", "fromSide": "top", "toSide": "bottom" },
+    { "id": "control-baseline", "from": "control", "to": "baseline", "label": "锁定基线", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "baseline-execution", "from": "baseline", "to": "execution", "label": "复制", "variant": "security", "fromSide": "bottom", "toSide": "top", "labelDy": 24 },
+    { "id": "execution-worker", "from": "execution", "to": "worker", "label": "唯一挂载", "variant": "security", "fromSide": "right", "toSide": "left" },
+    { "id": "worker-output", "from": "worker", "to": "worker_output", "label": "受限执行", "variant": "security", "fromSide": "right", "toSide": "left" },
+    { "id": "output-handoff", "from": "worker_output", "to": "handoff", "label": "控制面核验", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelDy": 24 }
+  ]
+}

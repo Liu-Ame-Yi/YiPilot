@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Yipilot：受控变更与失败关闭流程",
+    "locale": "zh-CN",
+    "output": "yipilot-gated-delivery-v3.html",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 600]
+  },
+  "lanes": [
+    { "id": "human", "label": "需求方与审查者" },
+    { "id": "control", "label": "Yipilot 控制面（当前）" },
+    { "id": "delivery", "label": "受控交付（后续）" },
+    { "id": "stop", "label": "失败关闭", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "define", "label": "定义", "fromCol": 0, "toCol": 1 },
+    { "id": "evidence", "label": "本地证据闭环", "fromCol": 2, "toCol": 4, "variant": "emphasis" },
+    { "id": "promote", "label": "外部门禁", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "current", "label": "当前：提案、pytest 与证据", "lane": "control", "fromCol": 2, "toCol": 4, "variant": "emphasis" },
+    { "id": "future", "label": "后续：Docker、Jenkins 与 PR", "lane": "delivery", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["request", "task", "proposal", "handoff", "delivery_gate"],
+  "nodes": [
+    { "id": "request", "lane": "human", "col": 0, "type": "external", "label": "明确需求", "sublabel": "范围与验收" },
+    { "id": "task", "lane": "control", "col": 2, "type": "database", "label": "Task 工作区", "sublabel": "Task / Run" },
+    { "id": "proposal", "lane": "control", "col": 4, "type": "security", "label": "提案与 pytest", "sublabel": "当前：不写源文件", "tag": "Artifact / Event" },
+    { "id": "handoff", "lane": "human", "col": 4, "type": "security", "label": "审批交接", "sublabel": "Change Handoff" },
+    { "id": "delivery_gate", "lane": "delivery", "col": 5, "type": "external", "label": "受控交付", "sublabel": "Docker → CI → PR", "tag": "后续" },
+    { "id": "stop_run", "lane": "stop", "col": 4, "type": "security", "label": "失败关闭", "sublabel": "无证据，不交接" }
+  ],
+  "edges": [
+    { "id": "request-task", "from": "request", "to": "task", "variant": "emphasis", "role": "main" },
+    { "id": "task-proposal", "from": "task", "to": "proposal", "variant": "security", "role": "main" },
+    { "id": "proposal-handoff", "from": "proposal", "to": "handoff", "variant": "emphasis", "role": "main", "route": "drop", "fromSide": "top", "toSide": "bottom" },
+    { "id": "handoff-delivery", "from": "handoff", "to": "delivery_gate", "variant": "dashed", "role": "branch", "route": "outside-right", "fromSide": "right", "toSide": "right" },
+    { "id": "proposal-stop", "from": "proposal", "to": "stop_run", "label": "失败", "variant": "security", "role": "error", "route": "drop", "fromSide": "bottom", "toSide": "top" }
+  ]
+}

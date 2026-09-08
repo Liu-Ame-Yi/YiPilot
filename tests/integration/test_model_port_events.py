@@ -4,9 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from yipilot.application.agent_runtime import AgentRuntime
-from yipilot.application.model_planner import ModelPlanner
-from yipilot.application.tool_registry import ToolRegistry
+from tests.helpers.fake_executor import FakeExecutor
+from yipilot.agent.model_planner import ModelPlanner
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     ArgvRule,
@@ -16,16 +15,19 @@ from yipilot.domain.execution import (
     ToolRequest,
 )
 from yipilot.domain.model import ModelChunk, ModelRequest, ModelResponse
-from yipilot.infrastructure.artifact_store import FileArtifactStore
-from yipilot.infrastructure.event_journal import JsonlEventJournal
-from yipilot.infrastructure.executors import FakeExecutor
-from yipilot.infrastructure.model_port import (
+from yipilot.models.fixtures import (
     DisabledModelPort,
     FakeModelPort,
     RecordedReplayModelPort,
 )
-from yipilot.infrastructure.task_store import FileTaskStore, RunRecord
+from yipilot.persistence.artifact_store import FileArtifactStore
+from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.runtime_evidence import FileRuntimeEvidence
+from yipilot.persistence.task_store import FileTaskStore, RunRecord
 from yipilot.security.redaction import SecretRedactor
+from yipilot.workflow.run_executor import RunExecutor
+from yipilot.workspace.tool_gateway import RegistryToolGateway
+from yipilot.workspace.tool_registry import ToolRegistry
 
 
 def _context(tmp_path: Path) -> tuple[FileTaskStore, RunRecord, JsonlEventJournal, ToolRegistry]:
@@ -74,7 +76,20 @@ def _response(content: str) -> ModelResponse:
 
 
 def _valid_response() -> ModelResponse:
-    return _response(json.dumps({"schema_version": 1, "steps": [{"tool_id": "fake-diagnostic", "args": {"scope": "workspace"}}]}))
+    return _response(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "summary": "Fixture proposal.",
+                "patches": [
+                    {
+                        "path": "tracked.py",
+                        "unified_diff": "--- a/tracked.py\n+++ b/tracked.py\n@@ -1 +1 @@\n-old\n+new\n",
+                    }
+                ],
+            }
+        )
+    )
 
 
 def test_fake_replay_and_disabled_ports_have_stable_stream_or_error_contract(tmp_path: Path) -> None:
@@ -93,21 +108,22 @@ def test_fake_replay_and_disabled_ports_have_stable_stream_or_error_contract(tmp
 def test_replay_model_streams_events_persists_artifacts_and_executes_only_valid_plan(tmp_path: Path) -> None:
     store, run, journal, registry = _context(tmp_path)
     instruction = "recorded diagnostic"
-    request, tool = _request(run, instruction)
+    request, _ = _request(run, instruction)
     planner = ModelPlanner(
         RecordedReplayModelPort("fixture-v1", {request.input_fingerprint: _valid_response()}),
-        request, tool, FileArtifactStore(store), journal,
+        request, FileRuntimeEvidence(FileArtifactStore(store), journal),
     )
 
-    result = AgentRuntime(tmp_path, store, planner, registry).execute(
+    result = RunExecutor(store, planner, RegistryToolGateway(tmp_path, registry), FileRuntimeEvidence(FileArtifactStore(store), journal)).execute(
         run.task_id, run.operation_id, run.run_id, instruction, harness=lambda: True
     )
 
     assert result.run.status == "succeeded"
     events = journal.read_after(0)
     assert [event.type for event in events] == [
-        "run.started", "model.delta", "model.message_completed", "plan.created",
-        "tool.started", "tool.completed", "harness.completed", "run.succeeded",
+        "run.started", "turn.started", "model.delta", "model.message_completed",
+        "proposal.created", "plan.created", "harness.completed", "turn.completed",
+        "run.succeeded",
     ]
     paths = {record.relative_path for record in FileArtifactStore(store).list(run.task_id, run.run_id)}
     assert {"artifacts/model-response.json", "artifacts/model-call.json", "artifacts/agent-plan.json"} <= paths
@@ -115,7 +131,7 @@ def test_replay_model_streams_events_persists_artifacts_and_executes_only_valid_
 
 @pytest.mark.parametrize("response,code", [
     (None, "MODEL_REPLAY_NOT_FOUND"),
-    (_response('{"schema_version":1,"steps":[{"tool_id":"other","args":{}}]}'), "MODEL_PLAN_INVALID"),
+    (_response('{"schema_version":1,"steps":[{"tool_id":"other","args":{}}]}'), "PATCH_PROPOSAL_INVALID"),
     (_response("x" * 32), "MODEL_OUTPUT_LIMIT_EXCEEDED"),
 ])
 def test_model_failures_write_redacted_event_and_never_start_tools(
@@ -123,33 +139,33 @@ def test_model_failures_write_redacted_event_and_never_start_tools(
 ) -> None:
     store, run, journal, registry = _context(tmp_path)
     instruction = "private instruction"
-    request, tool = _request(run, instruction, budget=16 if code == "MODEL_OUTPUT_LIMIT_EXCEEDED" else 1024)
+    request, _ = _request(run, instruction, budget=16 if code == "MODEL_OUTPUT_LIMIT_EXCEEDED" else 1024)
     planner = ModelPlanner(
         RecordedReplayModelPort("fixture-v1", {request.input_fingerprint: response} if response else {}),
-        request, tool, FileArtifactStore(store), journal,
+        request, FileRuntimeEvidence(FileArtifactStore(store), journal),
     )
 
-    result = AgentRuntime(tmp_path, store, planner, registry).execute(
+    result = RunExecutor(store, planner, RegistryToolGateway(tmp_path, registry), FileRuntimeEvidence(FileArtifactStore(store), journal)).execute(
         run.task_id, run.operation_id, run.run_id, instruction, harness=lambda: True
     )
 
     assert result.run.error_code == code
-    assert [event.type for event in journal.read_after(0)][-2:] == ["model.failed", "run.failed"]
+    assert [event.type for event in journal.read_after(0)][-3:] == ["model.failed", "turn.failed", "run.failed"]
     assert "tool.started" not in [event.type for event in journal.read_after(0)]
 
 
 def test_model_output_is_redacted_before_events_and_artifacts(tmp_path: Path) -> None:
     store, run, journal, registry = _context(tmp_path)
     instruction = "private instruction"
-    request, tool = _request(run, instruction)
+    request, _ = _request(run, instruction)
     secret = "environment-value"
     content = '{"schema_version":1,"steps":[],"note":"Bearer token https://user:password@example.test ' + secret + '"}'
     planner = ModelPlanner(
-        FakeModelPort(_response(content)), request, tool, FileArtifactStore(store), journal,
+        FakeModelPort(_response(content)), request, FileRuntimeEvidence(FileArtifactStore(store), journal),
         redactor=SecretRedactor([secret]),
     )
 
-    AgentRuntime(tmp_path, store, planner, registry).execute(
+    RunExecutor(store, planner, RegistryToolGateway(tmp_path, registry), FileRuntimeEvidence(FileArtifactStore(store), journal)).execute(
         run.task_id, run.operation_id, run.run_id, instruction, harness=lambda: True
     )
 
@@ -186,7 +202,7 @@ def test_verified_markdown_artifacts_contribute_to_model_fingerprint(tmp_path: P
         relative_path=record.relative_path,
         sha256=record.sha256,
     )
-    request, tool = _request(run, instruction)
+    request, _ = _request(run, instruction)
     request = request.model_copy(
         update={
             "allowed_input_artifact_refs": (reference,),
@@ -196,12 +212,10 @@ def test_verified_markdown_artifacts_contribute_to_model_fingerprint(tmp_path: P
     planner = ModelPlanner(
         RecordedReplayModelPort("fixture-v1", {request.input_fingerprint: _valid_response()}),
         request,
-        tool,
-        artifact_store,
-        journal,
+        FileRuntimeEvidence(artifact_store, journal),
     )
 
-    result = AgentRuntime(tmp_path, store, planner, registry).execute(
+    result = RunExecutor(store, planner, RegistryToolGateway(tmp_path, registry), FileRuntimeEvidence(FileArtifactStore(store), journal)).execute(
         run.task_id, run.operation_id, run.run_id, instruction, harness=lambda: True
     )
 
@@ -215,48 +229,50 @@ def test_verified_markdown_artifacts_contribute_to_model_fingerprint(tmp_path: P
 def test_fake_and_replay_ports_share_success_event_contract(tmp_path: Path, port_kind: str) -> None:
     store, run, journal, registry = _context(tmp_path)
     instruction = "fixed"
-    request, tool = _request(run, instruction)
+    request, _ = _request(run, instruction)
     response = _valid_response()
     port = (
         FakeModelPort(response)
         if port_kind == "fake"
         else RecordedReplayModelPort("fixture-v1", {request.input_fingerprint: response})
     )
-    result = AgentRuntime(
-        tmp_path, store, ModelPlanner(port, request, tool, FileArtifactStore(store), journal), registry
+    result = RunExecutor(
+        store, ModelPlanner(port, request, FileRuntimeEvidence(FileArtifactStore(store), journal)), RegistryToolGateway(tmp_path, registry), FileRuntimeEvidence(FileArtifactStore(store), journal)
     ).execute(run.task_id, run.operation_id, run.run_id, instruction, harness=lambda: True)
 
     assert result.run.status == "succeeded"
-    assert [event.type for event in journal.read_after(0)][:3] == [
-        "run.started", "model.delta", "model.message_completed"
+    assert [event.type for event in journal.read_after(0)][:4] == [
+        "run.started", "turn.started", "model.delta", "model.message_completed"
     ]
 
 
 def test_disabled_port_writes_model_failure_and_call_record(tmp_path: Path) -> None:
     store, run, journal, registry = _context(tmp_path)
     instruction = "fixed"
-    request, tool = _request(run, instruction)
+    request, _ = _request(run, instruction)
     artifacts = FileArtifactStore(store)
-    result = AgentRuntime(
-        tmp_path, store, ModelPlanner(DisabledModelPort(), request, tool, artifacts, journal), registry
+    result = RunExecutor(
+        store, ModelPlanner(DisabledModelPort(), request, FileRuntimeEvidence(artifacts, journal)), RegistryToolGateway(tmp_path, registry), FileRuntimeEvidence(FileArtifactStore(store), journal)
     ).execute(run.task_id, run.operation_id, run.run_id, instruction, harness=lambda: True)
 
     assert result.run.error_code == "MODEL_DISABLED"
-    assert [event.type for event in journal.read_after(0)] == ["run.started", "model.failed", "run.failed"]
+    assert [event.type for event in journal.read_after(0)] == [
+        "run.started", "turn.started", "model.failed", "turn.failed", "run.failed"
+    ]
     assert any(record.relative_path == "artifacts/model-call.json" for record in artifacts.list(run.task_id, run.run_id))
 
 
 def test_default_model_redaction_hides_environment_secret_assignment(tmp_path: Path) -> None:
     store, run, journal, registry = _context(tmp_path)
     instruction = "private instruction"
-    request, tool = _request(run, instruction)
+    request, _ = _request(run, instruction)
     secret = "environment-value"
     content = '{"schema_version":1,"steps":[],"note":"YIPILOT_TEST_SECRET=' + secret + '"}'
-    AgentRuntime(
-        tmp_path,
+    RunExecutor(
         store,
-        ModelPlanner(FakeModelPort(_response(content)), request, tool, FileArtifactStore(store), journal),
-        registry,
+        ModelPlanner(FakeModelPort(_response(content)), request, FileRuntimeEvidence(FileArtifactStore(store), journal)),
+        RegistryToolGateway(tmp_path, registry),
+        FileRuntimeEvidence(FileArtifactStore(store), journal),
     ).execute(run.task_id, run.operation_id, run.run_id, instruction, harness=lambda: True)
 
     persisted = store.event_journal_path(run.run_id).parent.joinpath("events.jsonl").read_text(encoding="utf-8")

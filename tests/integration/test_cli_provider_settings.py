@@ -59,7 +59,7 @@ def test_provider_cli_has_no_api_key_option_and_errors_do_not_echo_key(tmp_path:
 def test_provider_cli_request_uses_a_mocked_explicit_probe(tmp_path: Path, monkeypatch) -> None:
     import importlib
 
-    from yipilot.application.provider_service import ProviderService
+    from yipilot.models.service import ProviderService
 
     monkeypatch.setenv("YIPILOT_TEST_KEY", "provider-test-secret")
     runner = CliRunner()

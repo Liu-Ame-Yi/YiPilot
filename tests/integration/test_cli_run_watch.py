@@ -7,8 +7,8 @@ import typer
 from typer.testing import CliRunner
 
 import yipilot.transport.cli.app as cli_app_module
-from yipilot.infrastructure.event_journal import JsonlEventJournal
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.task_store import FileTaskStore
 from yipilot.transport.cli.app import app
 
 runner = CliRunner()

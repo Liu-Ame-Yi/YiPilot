@@ -1,3 +1,5 @@
+> **Historical reference / Superseded — 文档整理：2026-09-07。** 本文保留旧阶段设计与实施记录，不再作为当前待办或产品范围。当前目标见 [产品定义](../../product/vision.md)，技术设计见 [V2](../specs/2026-09-07-yipilot-v2-architecture.md)，实际能力见 [状态页](../../product/status.md)。下文原状态、强制要求及命令仅在原历史范围内成立。
+
 # Yipilot M3–M4：内建 Agent Runtime 与模型闭环实施计划
 
 ## 1. 目标、前提与非目标

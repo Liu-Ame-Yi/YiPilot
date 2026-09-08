@@ -1,1 +1,0 @@
-"""Filesystem-backed infrastructure adapters."""

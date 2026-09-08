@@ -209,7 +209,7 @@ class ToolRequest(BaseModel):
 
     @property
     def fingerprint(self) -> str:
-        return _fingerprint_model(self)
+        return fingerprint_model(self)
 
 
 class PlanStep(BaseModel):
@@ -490,7 +490,7 @@ class ExecutionPolicy(BaseModel):
 
     @property
     def fingerprint(self) -> str:
-        return _fingerprint_model(self)
+        return fingerprint_model(self)
 
     def resolve_cwd(self, project_root: Path, request: ToolRequest) -> Path:
         self.validate_request(request)
@@ -548,7 +548,7 @@ def is_generic_python_executable(executable: str) -> bool:
     )
 
 
-def _fingerprint_model(model: BaseModel) -> str:
+def fingerprint_model(model: BaseModel) -> str:
     canonical = json.dumps(
         model.model_dump(mode="json"),
         ensure_ascii=True,

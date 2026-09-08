@@ -1,8 +1,6 @@
 """Small stdio-only terminal transport for future-run model selection."""
 
-import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO, cast
 from uuid import uuid4
@@ -11,27 +9,14 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import choice, prompt
 from prompt_toolkit.styles import Style
 
-from yipilot.application.code_service import CodeService
-from yipilot.application.model_selection_service import ModelSelectionService
-from yipilot.application.project_service import ProjectService
-from yipilot.application.repo_service import RepoMetadata, RepoService
-from yipilot.application.sandbox_cli import SandboxCliService, apply_policy
-from yipilot.application.sandbox_output import (
-    SandboxOutputService,
-    output_approval_fingerprint,
-)
-from yipilot.application.sandbox_verification import (
-    REVISION,
-    SandboxVerificationService,
-)
+from yipilot.app import ApprovalPrompt, ProjectApplication
 from yipilot.domain.errors import DomainError
-from yipilot.domain.execution import ApprovalDecision, ApprovalRecord
 from yipilot.domain.patch_proposal import PatchProposal
 from yipilot.domain.provider import ModelEntry, ProviderConnection
-from yipilot.infrastructure.approval_store import FileApprovalStore
-from yipilot.infrastructure.git_runner import GitRunner
-from yipilot.infrastructure.secret_store import SecretStore
-from yipilot.infrastructure.task_store import TaskRecord
+from yipilot.models.secrets import SecretStore
+from yipilot.models.selection import ModelSelectionService
+from yipilot.persistence.task_store import TaskRecord
+from yipilot.workspace.repo_service import RepoMetadata
 
 
 @dataclass(frozen=True)
@@ -80,8 +65,9 @@ class InteractiveSession:
         self.input = self.input or sys.stdin
         self.output = self.output or sys.stdout
         self.models = ModelSelectionService(self.settings_dir)
-        self.tasks = ProjectService(self.project or Path("."))
-        self.repos = RepoService(self.project or Path("."), GitRunner())
+        self.application = ProjectApplication(self.project or Path("."), models=self.models)
+        self.tasks = self.application.tasks
+        self.repos = self.application.repos
         self.session_selector: str | None = None
         self.selected_selector: str | None = None
         self.session_task_id: str | None = None
@@ -101,7 +87,7 @@ class InteractiveSession:
                 return
             if command == "/help":
                 self._write("/task：创建或选择任务；/model：为未来 Run 选择模型；/status：查看当前选择；/exit：退出。")
-                self._write("/run：生成仅供审阅的 live PatchProposal；/apply：批准并应用一个 Proposal；/verify：验证已应用变更；/repair：为失败验证生成有限修复 Proposal；/logs、/cancel 当前不可用。")
+                self._write("/run：生成仅供审阅的 live PatchProposal；/apply：批准并应用一个 Proposal；/verify：验证已应用变更；验证失败时 Harness 会自动生成有限修复 Proposal；/logs、/cancel 当前不可用。")
             elif command == "/status":
                 self._write(self._status_line())
                 self._show_current_task()
@@ -115,8 +101,6 @@ class InteractiveSession:
                 self._apply_proposal()
             elif command == "/verify":
                 self._verify_change()
-            elif command == "/repair":
-                self._repair_change()
             elif command in {"/logs", "/cancel"}:
                 self._write(f"{command} 当前不可用。")
             elif command:
@@ -276,11 +260,7 @@ class InteractiveSession:
         self._write("Turn 1 started — requesting a PatchProposal")
         self._write("Model response in progress …")
         try:
-            result = CodeService(
-                self.project or Path("."),
-                settings_dir=self.settings_dir,
-                model_selection_service=self.models,
-            ).generate(
+            result = self.application.generate(
                 task.task_id,
                 alias,
                 task.development_goal,
@@ -304,10 +284,9 @@ class InteractiveSession:
         if self.session_task_id is None:
             self._write("TASK_SELECTION_REQUIRED: 请先使用 /task 选择任务。")
             return
-        service = CodeService(self.project or Path("."), settings_dir=self.settings_dir, model_selection_service=self.models)
         try:
             task = self.tasks.show_task(self.session_task_id)
-            proposals = service.proposals(task.task_id)
+            proposals = self.application.proposals(task.task_id)
         except DomainError as error:
             self._error(error)
             return
@@ -332,109 +311,69 @@ class InteractiveSession:
         if self._readline().strip() not in {"y", "Y"}:
             self._write("未创建 apply Run，未写入任何文件。")
             return
-        sandbox = SandboxCliService(self.project or Path("."))
-        request = None
         try:
-            if "parent_diff" in selected:
-                raise DomainError("SANDBOX_UNAVAILABLE", "旧 Repair Proposal 尚未迁移；请生成新的 Proposal")
-            digest = os.environ.get("YIPILOT_SANDBOX_IMAGE_DIGEST", "")
-            if not digest:
-                self._write("本地已安装镜像的 sha256 digest：", end="")
-                digest = self._readline().strip()
-            request = sandbox.prepare(task.task_id, str(selected["repository_alias"]),
-                str(selected["base_sha"]), proposal, digest)
+            run_id = self.application.apply(task.task_id, str(selected["proposal_run_id"]),
+                proposal_hash=str(selected["proposal_hash"]), confirm=self._sandbox_approval)
+            if run_id is not None:
+                self._write(f"apply succeeded — Run {run_id}；使用 /verify 进行 Docker 验证")
+        except (DomainError, ValueError, OSError) as error:
+            self._error(error if isinstance(error, DomainError) else DomainError("SANDBOX_UNAVAILABLE", str(error)))
+
+    def _sandbox_approval(self, prompt: ApprovalPrompt) -> bool:
+        if prompt.action == "sandbox_execution":
+            request = prompt.requests[0]
             self._write(f"Run: {request.run_id}\nImage: {request.image_digest}")
             self._write(f"network=none · UID 10001 · /workspace={request.execution_directory}")
             self._write(f"预算：{request.budgets.model_dump_json()}")
-            approval = self._sandbox_approval(sandbox, request.task_id, request.operation_id,
-                request.run_id, "sandbox_execution", request.fingerprint, request.policy_revision)
-            if approval is None:
-                sandbox.cancel(task.task_id, request.run_id)
-                return
-            result = sandbox.execute(request, approval)
-            copies, _ = sandbox.load(task.task_id, request.run_id)
-            output = SandboxOutputService(sandbox.root, sandbox.git).inspect(copies, request, apply_policy())
-            self._write(output.patch.decode("utf-8"))
-            self._write(f"可信 diff SHA256: {output.patch_sha256}")
-            approval = self._sandbox_approval(sandbox, request.task_id, request.operation_id,
-                request.run_id, "sandbox_output", output_approval_fingerprint(request, output.patch_sha256),
-                request.policy_revision)
-            if approval is None:
-                sandbox.cancel(task.task_id, request.run_id)
-                return
-            sandbox.apply(request, result, output.patch_sha256, approval)
-            self._write(f"apply succeeded — Run {request.run_id}；使用 /verify 进行 Docker 验证")
-        except (DomainError, ValueError, OSError) as error:
-            self._error(error if isinstance(error, DomainError) else DomainError("SANDBOX_UNAVAILABLE", str(error)))
-        finally:
-            if request is not None:
-                sandbox.cancel(task.task_id, request.run_id)
-
-    def _sandbox_approval(self, service: SandboxCliService, task_id: str, operation_id: str,
-        run_id: str, action: str, fingerprint: str, revision: str) -> str | None:
-        self._write(f"批准 {action} · {fingerprint}？[y/N] ", end="")
-        if self._readline().strip() not in {"y", "Y"}:
+        elif prompt.action == "sandbox_output":
+            self._write(prompt.patch or "")
+            self._write(f"可信 diff SHA256: {prompt.patch_sha256}")
+        else:
+            self._write(f"Apply Run: {prompt.apply_run_id} · diff: {prompt.patch_sha256}")
+            for item in prompt.requests:
+                self._write(f"{item.tool_id}: {' '.join(item.argv)} · image={item.image_digest}")
+                self._write(f"network=none · UID 10001 · 预算：{item.budgets.model_dump_json()}")
+        self._write(f"批准 {prompt.action} · {prompt.fingerprint}？[y/N] ", end="")
+        approved = self._readline().strip() in {"y", "Y"}
+        if not approved:
             self._write("已取消；不会回退到宿主机执行。")
-            return None
-        record = ApprovalRecord(approval_id=str(uuid4()), task_id=task_id,
-            operation_id=operation_id, run_id=run_id, action_type=action,
-            target_fingerprint=fingerprint, policy_revision=revision,
-            decision=ApprovalDecision.APPROVED, decided_at=datetime.now(UTC))
-        FileApprovalStore(service.store).save(record)
-        return record.approval_id
+        return approved
 
     def _verify_change(self) -> None:
         if self.session_task_id is None:
             self._write("TASK_SELECTION_REQUIRED: 请先使用 /task 选择任务")
             return
-        sandbox = SandboxCliService(self.project or Path("."))
-        prepared = None
         try:
-            runs = [r for r in sandbox.store.list_runs(self.session_task_id)
-                if r.stage == "sandbox_apply" and r.status.value == "succeeded"]
+            runs = self.application.applied_runs(self.session_task_id)
             if not runs:
                 self._write("APPLY_RUN_NOT_FOUND: 没有可验证的 sandbox apply Run；旧宿主机结果不能复用。")
                 return
             for index, run in enumerate(runs, 1):
                 self._write(f"{index}. {run.run_id}")
-            if len(runs) == 1:
-                selected = runs[0]
-            else:
+            selected = runs[0]
+            if len(runs) > 1:
                 self._write("选择 Apply Run：", end="")
                 value = self._readline().strip()
                 if not value.isdigit() or not 1 <= int(value) <= len(runs):
                     return
                 selected = runs[int(value) - 1]
-            copies, request, evidence = sandbox.accepted(self.session_task_id, selected.run_id)
-            service = SandboxVerificationService(sandbox.root)
-            prepared = service.prepare(copies, request, apply_policy(), evidence)
-            self._write(f"Apply Run: {selected.run_id} · diff: {evidence.patch_sha256}")
-            for item in prepared.requests:
-                self._write(f"{item.tool_id}: {' '.join(item.argv)} · image={item.image_digest}")
-                self._write(f"network=none · UID 10001 · 预算：{item.budgets.model_dump_json()}")
-            approval = self._sandbox_approval(sandbox, prepared.task_id, prepared.operation_id,
-                prepared.run_id, "sandbox_verification", prepared.approval_fingerprint, REVISION)
-            if approval is None:
-                for run in sandbox.store.list_runs(prepared.task_id):
-                    if run.operation_id == prepared.operation_id:
-                        sandbox.cancel(prepared.task_id, run.run_id)
-                return
-            service.run(copies, request, apply_policy(), evidence, prepared.run_id, approval_id=approval)
-            artifact = service.handoff(copies, request, apply_policy(), evidence, prepared.run_id)
-            self._write(f"Change Handoff 已生成并重新校验：{artifact.relative_path}")
+            outcome = self.application.verify(self.session_task_id, selected.run_id,
+                confirm=self._sandbox_approval, model_selector=self.session_selector)
         except (DomainError, ValueError, OSError) as error:
             self._error(error if isinstance(error, DomainError) else DomainError("SANDBOX_EVIDENCE_FAILED", str(error)))
-        finally:
-            if prepared is not None:
-                for run in sandbox.store.list_runs(prepared.task_id):
-                    if run.operation_id == prepared.operation_id:
-                        sandbox.cancel(prepared.task_id, run.run_id)
-
-    def _repair_change(self) -> None:
-        if self.session_task_id is None:
-            self._write("请先使用 /task 选择任务")
             return
-        self._write("SANDBOX_UNAVAILABLE: /repair 尚未接入沙箱诊断；请审阅失败证据并使用 /run 生成新 Proposal。")
+        if outcome.handoff is not None:
+            self._write(f"Change Handoff 已生成并重新校验：{outcome.handoff.relative_path}")
+        if outcome.error is not None:
+            self._error(outcome.error)
+        if outcome.repair_error is not None:
+            self._write(f"Harness 未生成自动修复 Proposal：{outcome.repair_error.code}")
+        if outcome.repair is not None:
+            result = outcome.repair
+            if result.status == "succeeded":
+                self._write(f"Harness 已根据失败 Docker 证据自动生成 Repair Proposal {result.run_id}；使用 /apply 审阅并执行。")
+            else:
+                self._write(f"Harness 自动修复 Proposal 未完成：{result.error_code or 'REPAIR_FAILED'}")
 
     def _choose_proposal(self, proposals: list[dict[str, object]]) -> dict[str, object] | None:
         rows = [(str(item["proposal_run_id"]), f"{item['proposal_run_id']} · {item['summary']}") for item in proposals]

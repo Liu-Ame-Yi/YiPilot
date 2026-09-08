@@ -17,7 +17,6 @@ from uuid import uuid4
 
 from pydantic import JsonValue
 
-from yipilot.application.workspace_service import PreparedWorkspace
 from yipilot.domain.errors import DomainError
 from yipilot.harness.models import (
     HarnessCheck,
@@ -25,8 +24,9 @@ from yipilot.harness.models import (
     HarnessStatus,
     aggregate_checks,
 )
-from yipilot.infrastructure.filesystem import atomic_write_json, project_path
-from yipilot.infrastructure.git_runner import GitRunner
+from yipilot.persistence.filesystem import atomic_write_json, project_path
+from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.workspace_service import PreparedWorkspace
 
 _EVIDENCE_NAMES = (
     "status.txt",
@@ -188,7 +188,7 @@ class GitWorkspaceHarness:
                 "--no-ext-diff",
                 "--no-textconv",
                 "--",
-                os.devnull,
+                "/dev/null",
                 os.fsdecode(path),
             )
             for path in sorted(untracked_paths)
@@ -201,7 +201,7 @@ class GitWorkspaceHarness:
                 "--no-ext-diff",
                 "--no-textconv",
                 "--",
-                os.devnull,
+                "/dev/null",
                 os.fsdecode(path),
             )
             for path in sorted(untracked_paths)

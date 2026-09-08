@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Yipilot 当前运行 Loop",
+    "subtitle": "已实现：受控、可审计的 Run 生命周期；未实现：真实 AI 写代码与自动修复循环",
+    "locale": "zh-CN",
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "output": "docs/diagrams/yipilot-current-loop.html",
+    "viewBox": [1180, 900],
+    "views": [
+      {
+        "id": "current-loop",
+        "label": "当前可运行链路",
+        "focus": ["user", "cli", "control", "planner", "runtime", "gate", "executor", "evidence", "harness", "handoff"],
+        "note": "从命令到可审计 Handoff 的真实路径；当前 code 阶段使用 fake/replay 计划。"
+      },
+      {
+        "id": "safety-boundary",
+        "label": "受控边界",
+        "focus": ["control", "runtime", "gate", "executor", "evidence", "blocked"],
+        "note": "所有工具请求先校验策略，需批准的操作停在 Approval Gate。"
+      },
+      {
+        "id": "next-loop",
+        "label": "M5-M6 目标",
+        "focus": ["planner", "runtime", "executor", "harness", "future"],
+        "note": "未来把 live Provider、受控写入和有限修复回路接到现有边界中。"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "user", "label": "用户与 CLI" },
+    { "id": "control", "label": "控制面：Task / Operation / Run / Worktree" },
+    { "id": "runtime", "label": "Agent Runtime" },
+    { "id": "policy", "label": "策略与批准边界" },
+    { "id": "evidence", "label": "证据与质量门" },
+    { "id": "exceptions", "label": "暂停 / 失败", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "intake", "label": "创建受控任务", "fromCol": 0, "toCol": 1 },
+    { "id": "plan", "label": "生成并校验计划", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "execute", "label": "受控执行与留证", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["user", "cli", "control", "planner", "runtime", "gate", "executor", "evidence", "harness", "handoff"],
+  "nodes": [
+    { "id": "user", "lane": "user", "col": 0, "type": "external", "label": "用户", "sublabel": "需求 / CLI 命令" },
+    { "id": "cli", "lane": "user", "col": 1, "type": "frontend", "label": "Typer CLI", "sublabel": "code / quality / run" },
+    { "id": "handoff", "lane": "user", "col": 5, "type": "frontend", "label": "Change Handoff", "sublabel": "当前仅 prepare-only；不提交、不推送" },
+    { "id": "control", "lane": "control", "col": 1, "type": "database", "label": "控制面", "sublabel": "创建 Task、Operation、Run；准备隔离 Worktree" },
+    { "id": "planner", "lane": "runtime", "col": 2, "type": "backend", "label": "Planner", "sublabel": "当前：fake / replay 计划；live Provider 尚未接入写代码" },
+    { "id": "runtime", "lane": "runtime", "col": 3, "type": "backend", "label": "AgentRuntime", "sublabel": "校验计划归属、重复步骤、工具请求" },
+    { "id": "executor", "lane": "runtime", "col": 4, "type": "messagebus", "label": "受控工具执行", "sublabel": "按顺序执行；code generate 当前不改源代码" },
+    { "id": "gate", "lane": "policy", "col": 3, "type": "security", "label": "ToolRegistry + Approval Gate", "sublabel": "白名单 argv、工作区、超时、批准令牌" },
+    { "id": "evidence", "lane": "evidence", "col": 4, "type": "database", "label": "Event / Artifact / ToolRun", "sublabel": "计划、输出、Git 与命令证据持久化" },
+    { "id": "harness", "lane": "evidence", "col": 5, "type": "security", "label": "Harness", "sublabel": "验证证据完整性；pytest 是独立的受控质量路径" },
+    { "id": "blocked", "lane": "exceptions", "col": 4, "type": "security", "label": "PAUSED / FAILED", "sublabel": "批准缺失、策略拒绝、工具失败或 Harness 失败" },
+    { "id": "future", "lane": "exceptions", "col": 5, "type": "cloud", "label": "M5-M6 未来闭环", "sublabel": "live Provider → 受控写入 → pytest/lint → 有限修复；尚未实现", "tag": "规划" }
+  ],
+  "edges": [
+    { "from": "user", "to": "cli", "role": "main" },
+    { "from": "cli", "to": "control", "label": "创建或复用 Run", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "control", "to": "planner", "label": "受限上下文", "fromSide": "right", "toSide": "left", "role": "main" },
+    { "from": "planner", "to": "runtime", "label": "AgentPlan", "role": "main" },
+    { "from": "runtime", "to": "gate", "label": "预校验每一步", "variant": "security", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "gate", "to": "executor", "label": "仅允许的工具", "variant": "emphasis", "fromSide": "right", "toSide": "left", "role": "main" },
+    { "from": "executor", "to": "evidence", "label": "ToolRun + 流输出", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "evidence", "to": "harness", "label": "校验证据", "role": "main" },
+    { "from": "harness", "to": "handoff", "label": "成功：SUCCEEDED", "variant": "emphasis", "fromSide": "top", "toSide": "bottom", "route": "up-channel" },
+    { "from": "gate", "to": "blocked", "label": "批准缺失 / 策略拒绝", "variant": "security", "role": "error", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "executor", "to": "blocked", "label": "执行失败", "variant": "default", "role": "error", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "harness", "to": "blocked", "label": "质量门失败", "variant": "security", "role": "error", "fromSide": "bottom", "toSide": "right", "route": "outside-right" },
+    { "from": "future", "to": "planner", "label": "未来：质量反馈驱动的有限修复", "variant": "dashed", "role": "return", "fromSide": "top", "toSide": "bottom", "route": "return-left" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "当前事实",
+      "items": [
+        "每次执行都有 Task、Operation、Run 三层身份",
+        "工作区、计划、工具输出和 Git 证据都可回查",
+        "代码生成仍为 fake/replay；不会真实改写项目源码"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "pytest 的位置",
+      "items": [
+        "它不是 AgentRuntime 自动修复循环的一部分",
+        "它是 quality pytest 的独立受控运行：先准备、获批后执行、再由 Harness 验证",
+        "当前固定为已配置 Python 的 python -m pytest"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "下一阶段",
+      "items": [
+        "M5：把 live Provider 和受控 patch / 写入接到 Planner 与工具边界",
+        "M6：把测试、lint、类型检查反馈接成有次数上限的修复循环",
+        "提交、Jenkins、PR 和人工合并仍在后续阶段"
+      ]
+    }
+  ]
+}

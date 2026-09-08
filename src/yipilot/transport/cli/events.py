@@ -4,7 +4,7 @@ import json
 import sys
 from typing import TextIO
 
-from yipilot.infrastructure.event_journal import EventRecord
+from yipilot.persistence.event_journal import EventRecord
 
 _TERMINAL_EVENT_TYPES = frozenset({"run.succeeded", "run.failed", "run.cancelled"})
 

@@ -54,3 +54,19 @@ class SecretRedactor:
         if parsed.port is not None:
             host = f"{host}:{parsed.port}"
         return urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
+
+
+_COMMAND_URL_CREDENTIALS = re.compile(r"(?i)(https?://)[^\s/@]+(?::[^\s/@]*)?@")
+_COMMAND_AUTHORIZATION = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)\S+")
+_COMMAND_BEARER = re.compile(r"(?i)(bearer\s+)\S+")
+_COMMAND_SECRET_PARAMETER = re.compile(
+    r"(?i)(\b(?:access[_-]?token|api[_-]?key|password|secret|token)=)[^\s&]+"
+)
+
+def safe_stderr_summary(stderr: str) -> str:
+    summary = " ".join(stderr.strip().split())
+    summary = _COMMAND_URL_CREDENTIALS.sub(r"\1[REDACTED]@", summary)
+    summary = _COMMAND_AUTHORIZATION.sub(r"\1[REDACTED]", summary)
+    summary = _COMMAND_BEARER.sub(r"\1[REDACTED]", summary)
+    summary = _COMMAND_SECRET_PARAMETER.sub(r"\1[REDACTED]", summary)
+    return summary[:500]

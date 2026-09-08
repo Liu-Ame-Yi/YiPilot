@@ -10,7 +10,6 @@ from uuid import uuid4
 
 from pydantic import JsonValue
 
-from yipilot.application.workspace_service import PreparedWorkspace
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     QUALITY_PYTEST_ALLOWED_ENV_NAMES,
@@ -36,11 +35,12 @@ from yipilot.harness.report_store import (
     UNIT_TEST_HARNESS_REPORT_NAME,
     HarnessReportStore,
 )
-from yipilot.infrastructure.approval_store import FileApprovalStore
-from yipilot.infrastructure.artifact_store import ArtifactRecord, FileArtifactStore
-from yipilot.infrastructure.provider_store import FileProviderStore
-from yipilot.infrastructure.task_store import FileTaskStore
-from yipilot.infrastructure.tool_run_store import FileToolRunStore
+from yipilot.models.store import FileProviderStore
+from yipilot.persistence.approval_store import FileApprovalStore
+from yipilot.persistence.artifact_store import ArtifactRecord, FileArtifactStore
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.persistence.tool_run_store import FileToolRunStore
+from yipilot.workspace.workspace_service import PreparedWorkspace
 
 _SRS_HEADINGS = (
     "# SRS",

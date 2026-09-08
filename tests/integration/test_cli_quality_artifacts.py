@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from typer.testing import CliRunner
 
 from yipilot.harness.quality import SrsHarness
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.persistence.task_store import FileTaskStore
 from yipilot.transport.cli.app import app
 
 runner = CliRunner()

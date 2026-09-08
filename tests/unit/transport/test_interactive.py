@@ -8,15 +8,15 @@ from prompt_toolkit.application.current import create_app_session
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from yipilot.application.model_selection_service import ModelSelectionService
-from yipilot.application.project_service import ProjectService
-from yipilot.application.repo_service import RepoService
 from yipilot.domain.model import ModelChunk
 from yipilot.domain.provider import ModelEntry, ProviderConnection
-from yipilot.infrastructure.git_runner import GitRunner
-from yipilot.infrastructure.secret_store import SecretStore
-from yipilot.infrastructure.task_store import FileTaskStore
+from yipilot.models.secrets import SecretStore
+from yipilot.models.selection import ModelSelectionService
+from yipilot.persistence.task_store import FileTaskStore
 from yipilot.transport.cli.interactive import InteractiveSession
+from yipilot.workflow.project_service import ProjectService
+from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.repo_service import RepoService
 
 
 class ProbePort:
@@ -149,10 +149,11 @@ def test_verify_without_a_task_creates_no_state(tmp_path) -> None:
     assert "请先使用 /task 选择任务" in output.getvalue()
 
 
-def test_repair_without_a_task_creates_no_state(tmp_path) -> None:
+def test_help_does_not_expose_manual_repair(tmp_path) -> None:
     output = StringIO()
-    InteractiveSession(project=tmp_path, input=StringIO("/repair\n/exit\n"), output=output).run()
-    assert "请先使用 /task 选择任务" in output.getvalue()
+    InteractiveSession(project=tmp_path, input=StringIO("/help\n/repair\n/exit\n"), output=output).run()
+    assert "/repair：" not in output.getvalue()
+    assert "未知命令" in output.getvalue()
 
 
 def test_run_confirms_and_creates_a_live_patch_proposal_without_source_write(
@@ -204,21 +205,21 @@ def test_run_confirms_and_creates_a_live_patch_proposal_without_source_write(
 
 def test_apply_without_valid_image_fails_closed(tmp_path, monkeypatch) -> None:
     project = _interactive_project(tmp_path)
-    from yipilot.application.code_service import CodeService
     from yipilot.domain.patch_proposal import PatchProposal
+    from yipilot.workflow.code_service import CodeService
     proposal = PatchProposal(summary="change", patches=({"path": "tracked.py",
         "unified_diff": "--- a/tracked.py\n+++ b/tracked.py\n@@ -1 +1 @@\n-value = 1\n+value = 2\n"},))
     monkeypatch.setattr(CodeService, "proposals", lambda *_: [{"proposal": proposal,
         "proposal_run_id": "fixture", "model_selector": "fixture", "model_revision": 1,
         "summary": "change", "paths": ["tracked.py"], "proposal_hash": "0" * 64,
         "repository_alias": "sample", "base_sha": "0" * 40}])
-    monkeypatch.setenv("YIPILOT_SANDBOX_IMAGE_DIGEST", "mutable:tag")
     monkeypatch.setattr(CodeService, "apply", lambda *_a, **_k: pytest.fail("host apply invoked"))
     output = StringIO()
     session = InteractiveSession(project=project, input=StringIO("1\ny\n"), output=output)
     session.session_task_id = "1"
     session._apply_proposal()
     assert "succeeded" not in output.getvalue()
+    assert "SANDBOX_IMAGE_NOT_REGISTERED" in output.getvalue()
     assert all(r.status.value != "running" for r in FileTaskStore(project).list_runs("1"))
 
 
@@ -239,19 +240,15 @@ def test_apply_rejection_creates_no_apply_run(tmp_path, monkeypatch) -> None:
     assert "未创建 apply Run，未写入任何文件。" in output.getvalue()
 
 
-def test_verify_does_not_reuse_host_runs_and_repair_fails_closed(tmp_path, monkeypatch) -> None:
+def test_verify_does_not_reuse_host_runs(tmp_path, monkeypatch) -> None:
     project = _interactive_project(tmp_path)
-    from yipilot.application.repair_service import RepairService
-    from yipilot.application.verification_service import VerificationService
+    from yipilot.workflow.verification_service import VerificationService
     monkeypatch.setattr(VerificationService, "prepare", lambda *_a, **_k: pytest.fail("host verify invoked"))
-    monkeypatch.setattr(RepairService, "repair", lambda *_a, **_k: pytest.fail("host repair invoked"))
     output = StringIO()
     session = InteractiveSession(project=project, input=StringIO(""), output=output)
     session.session_task_id = "1"
     session._verify_change()
-    session._repair_change()
     assert "APPLY_RUN_NOT_FOUND" in output.getvalue()
-    assert "SANDBOX_UNAVAILABLE" in output.getvalue()
     assert FileTaskStore(project).list_runs("1") == []
 
 
