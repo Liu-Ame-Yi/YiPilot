@@ -28,6 +28,7 @@ from yipilot.transport.cli.events import (
     is_terminal_event,
 )
 from yipilot.transport.cli.interactive import InteractiveSession
+from yipilot.transport.cli.specification import app as specification_app
 from yipilot.workflow.project_service import ProjectService
 from yipilot.workflow.quality_artifacts import QualityArtifactService
 from yipilot.workflow.sandbox_application import inspect_sandbox, register_sandbox_image
@@ -50,6 +51,7 @@ app.add_typer(task_app, name="task")
 app.add_typer(run_app, name="run")
 app.add_typer(code_app, name="code")
 app.add_typer(quality_app, name="quality")
+app.add_typer(specification_app, name="specification")
 app.add_typer(sandbox_app, name="sandbox")
 app.add_typer(settings_app, name="settings")
 task_app.add_typer(repo_app, name="repo")

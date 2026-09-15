@@ -28,6 +28,10 @@ from yipilot.workflow.sandbox_verification import (
     REVISION,
     SandboxVerificationService,
 )
+from yipilot.workflow.specification_service import (
+    SpecificationService,
+    SpecificationState,
+)
 from yipilot.workspace.repo_service import RepoService
 from yipilot.workspace.sandbox_output import (
     SandboxOutputService,
@@ -74,6 +78,26 @@ class ProjectApplication:
         self.output = SandboxOutputService(self.sandbox.root, self.sandbox.git)
         self.repairs = RepairService(project, model_selection_service=self.models,
             sandbox=self.sandbox, verification=self.verification, output=self.output)
+        self.specifications = SpecificationService(self.sandbox.store, self.models, self.sandbox.git)
+
+    def start_specification(self, task_id: str, *, instruction: str = "",
+                            prd_path: Path | None = None, alias: str | None = None,
+                            context_files: Iterable[str] = (), request_id: str | None = None,
+                            model_selector: str | None = None, max_revisions: int = 2) -> SpecificationState:
+        return self.specifications.start(task_id, instruction=instruction, prd_path=prd_path,
+            alias=alias, context_files=context_files, request_id=request_id,
+            model_selector=model_selector, max_revisions=max_revisions)
+
+    def specification_status(self, task_id: str, flow_id: str | None = None) -> SpecificationState:
+        return self.specifications.status(task_id, flow_id)
+
+    def resume_specification(self, task_id: str, flow_id: str | None = None) -> SpecificationState:
+        return self.specifications.resume(task_id, flow_id)
+
+    def clarify_specification(self, task_id: str, flow_id: str, answers: dict[str, str], *,
+                              request_id: str, expected_input_sha256: str) -> SpecificationState:
+        return self.specifications.clarify(task_id, flow_id, answers, request_id=request_id,
+                                          expected_input_sha256=expected_input_sha256)
 
     def generate(self, task_id: str, alias: str, instruction: str, *,
                  request_id: str | None = None, model_selector: str | None = None,

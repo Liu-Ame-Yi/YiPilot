@@ -343,7 +343,7 @@ class CodeService:
                 self._store.get_task(run.task_id), alias, run, metadata.head_sha)
             self._write_resolved(artifacts, run, resolved, fingerprint)
             documents = self._approved_documents(run.task_id)
-            files = _context_files(copies.baseline, context_files)
+            files = read_context_files(copies.baseline, context_files)
             prompt = _prompt(instruction, documents, files)
             context = artifacts.write_bytes(
                 run.task_id, run.run_id, producer="code_service", relative_path=_CONTEXT_PATH,
@@ -483,7 +483,8 @@ def _record_value(record: ArtifactRecord) -> dict[str, object]:
             "sha256": record.sha256, "task_id": record.task_id}
 
 
-def _context_files(workspace: PreparedWorkspace | Path, values: tuple[str, ...]) -> list[tuple[str, str, str]]:
+def read_context_files(workspace: PreparedWorkspace | Path, values: tuple[str, ...]) -> list[tuple[str, str, str]]:
+    """Read explicitly selected, bounded UTF-8 files from a prepared baseline."""
     root = workspace if isinstance(workspace, Path) else workspace.path
     if len(values) > _MAX_CONTEXT_FILES or len(set(values)) != len(values):
         raise DomainError("MODEL_CONTEXT_INVALID", "context files must be unique and within the file limit")
