@@ -1,6 +1,18 @@
 # 当前实现状态
 
-核对日期：2026-09-08。依据当前工作树源码、离线组合测试和 CLI help 检查，**不是发布版本或完整端到端验收声明**。产品目标见 [产品定义](vision.md)，技术目标见 [V2 架构](../superpowers/specs/2026-09-07-yipilot-v2-architecture.md)。
+核对日期：2026-09-15。依据当前工作树源码、离线组合测试和 CLI help 检查，**不是发布版本或完整端到端验收声明**。产品目标见 [产品定义](vision.md)，技术目标见 [V2 架构](../superpowers/specs/2026-09-07-yipilot-v2-architecture.md)。
+
+## 2026-09-12 需求与设计闭环
+
+新增真实输入 → SRS → 独立需求评审 → SDD → 独立设计评审，使用现有公共入口、模型选择与 ModelPort、SQLite 和工件存储。支持每类文档有界修订、澄清答案绑定、旧下游失效、幂等请求与阶段提交边界恢复。调用不确定时停止，不能声称外部恰好执行一次；普通阶段不逐次人审。
+
+最终相关验证（2026-09-15）：39 项通过（198.97 秒），含全部 30 项闭环测试、架构边界检查及原真实提案路径的离线测试；覆盖正常路径、返工上限、澄清、失效、重启、不合法输出、模型错误、引用校验、事务回滚与路径边界。Ruff、mypy（72 个源文件）、specification CLI help 和 diff 格式检查通过。
+
+此前全量离线结果：664 passed / 42 skipped / 1 failed（1430.31 秒）。唯一失败是跨模块导入私有读取函数，已将共享函数及两处调用统一为公开的 read_context_files，读取行为不变；该架构检查包含在上述 39 项修复后复测中。未再重复完整套件，不把这次结果写成“全量全部通过”。全量开始后补充的新需求替代中断调用测试也已纳入最终 30 项闭环测试。
+
+真实 DeepSeek 样例四阶段通过（18.02 秒），使用临时公开配置副本的 reasoning_effort=none；原全局配置未修改。默认配置/low 推理预算触发现有响应上限，未完成；none 的第一次非法来源引用被程序拒绝，改进提示后新请求通过。成功只覆盖两文件样例，不代表默认配置或所有仓库可用；返工与故障分支仍是离线验证。详见 [真实验收记录](../guides/specification-live-acceptance-2026-09-12.md)。
+
+此路径止于已接受的需求和设计工件，没有接入自动编码、GitHub、Actions 或合并。旧 quality fake/replay 和 code generate/apply/verify 的行为保留。[入口说明](../guides/specification-workflow.md) · [实现与事务边界](../architecture/specification-workflow.md)。
 
 ## 已接入的能力
 
@@ -15,12 +27,13 @@
 | 验证与修复提案 | /verify 调 Docker 验证；符合失败条件时触发有限修复提案，仍需后续应用和验证 | [验证](../../src/yipilot/workflow/sandbox_verification.py)、[修复](../../src/yipilot/workflow/repair_service.py) |
 | 沙箱配置 | sandbox doctor/register 检查并登记本地固定镜像 | [CLI](../../src/yipilot/transport/cli/app.py) |
 | 质量工件 | quality generate 保留 fake/replay 的确定性文档演练及结构检查 | [CLI](../../src/yipilot/transport/cli/app.py) |
+| 真实需求与设计 | specification 经公共入口独立生成/评审 SRS 和 SDD，支持有界返工、澄清、输入失效和阶段恢复 | [SpecificationService](../../src/yipilot/workflow/specification_service.py)、[入口说明](../guides/specification-workflow.md) |
 
 ## 仍存在的缺口
 
 - 没有从原始需求到 SRS/SDD 评审、编码、验证、发布的统一自动工作流。
 - Runtime 仍主要围绕一次 PatchProposal；不是已完成的动态检索/编辑多轮 Agent。
-- 真实 SRS/SDD 生成与语义评审尚未构成生产闭环；确定性 fixture 不代表理解了用户需求。
+- 真实 SRS/SDD 生成与独立语义评审已接入固定闭环；尚未自动连接编码及后续交付，确定性 fixture 不代表理解了用户需求。真实验收仅覆盖下述小样例和明确模型配置。
 - 当前 /run、/apply、/verify 已通过 ProjectApplication 收敛业务路径，仍保留逐次人工确认；不是预授权自动推进或可持久恢复工作流。
 - /logs、/cancel 尚不可用；不能将 V2 恢复/取消设计当成当前能力。
 - 自动 commit/push、PR/MR 创建和目标仓库 CI/Jenkins 接入尚未完成。Yipilot 自身的 CI 不等于目标仓库交付集成。
