@@ -8,12 +8,19 @@ from typing import Any
 import httpx
 
 from yipilot.domain.errors import DomainError
-from yipilot.domain.model import MAX_MODEL_CHUNK_BYTES, ModelChunk, ModelRequest
+from yipilot.domain.model import (
+    MAX_MODEL_CHUNK_BYTES,
+    ModelChunk,
+    ModelCompletion,
+    ModelRequest,
+)
 from yipilot.domain.provider import ALLOWED_MODEL_REQUEST_OPTIONS, ResolvedModel
 from yipilot.models.secrets import SecretStore
 from yipilot.security.redaction import SecretRedactor
 
-MAX_MODEL_RESPONSE_BYTES = 256 * 1024
+MAX_MODEL_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_MODEL_EVENT_BYTES = 256 * 1024
+MAX_MODEL_REASONING_BYTES = 1024 * 1024
 _PROBE_INSTRUCTION = "Reply with OK."
 
 
@@ -39,6 +46,7 @@ class OpenAICompatibleModelPort:
         self._max_response_bytes = max_response_bytes
         self._is_cancelled = is_cancelled or (lambda: False)
         self._clock = clock
+        self.last_completion = ModelCompletion()
         self._client = httpx.Client(transport=transport, follow_redirects=False, trust_env=False)
 
     def close(self) -> None:
@@ -52,7 +60,12 @@ class OpenAICompatibleModelPort:
         return self._request(request, streaming=False)
 
     def _request(self, request: ModelRequest, *, streaming: bool) -> tuple[ModelChunk, ...]:
+        tokens = min(request.output_budget_tokens or self._model.max_output_tokens, self._model.max_output_tokens)
+        self.last_completion = ModelCompletion(output_budget_tokens=tokens)
         self._validate_request(request)
+        # Conservative UTF-8 upper bound, not a tokenizer. Reserve completion and framing.
+        if self._model.context_limit and len(request.user_instruction.encode()) + tokens + 256 > self._model.context_limit:
+            raise DomainError("MODEL_CONTEXT_LIMIT_EXCEEDED", "conservative input estimate plus output reserve exceeds context")
         secret = self._secrets.read(self._credential_ref)
         redactor = SecretRedactor([secret])
         budget = min(request.output_budget_bytes, self._model.output_limit)
@@ -62,7 +75,7 @@ class OpenAICompatibleModelPort:
         body = {
             "model": self._model.model_id,
             "stream": streaming,
-            "max_tokens": budget,
+            "max_tokens": tokens,
             "messages": [{"role": "user", "content": request.user_instruction}],
         }
         if not set(request.request_options) <= ALLOWED_MODEL_REQUEST_OPTIONS:
@@ -81,7 +94,11 @@ class OpenAICompatibleModelPort:
                 content_type = response.headers.get("content-type", "").casefold()
                 if not streaming or "application/json" in content_type:
                     content = self._json_content(self._bounded_bytes(response, deadline))
-                    return _chunks(content, budget, redactor)
+                    if self.last_completion.text_bytes > budget:
+                        raise DomainError("MODEL_OUTPUT_LIMIT_EXCEEDED", "model output exceeded its budget")
+                    chunks = _chunks(content, budget, redactor)
+                    self.last_completion.complete = True
+                    return chunks
                 return self._sse_chunks(response, deadline, budget, redactor)
         except DomainError:
             raise
@@ -121,9 +138,11 @@ class OpenAICompatibleModelPort:
         for part in response.iter_raw():
             self._check_stop(deadline)
             total += len(part)
+            self.last_completion.transport_bytes = total
             if total > self._max_response_bytes:
                 raise DomainError("MODEL_RESPONSE_LIMIT_EXCEEDED", "model response exceeded its limit")
             parts.append(part)
+        self._check_stop(deadline)
         return b"".join(parts)
 
     def _sse_chunks(
@@ -133,29 +152,40 @@ class OpenAICompatibleModelPort:
         budget: int,
         redactor: SecretRedactor,
     ) -> tuple[ModelChunk, ...]:
-        total = 0
         buffer = b""
-        chunks: list[ModelChunk] = []
+        parts: list[str] = []
         done = False
         for part in response.iter_raw():
             self._check_stop(deadline)
-            total += len(part)
-            if total > self._max_response_bytes:
+            self.last_completion.transport_bytes += len(part)
+            if self.last_completion.transport_bytes > self._max_response_bytes:
                 raise DomainError("MODEL_RESPONSE_LIMIT_EXCEEDED", "model response exceeded its limit")
             buffer += part
             while b"\n" in buffer:
                 line, buffer = buffer.split(b"\n", 1)
-                done = self._sse_line(line.rstrip(b"\r"), chunks, budget, redactor) or done
+                if done and line.strip():
+                    raise DomainError("MODEL_PROTOCOL_ERROR", "data after stream completion")
+                done = self._sse_line(line.rstrip(b"\r"), parts, budget) or done
+            if len(buffer) > MAX_MODEL_EVENT_BYTES:
+                raise DomainError("MODEL_EVENT_LIMIT_EXCEEDED", "model event exceeded its limit")
         if buffer:
-            done = self._sse_line(buffer.rstrip(b"\r"), chunks, budget, redactor) or done
+            if done and buffer.strip():
+                raise DomainError("MODEL_PROTOCOL_ERROR", "data after stream completion")
+            done = self._sse_line(buffer.rstrip(b"\r"), parts, budget) or done
+        self._check_stop(deadline)
         if not done:
             raise DomainError("MODEL_PROTOCOL_ERROR", "model stream ended without completion")
-        return tuple(chunks)
+        self.last_completion.received = True
+        self._require_stop()
+        chunks = _chunks("".join(parts), budget, redactor)
+        self.last_completion.complete = True
+        return chunks
 
-    @staticmethod
     def _sse_line(
-        line: bytes, chunks: list[ModelChunk], budget: int, redactor: SecretRedactor
+        self, line: bytes, parts: list[str], budget: int
     ) -> bool:
+        if len(line) > MAX_MODEL_EVENT_BYTES:
+            raise DomainError("MODEL_EVENT_LIMIT_EXCEEDED", "model event exceeded its limit")
         if not line or line.startswith(b":"):
             return False
         if not line.startswith(b"data:"):
@@ -166,18 +196,87 @@ class OpenAICompatibleModelPort:
             raise DomainError("MODEL_PROTOCOL_ERROR", "model stream is not valid UTF-8") from error
         if data == "[DONE]":
             return True
-        content = _delta_content(data)
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError as error:
+            raise DomainError("MODEL_PROTOCOL_ERROR", "model stream chunk is invalid") from error
+        content = self._payload_content(payload, streaming=True)
         if content:
-            chunks.extend(_chunks(content, budget - _chunk_bytes(chunks), redactor))
+            if self.last_completion.text_bytes > budget:
+                raise DomainError("MODEL_OUTPUT_LIMIT_EXCEEDED", "model output exceeded its budget")
+            parts.append(content)
         return False
 
-    @staticmethod
-    def _json_content(raw: bytes) -> str:
+    def _json_content(self, raw: bytes) -> str:
         try:
             payload = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise DomainError("MODEL_PROTOCOL_ERROR", "model response is not valid JSON") from error
-        return _message_content(payload)
+        self.last_completion.received = True
+        content = self._payload_content(payload, streaming=False)
+        self._require_stop()
+        return content
+
+    def _payload_content(self, payload: Any, *, streaming: bool) -> str:
+        if not isinstance(payload, dict) or not isinstance(payload.get("choices"), list):
+            raise DomainError("MODEL_PROTOCOL_ERROR", "model choices are invalid")
+        usage = payload.get("usage")
+        if usage is not None:
+            if not isinstance(usage, dict):
+                raise DomainError("MODEL_PROTOCOL_ERROR", "model usage is invalid")
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = usage.get(key)
+                if value is not None:
+                    if type(value) is not int or value < 0:
+                        raise DomainError("MODEL_PROTOCOL_ERROR", "model usage is invalid")
+                    self.last_completion.usage[key] = value
+        choices = payload["choices"]
+        if not choices and streaming and usage is not None:
+            return ""
+        if len(choices) != 1 or not isinstance(choices[0], dict) or choices[0].get("index", 0) != 0:
+            raise DomainError("MODEL_PROTOCOL_ERROR", "expected one model choice")
+        choice = choices[0]
+        message = choice.get("delta" if streaming else "message")
+        if not isinstance(message, dict):
+            raise DomainError("MODEL_PROTOCOL_ERROR", "model message is invalid")
+        content = message.get("content")
+        if content is None:
+            content = ""
+        if not isinstance(content, str):
+            raise DomainError("MODEL_PROTOCOL_ERROR", "model text is invalid")
+        if self.last_completion.finish_reason is not None:
+            raise DomainError("MODEL_PROTOCOL_ERROR", "choice after finish reason")
+        self.last_completion.text_bytes += len(content.encode())
+        for key in ("reasoning_content", "reasoning", "reasoning_text"):
+            reasoning = message.get(key)
+            if reasoning is not None:
+                if not isinstance(reasoning, str):
+                    raise DomainError("MODEL_PROTOCOL_ERROR", "model reasoning is invalid")
+                self.last_completion.reasoning_bytes += len(reasoning.encode())
+        if self.last_completion.reasoning_bytes > MAX_MODEL_REASONING_BYTES:
+            raise DomainError("MODEL_REASONING_LIMIT_EXCEEDED", "model reasoning exceeded its limit")
+        if message.get("tool_calls") or message.get("function_call"):
+            self.last_completion.finish_reason = "tool_calls"
+            raise DomainError("MODEL_TOOL_CALL_UNSUPPORTED", "text-only model request returned a tool call")
+        reason = choice.get("finish_reason")
+        if reason is not None:
+            if not isinstance(reason, str):
+                raise DomainError("MODEL_PROTOCOL_ERROR", "model finish reason is invalid")
+            match reason:
+                case "stop" | "length" | "tool_calls" | "content_filter":
+                    self.last_completion.finish_reason = reason
+                case _:
+                    self.last_completion.finish_reason = "unknown"
+        return content
+
+    def _require_stop(self) -> None:
+        reason = self.last_completion.finish_reason
+        if reason == "length":
+            raise DomainError("MODEL_OUTPUT_TRUNCATED", "model stopped at its token limit")
+        if reason == "tool_calls":
+            raise DomainError("MODEL_TOOL_CALL_UNSUPPORTED", "text-only model request returned a tool call")
+        if reason != "stop":
+            raise DomainError("MODEL_PROTOCOL_ERROR", "model did not confirm a normal stop")
 
     def _check_stop(self, deadline: float) -> None:
         if self._is_cancelled():
@@ -201,39 +300,10 @@ def provider_probe_request(model: ResolvedModel) -> ModelRequest:
         profile_revision=model.connection_revision,
         timeout_seconds=min(model.timeout_seconds, 10.0),
         output_budget_bytes=budget,
+        output_budget_tokens=min(model.max_output_tokens, 256),
         input_fingerprint=model_request_fingerprint(_PROBE_INSTRUCTION),
         user_instruction=_PROBE_INSTRUCTION,
     )
-def _delta_content(data: str) -> str:
-    try:
-        payload = json.loads(data)
-        delta = payload["choices"][0]["delta"]
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
-        raise DomainError("MODEL_PROTOCOL_ERROR", "model stream chunk is invalid") from error
-    if not isinstance(delta, dict):
-        raise DomainError("MODEL_PROTOCOL_ERROR", "model stream chunk is invalid")
-    content = delta.get("content")
-    if content is None:
-        return ""
-    if not isinstance(content, str):
-        raise DomainError("MODEL_PROTOCOL_ERROR", "model stream chunk is invalid")
-    return content
-
-
-def _message_content(payload: Any) -> str:
-    try:
-        content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as error:
-        raise DomainError("MODEL_PROTOCOL_ERROR", "model JSON response is invalid") from error
-    if not isinstance(content, str):
-        raise DomainError("MODEL_PROTOCOL_ERROR", "model JSON response is invalid")
-    return content
-
-
-def _chunk_bytes(chunks: list[ModelChunk]) -> int:
-    return sum(len(chunk.content.encode("utf-8")) for chunk in chunks)
-
-
 def _chunks(content: str, remaining: int, redactor: SecretRedactor) -> tuple[ModelChunk, ...]:
     safe = redactor.redact_text(content)
     if len(safe.encode("utf-8")) > remaining:

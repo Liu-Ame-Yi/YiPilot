@@ -133,6 +133,7 @@ class ModelSelectionService:
             connection_revision=connection.revision, model_id=model.model_id,
             display_name=model.display_name, capabilities=tuple(sorted(set(connection.capabilities) & set(model.capabilities))),
             context_limit=context_limit, output_limit=output_limit,
+            max_output_tokens=variant.max_output_tokens if variant and variant.max_output_tokens is not None else model.max_output_tokens,
             timeout_seconds=connection.timeout_seconds, variant=selector.variant,
             request_options=dict(variant.request_options) if variant else {},
         ).with_credential_reference(connection.credential_ref)
@@ -177,6 +178,7 @@ class ModelSelectionService:
             model_id=model.model_id, display_name=model.display_name,
             capabilities=tuple(sorted(set(connection.capabilities) & set(model.capabilities))),
             context_limit=model.context_limit, output_limit=model.output_limit,
+            max_output_tokens=model.max_output_tokens,
             timeout_seconds=connection.timeout_seconds,
         ).with_credential_reference(reference)
         from yipilot.models.openai_compatible import provider_probe_request
@@ -204,6 +206,7 @@ class ModelSelectionService:
         return {"selectors": selectors, "connection_id": model.connection_id, "model_id": model.model_id,
                 "display_name": model.display_name, "capabilities": model.capabilities,
                 "enabled": model.enabled and connection.enabled, "output_limit": model.output_limit,
+                "max_output_tokens": model.max_output_tokens, "context_limit": model.context_limit,
                 "base_url": connection.base_url}
 
 

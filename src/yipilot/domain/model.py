@@ -36,6 +36,7 @@ class ModelRequest(BaseModel):
     profile_revision: int = Field(ge=1)
     timeout_seconds: float = Field(gt=0, le=600, allow_inf_nan=False)
     output_budget_bytes: int = Field(gt=0, le=MAX_MODEL_OUTPUT_BYTES)
+    output_budget_tokens: int | None = Field(default=None, gt=0, le=128_000)
     request_options: dict[str, str | int | float | bool] = Field(default_factory=dict)
     allowed_input_artifact_refs: tuple[ArtifactRef, ...] = ()
     input_fingerprint: Sha256
@@ -82,6 +83,27 @@ class ModelResponse(BaseModel):
         return "".join(chunk.content for chunk in self.chunks)
 
 
+class ModelCompletion(BaseModel):
+    """Safe transport diagnostics, never reasoning text or tool arguments."""
+
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal[1] = 1
+    finish_reason: Literal["stop", "length", "tool_calls", "content_filter", "unknown"] | None = None
+    transport_bytes: int = 0
+    text_bytes: int = 0
+    reasoning_bytes: int = 0
+    output_budget_tokens: int = 0
+    usage: dict[str, int] = Field(default_factory=dict)
+    received: bool = False
+    complete: bool = False
+
+
+def model_completion(port: object) -> ModelCompletion | None:
+    """Legacy fake/replay ports have no real transport receipt."""
+    value = getattr(port, "last_completion", None)
+    return value if isinstance(value, ModelCompletion) else None
+
+
 class ModelCallRecord(BaseModel):
     """Safe persisted call metadata; prompt and response bodies are artifacts, never fields."""
 
@@ -97,6 +119,7 @@ class ModelCallRecord(BaseModel):
     profile_revision: int = Field(ge=1)
     timeout_seconds: float = Field(gt=0)
     output_budget_bytes: int = Field(gt=0)
+    completion: ModelCompletion | None = None
     input_fingerprint: Sha256
     input_artifact_refs: tuple[ArtifactRef, ...] = ()
     status: ModelCallStatus

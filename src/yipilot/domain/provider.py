@@ -122,6 +122,7 @@ class ModelVariant(BaseModel):
 
     name: str = Field(min_length=1, max_length=64)
     output_limit: int | None = Field(default=None, gt=0, le=MAX_PROVIDER_OUTPUT_BUDGET)
+    max_output_tokens: int | None = Field(default=None, gt=0, le=128_000)
     context_limit: int | None = Field(default=None, gt=0)
     request_options: dict[str, str | int | float | bool] = Field(default_factory=dict)
     enabled: bool = True
@@ -146,6 +147,7 @@ class ModelEntry(BaseModel):
     display_name: str = Field(min_length=1, max_length=128)
     context_limit: int | None = Field(default=None, gt=0)
     output_limit: int = Field(gt=0, le=MAX_PROVIDER_OUTPUT_BUDGET)
+    max_output_tokens: int = Field(default=8192, gt=0, le=128_000)
     capabilities: tuple[str, ...] = ("chat",)
     enabled: bool = True
     variants: tuple[ModelVariant, ...] = ()
@@ -212,6 +214,7 @@ class ResolvedModel(BaseModel):
     capabilities: tuple[str, ...]
     context_limit: int | None = Field(default=None, gt=0)
     output_limit: int = Field(gt=0, le=MAX_PROVIDER_OUTPUT_BUDGET)
+    max_output_tokens: int = Field(default=8192, gt=0, le=128_000)
     timeout_seconds: float = Field(gt=0, le=MAX_PROVIDER_TIMEOUT_SECONDS)
     variant: str | None = None
     request_options: dict[str, str | int | float | bool] = Field(default_factory=dict)

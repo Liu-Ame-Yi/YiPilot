@@ -77,3 +77,18 @@ def test_request_probe_uses_adapter_probe_when_available(tmp_path) -> None:
     service.add(ProviderConnection(connection_id="local", base_url="https://example.test/v1", timeout_seconds=10, credential_ref="env:KEY", revision=1), ModelEntry(connection_id="local", model_id="coder", display_name="Coder", output_limit=100))
     assert service.test("local/coder", request=True)["status"] == "request_passed"
     assert calls == ["probe"]
+
+
+
+def test_variant_token_budget_does_not_override_byte_budget(tmp_path):
+    from yipilot.domain.provider import ModelVariant
+
+    service = _service(tmp_path)
+    settings = service._store.load()
+    entry = settings.models[0].model_copy(update={"max_output_tokens": 4096,
+        "variants": (ModelVariant(name="short", max_output_tokens=512),)})
+    service._store.save(settings.model_copy(update={"models": (entry,)}))
+    assert service.resolve(explicit_selector="local/coder").max_output_tokens == 4096
+    resolved = service.resolve(explicit_selector="local/coder:short")
+    assert resolved.max_output_tokens == 512 and resolved.output_limit == 100
+    assert service.list_public()["models"][0]["max_output_tokens"] == 4096

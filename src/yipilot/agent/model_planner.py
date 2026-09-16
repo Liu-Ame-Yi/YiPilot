@@ -13,6 +13,7 @@ from yipilot.domain.model import (
     ModelCallStatus,
     ModelPort,
     ModelRequest,
+    model_completion,
 )
 from yipilot.domain.patch_proposal import PatchProposal
 from yipilot.security.redaction import SecretRedactor
@@ -119,6 +120,7 @@ class ModelPlanner:
                 profile_revision=self._request.profile_revision,
                 timeout_seconds=self._request.timeout_seconds,
                 output_budget_bytes=self._request.output_budget_bytes,
+                completion=model_completion(self._port),
                 input_fingerprint=self._request.input_fingerprint,
                 input_artifact_refs=self._request.allowed_input_artifact_refs,
                 status=status,

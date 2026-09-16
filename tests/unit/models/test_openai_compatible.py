@@ -88,6 +88,7 @@ def test_streams_sse_only_to_fixed_path_and_controlled_body() -> None:
             content=(
                 b'data: {"choices":[{"delta":{"content":"hel"}}]}\n'
                 b'data: {"choices":[{"delta":{"content":"lo"}}]}\n'
+                b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
                 b"data: [DONE]\n"
             ),
         )
@@ -97,7 +98,7 @@ def test_streams_sse_only_to_fixed_path_and_controlled_body() -> None:
     assert seen["body"] == {
         "model": "test-model",
         "stream": True,
-        "max_tokens": 128,
+        "max_tokens": 8192,
         "messages": [{"role": "user", "content": _PROMPT}],
     }
     assert seen["headers"]["authorization"] == f"Bearer {_SECRET}"
@@ -112,6 +113,7 @@ def test_stream_accepts_a_standard_role_chunk_without_text_content() -> None:
             content=(
                 b'data: {"choices":[{"delta":{"role":"assistant","content":null}}]}\n'
                 b'data: {"choices":[{"delta":{"content":"OK"}}]}\n'
+                b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
                 b"data: [DONE]\n"
             ),
         )
@@ -128,14 +130,14 @@ def test_provider_probe_uses_a_non_streaming_chat_completion() -> None:
         return _response(
             200,
             headers={"content-type": "application/json"},
-            content=b'{"choices":[{"message":{"content":"OK"}}]}',
+            content=b'{"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}',
         )
 
     assert "".join(chunk.content for chunk in _port(profile, handler).probe(_request(profile))) == "OK"
     assert seen["body"] == {
         "model": "test-model",
         "stream": False,
-        "max_tokens": 128,
+        "max_tokens": 8192,
         "messages": [{"role": "user", "content": _PROMPT}],
     }
 
@@ -147,7 +149,7 @@ def test_non_streaming_json_fallback_has_the_same_chunk_semantics() -> None:
         return _response(
             200,
             headers={"content-type": "application/json"},
-            content=b'{"choices":[{"message":{"content":"fallback"}}]}',
+            content=b'{"choices":[{"message":{"content":"fallback"},"finish_reason":"stop"}]}',
         )
 
     assert "".join(chunk.content for chunk in _port(profile, handler).stream(_request(profile))) == "fallback"
@@ -229,6 +231,7 @@ def test_output_budget_and_response_redaction_apply_before_model_planner() -> No
             200,
             content=(
                 b'data: {"choices":[{"delta":{"content":"Bearer adapter-test-secret"}}]}\n'
+                b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n'
                 b"data: [DONE]\n"
             ),
         )
@@ -309,3 +312,99 @@ def test_cancellation_closes_an_open_response_stream() -> None:
             _request(profile)
         )
     assert stream.closed
+
+
+def _sse(*events):
+    return b"".join(b"data: " + json.dumps(event, ensure_ascii=False).encode() + b"\n\n" for event in events) + b"data: [DONE]\n\n"
+
+
+@pytest.mark.parametrize("reason,code", [
+    ("length", "MODEL_OUTPUT_TRUNCATED"), (None, "MODEL_PROTOCOL_ERROR"),
+    ("content_filter", "MODEL_PROTOCOL_ERROR"), ("tool_calls", "MODEL_TOOL_CALL_UNSUPPORTED"),
+    ("unexpected", "MODEL_PROTOCOL_ERROR"),
+])
+@pytest.mark.parametrize("streaming", [True, False])
+def test_only_normal_completion_can_release_even_valid_json(reason, code, streaming):
+    profile = _profile()
+    choice = {"delta" if streaming else "message": {"content": "{}"}, "finish_reason": reason}
+    content = _sse({"choices": [choice]}) if streaming else json.dumps({"choices": [choice]}).encode()
+    port = _port(profile, lambda _: _response(200, content=content))
+    with pytest.raises(DomainError, match=code):
+        (port.stream if streaming else port.probe)(_request(profile))
+    assert not port.last_completion.complete
+    assert port.last_completion.text_bytes == 2
+
+
+def test_reasoning_and_sse_overhead_do_not_spend_text_budget():
+    profile = _profile()
+    # More than the former 256 KiB transport ceiling, only two bytes of answer.
+    content = _sse(*({"choices": [{"delta": {"reasoning_content": "think " * 60}}]} for _ in range(1000)),
+                   {"choices": [{"delta": {"content": "OK"}, "finish_reason": "stop"}]},
+                   {"choices": [], "usage": {"prompt_tokens": 20, "completion_tokens": 4000, "total_tokens": 4020}})
+    port = _port(profile, lambda _: _response(200, content=content))
+    assert "".join(c.content for c in port.stream(_request(profile, budget=2))) == "OK"
+    assert port.last_completion.transport_bytes > 256 * 1024
+    assert port.last_completion.reasoning_bytes == 360000
+    assert port.last_completion.text_bytes == 2
+    assert port.last_completion.usage["completion_tokens"] == 4000
+    assert port.last_completion.complete
+    assert "think" not in port.last_completion.model_dump_json()
+
+
+@pytest.mark.parametrize("content,code", [
+    (b"data: " + b"x" * (256 * 1024), "MODEL_EVENT_LIMIT_EXCEEDED"),
+    (_sse(*({"choices": [{"delta": {"reasoning_content": "x" * 16384}}]} for _ in range(65))), "MODEL_REASONING_LIMIT_EXCEEDED"),
+    (_sse({"choices": [{"delta": {"tool_calls": [{"function": {"arguments": "private"}}]}}]}), "MODEL_TOOL_CALL_UNSUPPORTED"),
+    (_sse({"choices": [{"delta": {"content": 0}}]}), "MODEL_PROTOCOL_ERROR"),
+    (_sse({"choices": [], "usage": {"total_tokens": "bad"}}), "MODEL_PROTOCOL_ERROR"),
+], ids=["oversize-event", "oversize-reasoning", "tool-call", "bad-text", "bad-usage"])
+def test_stream_guards_are_independent(content, code):
+    with pytest.raises(DomainError, match=code):
+        _port(_profile(), lambda _: _response(200, content=content)).stream(_request(_profile()))
+
+
+def test_utf8_and_secrets_split_between_events_are_safe():
+    content = _sse({"choices": [{"delta": {"content": "Bearer adapter-"}}]},
+                   {"choices": [{"delta": {"content": "test-secret 中文"}, "finish_reason": "stop"}]})
+
+    class Fragments(httpx.SyncByteStream):
+        def __iter__(self):
+            for index in range(len(content)):
+                yield content[index:index + 1]
+
+    port = _port(_profile(), lambda _: httpx.Response(200, stream=Fragments()))
+    text = "".join(c.content for c in port.stream(_request(_profile())))
+    assert "中文" in text and "test-secret" not in text
+
+
+def test_token_budget_is_separate_and_context_includes_output_reserve():
+    seen = []
+    port = _port(_profile(), lambda req: seen.append(json.loads(req.content)) or _response(
+        200, content=_sse({"choices": [{"delta": {"content": "OK"}, "finish_reason": "stop"}]})))
+    request = _request(_profile(), budget=2).model_copy(update={"output_budget_tokens": 100})
+    port.stream(request)
+    assert seen[0]["max_tokens"] == 100
+    assert port.last_completion.output_budget_tokens == 100
+    port._model = port._model.model_copy(update={"context_limit": 200})
+    with pytest.raises(DomainError, match="MODEL_CONTEXT_LIMIT_EXCEEDED"):
+        port.stream(request)
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_late_eof_cannot_turn_an_expired_request_into_success(streaming):
+    now = 0.0
+
+    class LateEOF(httpx.SyncByteStream):
+        def __iter__(self):
+            nonlocal now
+            if streaming:
+                yield _sse({"choices": [{"delta": {"content": "OK"}, "finish_reason": "stop"}]})
+            else:
+                yield b'{"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}'
+            now = 3.0
+
+    port = _port(_profile(), lambda _: httpx.Response(200, stream=LateEOF()), clock=lambda: now)
+    with pytest.raises(DomainError, match="MODEL_OVERALL_TIMEOUT"):
+        (port.stream if streaming else port.probe)(_request(_profile()))
+    assert not port.last_completion.complete
