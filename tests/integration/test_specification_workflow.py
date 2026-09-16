@@ -26,7 +26,7 @@ class ScriptedModel:
     def stream(self, request):
         prompt = json.loads(request.user_instruction)
         self.requests.append(prompt)
-        value = self.response(prompt)
+        value = {"schema_version": 1, **self.response(prompt)}
         if self.behavior:
             value = self.behavior(prompt, value)
         text = value if isinstance(value, str) else json.dumps(value)
@@ -217,8 +217,8 @@ def test_invalid_generation_cannot_pass(setup, bad):
     application, model, _, _ = setup
     model.behavior = lambda *_: bad
     state = start(application)
-    assert state.status == "stopped" and state.reason == "SPECIFICATION_OUTPUT_INVALID"
-    assert not state.accepted and len(model.requests) == 1
+    assert state.status == "stopped" and state.reason == "SPECIFICATION_FORMAT_REPAIR_LIMIT"
+    assert not state.accepted and len(model.requests) == 2
 
 
 @pytest.mark.parametrize("fault", ["hash", "evidence", "self_accept", "unknown_fact", "mapping"])
@@ -320,6 +320,7 @@ def test_failed_commit_does_not_leak_acceptance(setup, monkeypatch):
     persisted = application.specification_status("1")
     assert persisted == state and not persisted.accepted
     assert "srs" not in state.reviews
+    assert read(application, state.history[-1])["external_result"] == "received_valid"
 
 
 def test_unresolved_question_cannot_be_accepted(setup):
@@ -366,3 +367,120 @@ def test_context_paths_do_not_escape_baseline(setup, tmp_path, path):
     with pytest.raises(DomainError, match="MODEL_CONTEXT_PATH_DENIED"):
         start(application, alias="repo", context_files=[path])
     assert not model.requests
+
+
+@pytest.mark.parametrize("stage", ["srs_generate", "srs_review", "sdd_generate", "sdd_review"])
+def test_format_repair_is_bounded_and_restartable(setup, monkeypatch, stage):
+    application, model, root, models = setup
+    model.behavior = lambda p, v: "not json" if p["stage"] == stage and p["format_repair"] is None else v
+    step = application.specifications._step
+
+    def interrupt(state):
+        step(state)
+        if state.format_failure:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(application.specifications, "_step", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        start(application)
+    committed = application.specification_status("1")
+    assert committed.status == "ready" and committed.format_repairs == {stage: 1}
+    failure = read(application, committed.format_failure)
+    assert failure["external_result"] == "received_invalid" and failure["diagnostics"]
+    assert read(application, failure_record := next(r for r in committed.history if r.artifact_id == failure["response"]["artifact_id"]))["text"] == "not json"
+    assert failure_record.sha256 == failure["response"]["sha256"]
+    state = ProjectApplication(root, models=models).resume_specification("1")
+    assert state.status == "completed" and len(model.requests) == 5
+    assert state.format_failure is None
+    assert state.format_repairs == {stage: 1}
+    assert state.schema_version == 1
+    assert all(read(application, r)["schema_version"] == 1 for r in state.accepted.values())
+
+
+def test_unknown_contract_version_stops_without_repair(setup):
+    application, model, _, _ = setup
+    model.behavior = lambda p, v: {**v, "schema_version": 99}
+    state = start(application)
+    assert state.status == "stopped" and not state.format_repairs
+    assert len(model.requests) == 1 and not state.accepted
+
+
+def test_format_repair_failure_does_not_become_acceptance(setup):
+    application, model, root, models = setup
+
+    def fail(prompt, value):
+        if prompt["format_repair"]:
+            raise DomainError("MODEL_READ_TIMEOUT", "uncertain")
+        return "invalid"
+
+    model.behavior = fail
+    state = start(application)
+    assert state.status == "stopped" and state.reason == "MODEL_READ_TIMEOUT"
+    assert read(application, state.history[-1])["external_result"] == "uncertain"
+    assert ProjectApplication(root, models=models).resume_specification("1") == state
+    assert len(model.requests) == 2 and not state.accepted
+
+
+@pytest.mark.parametrize("reason", ["length", None])
+def test_real_adapter_does_not_release_truncated_specification(setup, reason):
+    import httpx
+
+    from yipilot.models.openai_compatible import OpenAICompatibleModelPort
+
+    application, _, root, models = setup
+    calls = []
+
+    class Stream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield calls[-1]
+
+    def handle(request):
+        prompt = json.loads(json.loads(request.content)["messages"][0]["content"])
+        text = json.dumps({"schema_version": 1, **ScriptedModel.response(prompt)})
+        calls.append(("data: " + json.dumps({"choices": [{"delta": {"content": text}, "finish_reason": reason}]})
+                      + "\n\ndata: [DONE]\n\n").encode())
+        return httpx.Response(200, stream=Stream())
+
+    models._port_factory = lambda model, secrets, ref: OpenAICompatibleModelPort(
+        model, secrets, credential_ref=ref, transport=httpx.MockTransport(handle))
+    state = start(application)
+    assert state.status == "stopped" and not state.accepted and not state.format_repairs
+    assert state.reason == ("MODEL_OUTPUT_TRUNCATED" if reason else "MODEL_PROTOCOL_ERROR")
+    receipt = read(application, state.history[-1])
+    assert receipt["completion"]["finish_reason"] == reason
+    assert not receipt["completion"]["complete"]
+    assert receipt["completion"]["received"] and receipt["external_result"] == "received_invalid"
+    assert ProjectApplication(root, models=models).resume_specification("1") == state
+    assert len(calls) == 1
+
+
+def test_legacy_documents_keep_hashes_when_read_by_new_stages(setup, monkeypatch):
+    application, model, root, models = setup
+    write = application.specifications._write
+
+    def legacy_write(run, name, value):
+        if name == "result.json":
+            value = {k: v for k, v in value.items() if k != "schema_version"}
+        return write(run, name, value)
+
+    monkeypatch.setattr(application.specifications, "_write", legacy_write)
+    state = start(application)
+    assert state.status == "completed"
+    assert "schema_version" not in read(application, state.accepted["srs"])
+    assert read(application, state.accepted["sdd"])["srs_sha256"] == state.accepted["srs"].sha256
+    assert ProjectApplication(root, models=models).resume_specification("1") == state
+    assert len(model.requests) == 4
+
+
+@pytest.mark.parametrize("version", [None, True, "1", 2])
+def test_specification_contract_requires_integer_supported_version(version):
+    from pydantic import ValidationError
+
+    from yipilot.domain.specification import SRS
+
+    value = ScriptedModel.response({"stage": "srs_generate", "material": {
+        "code": [], "sources": [{"id": "requirement"}]}})
+    if version is not None:
+        value["schema_version"] = version
+    with pytest.raises(ValidationError):
+        SRS.model_validate_json(json.dumps(value))

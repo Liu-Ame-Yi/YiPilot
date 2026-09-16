@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Text = Annotated[str, Field(min_length=1, max_length=8000)]
 Texts = Annotated[list[Text], Field(min_length=1, max_length=100)]
@@ -10,6 +10,13 @@ Texts = Annotated[list[Text], Field(min_length=1, max_length=100)]
 
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+    @field_validator("schema_version", mode="before", check_fields=False)
+    @classmethod
+    def validate_version_type(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("schema_version must be an integer")
+        return value
 
 
 class Criterion(Contract):
@@ -30,6 +37,7 @@ class Question(Contract):
 
 
 class SRS(Contract):
+    schema_version: Literal[1]
     scope: Text
     non_goals: Texts
     constraints: Texts
@@ -45,6 +53,7 @@ class TestMapping(Contract):
 
 
 class SDD(Contract):
+    schema_version: Literal[1]
     srs_sha256: Text
     modules: Texts
     interfaces: Texts
@@ -64,6 +73,7 @@ class Issue(Contract):
 
 
 class Review(Contract):
+    schema_version: Literal[1]
     document_sha256: Text
     verdict: Literal["accept", "revise", "clarify", "stop"]
     summary: Text
