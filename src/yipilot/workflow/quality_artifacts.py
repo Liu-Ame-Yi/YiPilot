@@ -42,6 +42,7 @@ from yipilot.models.store import FileProviderStore
 from yipilot.persistence.approval_store import FileApprovalStore
 from yipilot.persistence.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.ownership import exclusive_execution
 from yipilot.persistence.task_store import FileTaskStore, RunRecord
 from yipilot.security.approval import ApprovalGate
 from yipilot.workspace.executors import LocalCommandRunner
@@ -115,6 +116,7 @@ class QualityArtifactService:
         self._fixtures = dict(fixture_responses or _DEFAULT_QUALITY_FIXTURES)
         self._store = FileTaskStore(self._project_root)
 
+    @exclusive_execution
     def generate(
         self,
         task_id: str,
@@ -349,6 +351,7 @@ class QualityArtifactService:
                 ) from error
         return RecordedReplayModelPort("quality-replay-v1", self._fixtures)
 
+    @exclusive_execution
     def prepare_pytest(
         self,
         task_id: str,
@@ -406,6 +409,7 @@ class QualityArtifactService:
             "approval_target_fingerprint": request.fingerprint,
         }
 
+    @exclusive_execution
     def run_pytest(
         self,
         task_id: str,
@@ -477,13 +481,6 @@ class QualityArtifactService:
                 if report.status.value == "passed"
                 else RunStatus.FAILED
             )
-            self._store.set_run_status(
-                run.run_id,
-                status,
-                error_code=None
-                if status is RunStatus.SUCCEEDED
-                else "UNIT_TEST_HARNESS_FAILED",
-            )
             journal.append(
                 "harness.completed",
                 {
@@ -491,6 +488,13 @@ class QualityArtifactService:
                     "status": report.status.value,
                     "pytest_report_artifact_id": pytest_report.artifact_id,
                 },
+            )
+            self._store.set_run_status(
+                run.run_id,
+                status,
+                error_code=None
+                if status is RunStatus.SUCCEEDED
+                else "UNIT_TEST_HARNESS_FAILED",
             )
             journal.append(
                 "run.succeeded" if status is RunStatus.SUCCEEDED else "run.failed",

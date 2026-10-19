@@ -149,6 +149,26 @@ def apply(application, proposal, confirm=lambda _: True):
                              proposal_hash=proposal["proposal_hash"], confirm=confirm)
 
 
+def test_explicit_requests_replay_without_new_model_docker_or_approval(project):
+    application, model, docker, _ = project
+    first = application.generate("1", "repo", "Update value", request_id="generate-once", context_files=("value.py",))
+    repeated = application.generate("1", "repo", "Update value", request_id="generate-once", context_files=("value.py",))
+    assert repeated == first and len(model.requests) == 1
+    with pytest.raises(DomainError, match="OPERATION_CONFLICT"):
+        application.generate("1", "repo", "Different input", request_id="generate-once", context_files=("value.py",))
+    proposal = application.proposals("1")[0]
+    arguments = {"proposal_hash": proposal["proposal_hash"], "request_id": "apply-once"}
+    run_id = application.apply("1", first.run_id, confirm=lambda _: True, **arguments)
+    count = len(docker.calls)
+    assert application.apply("1", first.run_id, confirm=lambda _: pytest.fail("replayed approval"), **arguments) == run_id
+    assert len(docker.calls) == count
+    verified = application.verify("1", run_id, confirm=lambda _: True, request_id="verify-once")
+    assert verified.handoff is not None
+    count = len(docker.calls)
+    replay = application.verify("1", run_id, confirm=lambda _: pytest.fail("replayed approval"), request_id="verify-once")
+    assert replay == verified and len(docker.calls) == count
+
+
 def test_generate_apply_verify_failure_repair_apply_verify(project):
     application, model, docker, source = project
     proposal = generate(application)
@@ -159,6 +179,11 @@ def test_generate_apply_verify_failure_repair_apply_verify(project):
     assert outcome.repair is not None and outcome.repair.status == "succeeded"
     assert outcome.repair_error is None
     assert len(model.requests) == 2 and model.closed == 2
+    verification = next(r for r in application.sandbox.store.list_runs("1") if r.stage == "sandbox_verification")
+    replayed_repair = application.repairs.repair("1", verification.run_id)
+    assert replayed_repair == outcome.repair and len(model.requests) == 2
+    chain_path = application.sandbox.store.event_journal_path(outcome.repair.run_id).parent / "artifacts/repair-chain.json"
+    assert json.loads(chain_path.read_text(encoding="utf-8"))["attempt"] == 1
     assert "failed check" in model.requests[-1].user_instruction
     repair = next(p for p in application.proposals("1") if p["proposal_run_id"] == outcome.repair.run_id)
     assert repair["root_proposal_run_id"] == proposal["proposal_run_id"]
@@ -199,7 +224,7 @@ def test_rejected_approval_is_persisted_and_cancels_pending_work(project, action
     assert len(docker.calls) == (0 if action == "sandbox_execution" else 1)
     rejected = next(p for p in seen if p.action == action)
     root = application.sandbox.store.event_journal_path(rejected.run_id).parent
-    records = [json.loads(p.read_text()) for p in (root / "approvals").glob("*.json")]
+    records = [json.loads(body) for body in application.sandbox.store.db.records("approval", "1", rejected.run_id)]
     assert any(r["decision"] == "denied" and r["target_fingerprint"] == rejected.fingerprint for r in records)
     run = application.sandbox.store.get_run("1", rejected.run_id)
     events = JsonlEventJournal(root / "events.jsonl", task_id="1", run_id=run.run_id, stage=run.stage).read_after(0)

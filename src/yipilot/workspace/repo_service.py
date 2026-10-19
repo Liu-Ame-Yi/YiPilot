@@ -1,34 +1,20 @@
 """Repository synchronization into project-scoped Git caches."""
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import BaseModel, ValidationError
-
 from yipilot.domain.errors import DomainError
-from yipilot.persistence.filesystem import atomic_write_json, project_path
-from yipilot.persistence.task_store import FileTaskStore
+from yipilot.persistence.filesystem import project_path
+from yipilot.persistence.ownership import exclusive_execution
+from yipilot.persistence.task_store import FileTaskStore, RepoMetadataRecord
 from yipilot.workspace.git_runner import GitRunner
 
 _ALIAS = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _URL_WITH_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
-
-
-class _RepoMetadataRecord(BaseModel):
-    schema_version: Literal[1] = 1
-    task_id: str
-    alias: str
-    normalized_url: str
-    url_hash: str
-    cache_path: str
-    head_sha: str
-    synced_at: str
 
 
 @dataclass(frozen=True)
@@ -51,15 +37,17 @@ class RepoService:
         self._git = git_runner
         self._task_store = FileTaskStore(self._project_root)
 
+    @exclusive_execution
     def add_and_sync(self, task_id: str, url: str, alias: str) -> RepoMetadata:
         self._task_store.get_task(task_id)
         _validate_alias(alias)
         normalized_url = normalize_repo_url(url)
         url_hash = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()
-        metadata_path = self._metadata_path(task_id, alias)
 
-        if metadata_path.is_file():
-            existing = self._load_metadata(metadata_path)
+        existing_records = self._task_store.db.records("repo", task_id)
+        existing_match = next((r for r in existing_records if RepoMetadataRecord.model_validate_json(r).alias == alias), None)
+        if existing_match:
+            existing = self._metadata_from_record(RepoMetadataRecord.model_validate_json(existing_match))
             if existing.normalized_url != normalized_url:
                 raise DomainError(
                     "REPO_ALIAS_CONFLICT",
@@ -86,7 +74,7 @@ class RepoService:
         if not head_sha:
             raise DomainError("GIT_FAILED", "remote HEAD could not be resolved")
 
-        record = _RepoMetadataRecord(
+        record = RepoMetadataRecord(
             task_id=task_id,
             alias=alias,
             normalized_url=normalized_url,
@@ -95,34 +83,20 @@ class RepoService:
             head_sha=head_sha,
             synced_at=_timestamp(),
         )
-        atomic_write_json(
-            metadata_path,
-            record.model_dump(mode="json"),
-            _RepoMetadataRecord.model_validate,
-        )
+        self._metadata_path(task_id, alias).parent.mkdir(parents=True, exist_ok=True)
+        self._task_store.db.save_record("repo", f"{task_id}:{alias}", task_id, None, record.model_dump_json())
         return self._metadata_from_record(record)
 
     def get_metadata(self, task_id: str, alias: str) -> RepoMetadata:
         self._task_store.get_task(task_id)
         _validate_alias(alias)
-        path = self._metadata_path(task_id, alias)
-        if not path.is_file():
-            raise DomainError("REPO_NOT_FOUND", "task repository metadata was not found")
-        return self._load_metadata(path)
+        record = RepoMetadataRecord.model_validate_json(self._task_store.db.record("repo", f"{task_id}:{alias}", "REPO_NOT_FOUND"))
+        return self._metadata_from_record(record)
 
     def list_metadata(self, task_id: str) -> list[RepoMetadata]:
-        """Return registered Task repositories in stable alias order."""
         self._task_store.get_task(task_id)
-        directory = project_path(
-            self._project_root, ".yipilot", "tasks", task_id, "repos"
-        )
-        if not directory.is_dir():
-            return []
-        return [
-            self.get_metadata(task_id, path.name)
-            for path in sorted(directory.iterdir(), key=lambda item: item.name)
-            if path.is_dir() and not path.name.startswith(".")
-        ]
+        records = [RepoMetadataRecord.model_validate_json(body) for body in self._task_store.db.records("repo", task_id)]
+        return [self._metadata_from_record(r) for r in sorted(records, key=lambda r: r.alias)]
 
     def _metadata_path(self, task_id: str, alias: str) -> Path:
         return project_path(
@@ -135,16 +109,7 @@ class RepoService:
             "metadata.json",
         )
 
-    def _load_metadata(self, path: Path) -> RepoMetadata:
-        try:
-            record = _RepoMetadataRecord.model_validate_json(
-                path.read_text(encoding="utf-8")
-            )
-        except (OSError, ValidationError, json.JSONDecodeError) as error:
-            raise DomainError("STORAGE_INVALID", "repository metadata is invalid") from error
-        return self._metadata_from_record(record)
-
-    def _metadata_from_record(self, record: _RepoMetadataRecord) -> RepoMetadata:
+    def _metadata_from_record(self, record: RepoMetadataRecord) -> RepoMetadata:
         cache_path = project_path(self._project_root, *Path(record.cache_path).parts)
         return RepoMetadata(
             schema_version=record.schema_version,

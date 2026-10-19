@@ -58,10 +58,8 @@ def test_code_harness_persists_independent_report_and_blocks_stale_git_evidence(
     normalized_url = source.as_uri()
     repo_hash = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()
     base_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
-    (repo_root / "metadata.json").write_text(
-        json.dumps({"task_id": "1001", "alias": "sample", "url_hash": repo_hash, "normalized_url": normalized_url}),
-        encoding="utf-8",
-    )
+    store.db.save_record("repo", "1001:sample", "1001", None,
+        json.dumps({"task_id": "1001", "alias": "sample", "url_hash": repo_hash, "normalized_url": normalized_url}))
     (repo_root / "workspace-manifest.json").write_text(
         json.dumps({
             "schema_version": 1, "task_id": "1001", "run_id": run.run_id,

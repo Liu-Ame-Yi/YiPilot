@@ -17,7 +17,7 @@
 
 [架构图](architecture/yipilot-v2.html) 是模块总览，完整业务阶段以产品定义和 V2 阶段表为准。[图检查记录](architecture/yipilot-v2.review.md) 只验证图，不验证业务实现。
 
-本轮迁移清单与验证范围见 [职责边界重构实施记录](architecture/responsibility-refactor.md)。
+目录职责迁移记录见 [职责边界重构实施记录](architecture/responsibility-refactor.md)。当前 SQLite 数据映射与事务边界见 [持久化实施记录](architecture/sqlite-persistence.md)，实际操作见 [迁移指南](guides/sqlite-migration.md)。
 
 ## 历史与依据
 

@@ -111,8 +111,9 @@ class LocalCommandRunner:
                 b"tool process could not be started\n",
                 ExecutionTrustLevel.HOST_TRUSTED,
             )
-            self._tool_runs.save(result)
-            _completed(self._journal, result, request.tool_id)
+            with self._artifact_store.task_store.db.transaction():
+                self._tool_runs.save(result)
+                _completed(self._journal, result, request.tool_id)
             return result
         stdout, stderr, exceeded, readers = _read_streams(
             process, request.output_budget_bytes
@@ -138,8 +139,9 @@ class LocalCommandRunner:
             stderr,
             ExecutionTrustLevel.HOST_TRUSTED,
         )
-        self._tool_runs.save(result)
-        _completed(self._journal, result, request.tool_id)
+        with self._artifact_store.task_store.db.transaction():
+            self._tool_runs.save(result)
+            _completed(self._journal, result, request.tool_id)
         return result
 
 
@@ -205,8 +207,9 @@ class ControlledWorkspaceWriter:
             ExecutionTrustLevel.SANDBOXED,
             ("approval-marker.txt",),
         )
-        self._tool_runs.save(result)
-        _completed(self._journal, result, request.tool_id)
+        with self._artifact_store.task_store.db.transaction():
+            self._tool_runs.save(result)
+            _completed(self._journal, result, request.tool_id)
         return result
 
 

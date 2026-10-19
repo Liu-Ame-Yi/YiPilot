@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 from hypothesis import given
@@ -9,7 +8,6 @@ from hypothesis import strategies as st
 from yipilot.domain.errors import DomainError
 from yipilot.persistence.task_store import (
     FileTaskStore,
-    OperationRecord,
     _canonical_request,
 )
 
@@ -47,7 +45,7 @@ def test_initialize_creates_runtime_layout_and_persists_project(tmp_path: Path) 
     project = store.initialize_project()
 
     assert project.schema_version == 1
-    assert (tmp_path / ".yipilot" / "config.yaml").is_file()
+    assert (tmp_path / ".yipilot" / "state.db").is_file()
     assert (tmp_path / ".yipilot" / "tasks").is_dir()
     assert (tmp_path / ".yipilot" / "locks").is_dir()
     assert (tmp_path / ".yipilot" / "cache" / "repos").is_dir()
@@ -90,20 +88,14 @@ def test_interactive_task_details_and_next_id_persist_without_a_run(tmp_path: Pa
     assert store.list_runs(first.task_id) == []
 
 
-def test_failed_project_write_leaves_no_partial_runtime_layout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_failed_project_write_leaves_no_authoritative_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = FileTaskStore(tmp_path)
-
-    def fail_write(*args: object, **kwargs: object) -> None:
+    def fail_initialize(*args, **kwargs):
         raise OSError("disk full")
-
-    monkeypatch.setattr("yipilot.persistence.task_store.atomic_write_yaml", fail_write)
-
+    monkeypatch.setattr(store.db, "initialize", fail_initialize)
     with pytest.raises(OSError, match="disk full"):
         store.initialize_project()
-
-    assert not (tmp_path / ".yipilot").exists()
+    assert not store.db.path.exists()
 
 
 def test_initialize_rejects_a_symlinked_runtime_directory(tmp_path: Path) -> None:
@@ -119,29 +111,15 @@ def test_initialize_rejects_a_symlinked_runtime_directory(tmp_path: Path) -> Non
     assert not (outside / "repos").exists()
 
 
-def test_operation_scan_rejects_a_symlinked_record(tmp_path: Path) -> None:
+def test_database_rejects_a_symlinked_record(tmp_path: Path) -> None:
     store = FileTaskStore(tmp_path)
     store.initialize_project()
-    store.create_task("1001")
-    foreign_operation_id = str(uuid4())
-    outside = tmp_path.parent / f"{tmp_path.name}-outside-operation.json"
-    foreign = OperationRecord(
-        operation_id=foreign_operation_id,
-        task_id="1001",
-        operation_type="task_init",
-        idempotency_key="key-a",
-        request_json='{"operation_type":"task_init","payload":{}}',
-        created_at="2026-08-08T00:00:00+00:00",
-    )
-    outside.write_text(foreign.model_dump_json(), encoding="utf-8")
-    _symlink_or_skip(
-        tmp_path / ".yipilot" / "tasks" / "1001" / "operations" / f"{foreign_operation_id}.json",
-        outside,
-        is_directory=False,
-    )
-
+    original = store.db.path
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.db"
+    original.replace(outside)
+    _symlink_or_skip(original, outside, is_directory=False)
     with pytest.raises(DomainError, match="PATH_DENIED"):
-        store.create_operation("1001", "task_init", "key-a", {})
+        store.get_project()
 
 
 def test_operation_key_is_idempotent_but_not_reusable_for_new_payload(
@@ -193,22 +171,13 @@ def test_create_run_persists_a_pending_run(tmp_path: Path) -> None:
     assert store.get_run("1001", run.run_id) == run
 
 
-def test_failed_task_write_leaves_no_task_directory_or_temporary_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_failed_task_transaction_leaves_no_task_record(tmp_path: Path) -> None:
     store = FileTaskStore(tmp_path)
     store.initialize_project()
-
-    def fail_write(*args: object, **kwargs: object) -> None:
-        raise OSError("disk full")
-
-    monkeypatch.setattr("yipilot.persistence.task_store.atomic_write_yaml", fail_write)
-
-    with pytest.raises(OSError, match="disk full"):
+    with pytest.raises(OSError), store.db.transaction():
         store.create_task("1001")
-
-    assert not (tmp_path / ".yipilot" / "tasks" / "1001").exists()
-    assert not list((tmp_path / ".yipilot" / "tasks").glob("*.tmp"))
+        raise OSError("disk full")
+    assert store.list_tasks() == []
 
 
 def test_operation_rejects_an_integer_outside_the_json_persistence_contract(

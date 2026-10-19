@@ -36,16 +36,13 @@ def test_register_atomically_saves_and_reads_artifact_record(tmp_path: Path) -> 
         input_fingerprint="input-v1",
     )
 
-    record_path = (
-        run_root / "artifacts" / "records" / f"{record.artifact_id}.json"
-    )
-    persisted = json.loads(record_path.read_text(encoding="utf-8"))
+    persisted = json.loads(task_store.db.record("artifact", record.artifact_id, "ARTIFACT_NOT_FOUND"))
     assert persisted == record.model_dump(mode="json")
     assert store.get(run.task_id, run.run_id, record.artifact_id) == record
     assert record.operation_id == run.operation_id
     assert record.relative_path == "artifacts/result.json"
     assert record.sha256 == expected_sha256
-    assert not list(record_path.parent.glob("*.tmp"))
+    assert not (run_root / "artifacts/records").exists()
 
 
 def test_list_returns_records_in_stable_order(tmp_path: Path) -> None:
@@ -187,16 +184,14 @@ def test_get_rejects_schema_valid_but_tampered_associations(
         relative_path="artifacts/result.json",
         input_fingerprint="input-v1",
     )
-    record_path = (
-        run_root / "artifacts" / "records" / f"{record.artifact_id}.json"
-    )
-    value = json.loads(record_path.read_text(encoding="utf-8"))
+    value = json.loads(task_store.db.record("artifact", record.artifact_id, "ARTIFACT_NOT_FOUND"))
     value[association] = {
         "task_id": "1002",
         "run_id": "00000000-0000-0000-0000-000000000000",
         "operation_id": "00000000-0000-0000-0000-000000000000",
     }[association]
-    record_path.write_text(json.dumps(value), encoding="utf-8")
+    with task_store.db.transaction() as connection:
+        connection.execute("UPDATE records SET body=? WHERE kind='artifact' AND id=?", (json.dumps(value), record.artifact_id))
 
     with pytest.raises(DomainError, match="ARTIFACT_ASSOCIATION_MISMATCH"):
         store.get(run.task_id, run.run_id, record.artifact_id)
@@ -217,12 +212,10 @@ def test_get_rejects_a_schema_valid_but_unsafe_tampered_path(
         relative_path="artifacts/result.json",
         input_fingerprint="input-v1",
     )
-    record_path = (
-        run_root / "artifacts" / "records" / f"{record.artifact_id}.json"
-    )
-    value = json.loads(record_path.read_text(encoding="utf-8"))
+    value = json.loads(task_store.db.record("artifact", record.artifact_id, "ARTIFACT_NOT_FOUND"))
     value["relative_path"] = "C:outside.txt"
-    record_path.write_text(json.dumps(value), encoding="utf-8")
+    with task_store.db.transaction() as connection:
+        connection.execute("UPDATE records SET body=? WHERE kind='artifact' AND id=?", (json.dumps(value), record.artifact_id))
 
     with pytest.raises(DomainError, match="PATH_DENIED"):
         store.get(run.task_id, run.run_id, record.artifact_id)

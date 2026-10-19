@@ -12,7 +12,6 @@ from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import ArtifactRef
 from yipilot.persistence.filesystem import (
     atomic_write_bytes,
-    atomic_write_json,
     project_path,
 )
 from yipilot.persistence.task_store import FileTaskStore, RunRecord
@@ -58,9 +57,9 @@ class FileArtifactStore:
     ) -> ArtifactRecord:
         run, run_root = self._run_context(task_id, run_id)
         self._require_operation(run, operation_id)
-        artifact_path = _artifact_path(run_root, relative_path)
+        content_path = artifact_path(run_root, relative_path)
         unresolved_path = run_root.joinpath(relative_path)
-        if not artifact_path.is_file() or unresolved_path.is_symlink():
+        if not content_path.is_file() or unresolved_path.is_symlink():
             raise DomainError("ARTIFACT_NOT_FOUND", "artifact must be a regular file")
         record = ArtifactRecord(
             artifact_id=str(uuid4()),
@@ -69,16 +68,11 @@ class FileArtifactStore:
             run_id=run.run_id,
             producer=producer,
             relative_path=relative_path,
-            sha256=_sha256(artifact_path),
+            sha256=_sha256(content_path),
             input_fingerprint=input_fingerprint,
             created_at=datetime.now(UTC),
         )
-        path = self._record_path(run_root, record.artifact_id)
-        atomic_write_json(
-            path,
-            record.model_dump(mode="json"),
-            ArtifactRecord.model_validate,
-        )
+        self._task_store.db.save_record("artifact", record.artifact_id, task_id, run_id, record.model_dump_json())
         return self.get(task_id, run_id, record.artifact_id)
 
     def write_bytes(
@@ -95,7 +89,11 @@ class FileArtifactStore:
         """Atomically persist and register one run-scoped binary artifact."""
         run, run_root = self._run_context(task_id, run_id)
         self._require_operation(run, operation_id)
-        atomic_write_bytes(_artifact_path(run_root, relative_path), _redact_bytes(content))
+        path = artifact_path(run_root, relative_path)
+        content = _redact_bytes(content)
+        if path.exists() and path.read_bytes() != content:
+            raise DomainError("ARTIFACT_STALE", "published artifact cannot be overwritten")
+        atomic_write_bytes(path, content)
         return self.register(
             task_id,
             run_id,
@@ -107,15 +105,11 @@ class FileArtifactStore:
 
     def get(self, task_id: str, run_id: str, artifact_id: str) -> ArtifactRecord:
         run, run_root = self._run_context(task_id, run_id)
-        path = self._record_path(run_root, artifact_id)
-        if not path.is_file():
-            raise DomainError("ARTIFACT_NOT_FOUND", "artifact record not found")
+        self._record_path(run_root, artifact_id)
         try:
-            record = ArtifactRecord.model_validate_json(path.read_text(encoding="utf-8"))
-        except (OSError, ValidationError) as error:
-            raise DomainError(
-                "ARTIFACT_RECORD_INVALID", "artifact record is invalid"
-            ) from error
+            record = ArtifactRecord.model_validate_json(self._task_store.db.record("artifact", artifact_id, "ARTIFACT_NOT_FOUND"))
+        except ValidationError as error:
+            raise DomainError("ARTIFACT_RECORD_INVALID", "artifact record is invalid") from error
         if (
             record.task_id != run.task_id
             or record.operation_id != run.operation_id
@@ -125,29 +119,23 @@ class FileArtifactStore:
                 "ARTIFACT_ASSOCIATION_MISMATCH",
                 "artifact record does not belong to the persisted run",
             )
-        _artifact_path(run_root, record.relative_path)
+        artifact_path(run_root, record.relative_path)
         return record
 
     def list(self, task_id: str, run_id: str) -> list[ArtifactRecord]:
-        _, run_root = self._run_context(task_id, run_id)
-        records_root = project_path(run_root, "artifacts", "records")
-        if not records_root.exists():
-            return []
-        if not records_root.is_dir():
-            raise DomainError(
-                "ARTIFACT_RECORD_INVALID", "artifact records path is not a directory"
-            )
-        records = [
-            self.get(task_id, run_id, path.stem)
-            for path in records_root.glob("*.json")
-        ]
+        self._run_context(task_id, run_id)
+        try:
+            ids = [ArtifactRecord.model_validate_json(body).artifact_id for body in self._task_store.db.records("artifact", task_id, run_id)]
+            records = [self.get(task_id, run_id, identifier) for identifier in ids]
+        except ValidationError as error:
+            raise DomainError("ARTIFACT_RECORD_INVALID", "invalid artifact metadata") from error
         return sorted(records, key=lambda record: (record.created_at, record.artifact_id))
 
     def verify(self, task_id: str, run_id: str, artifact_id: str) -> ArtifactRecord:
         """Load one record and verify its registered content remains intact."""
         record = self.get(task_id, run_id, artifact_id)
         _, run_root = self._run_context(task_id, run_id)
-        path = _artifact_path(run_root, record.relative_path)
+        path = artifact_path(run_root, record.relative_path)
         if not path.is_file() or path.is_symlink() or _sha256(path) != record.sha256:
             raise DomainError("ARTIFACT_STALE", "artifact content is missing or has changed")
         return record
@@ -190,7 +178,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _artifact_path(run_root: Path, relative_path: str) -> Path:
+def artifact_path(run_root: Path, relative_path: str) -> Path:
     path = Path(relative_path)
     windows_path = PureWindowsPath(relative_path)
     if (
@@ -211,3 +199,26 @@ def artifact_reference(record: ArtifactRecord) -> ArtifactRef:
     return ArtifactRef(artifact_id=record.artifact_id, task_id=record.task_id,
         operation_id=record.operation_id, run_id=record.run_id,
         relative_path=record.relative_path, sha256=record.sha256)
+
+
+def audit_artifacts(store: FileTaskStore) -> dict[str, list[str]]:
+    """Report damaged references and orphan bodies; never delete or promote files."""
+    report: dict[str, list[str]] = {"errors": [], "orphans": []}
+    artifacts = FileArtifactStore(store)
+    for task in store.list_tasks():
+        for run in store.list_runs(task.task_id):
+            root = store.event_journal_path(run.run_id).parent
+            records = artifacts.list(task.task_id, run.run_id)
+            references = {record.relative_path for record in records}
+            for record in records:
+                try:
+                    artifacts.verify(task.task_id, run.run_id, record.artifact_id)
+                except DomainError as error:
+                    report["errors"].append(f"{run.run_id}/{record.relative_path}: {error.code}")
+            for folder in ("artifacts", "harness"):
+                directory = project_path(root, folder)
+                for path in directory.rglob("*"):
+                    relative = path.relative_to(root).as_posix()
+                    if path.is_file() and relative not in references and not relative.startswith("artifacts/records/"):
+                        report["orphans"].append(f"{run.run_id}/{relative}")
+    return report

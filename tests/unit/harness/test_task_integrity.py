@@ -52,8 +52,8 @@ def test_invalid_task_record_is_blocking_failure(tmp_path: Path) -> None:
     store = FileTaskStore(tmp_path)
     store.initialize_project()
     store.create_task("1001")
-    task_path = tmp_path / ".yipilot" / "tasks" / "1001" / "task.yaml"
-    task_path.write_text("schema_version: nope\n", encoding="utf-8")
+    with store.db.transaction() as connection:
+        connection.execute("UPDATE tasks SET body=? WHERE id='1001'", ('{"schema_version":"nope"}',))
 
     report = TaskIntegrityHarness(tmp_path, "1001", "run-1").run()
 
@@ -96,13 +96,10 @@ def test_event_sequence_gap_is_blocking_failure(tmp_path: Path) -> None:
     )
     journal.append("run.started", {"message": "start"})
     journal.append("stage.progress", {"message": "work"})
-    lines = journal_path.read_text(encoding="utf-8").splitlines()
-    second = json.loads(lines[1])
+    second = journal.read_after(1)[0].model_dump(mode="json")
     second["sequence"] = 3
-    journal_path.write_text(
-        f"{lines[0]}\n{json.dumps(second, separators=(',', ':'))}\n",
-        encoding="utf-8",
-    )
+    with store.db.transaction() as connection:
+        connection.execute("UPDATE events SET sequence=3,body=? WHERE sequence=2", (json.dumps(second),))
 
     report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
 
@@ -169,12 +166,10 @@ def test_registered_artifact_path_is_checked_without_event_artifact_refs(
         relative_path="artifacts/result.json",
         input_fingerprint="producer-input-v1",
     )
-    record_path = (
-        run_root / "artifacts" / "records" / f"{record.artifact_id}.json"
-    )
-    value = json.loads(record_path.read_text(encoding="utf-8"))
+    value = json.loads(store.db.record("artifact", record.artifact_id, "ARTIFACT_NOT_FOUND"))
     value["relative_path"] = "../outside.txt"
-    record_path.write_text(json.dumps(value), encoding="utf-8")
+    with store.db.transaction() as connection:
+        connection.execute("UPDATE records SET body=? WHERE kind='artifact' AND id=?", (json.dumps(value), record.artifact_id))
 
     report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
 
@@ -197,10 +192,8 @@ def test_invalid_artifact_record_is_reported_and_persisted(
         relative_path="artifacts/result.json",
         input_fingerprint="producer-input-v1",
     )
-    record_path = (
-        run_root / "artifacts" / "records" / f"{record.artifact_id}.json"
-    )
-    record_path.write_text("{not-json\n", encoding="utf-8")
+    with store.db.transaction() as connection:
+        connection.execute("UPDATE records SET body=? WHERE kind='artifact' AND id=?", ("{not-json", record.artifact_id))
 
     report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
 
@@ -245,12 +238,10 @@ def test_tampered_artifact_association_is_reported_and_persisted(
         relative_path="artifacts/result.json",
         input_fingerprint="producer-input-v1",
     )
-    record_path = (
-        run_root / "artifacts" / "records" / f"{record.artifact_id}.json"
-    )
-    value = json.loads(record_path.read_text(encoding="utf-8"))
+    value = json.loads(store.db.record("artifact", record.artifact_id, "ARTIFACT_NOT_FOUND"))
     value[association] = tampered_value
-    record_path.write_text(json.dumps(value), encoding="utf-8")
+    with store.db.transaction() as connection:
+        connection.execute("UPDATE records SET body=? WHERE kind='artifact' AND id=?", (json.dumps(value), record.artifact_id))
 
     report = TaskIntegrityHarness(tmp_path, run.task_id, run.run_id).run()
 

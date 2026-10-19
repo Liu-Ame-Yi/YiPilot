@@ -71,6 +71,7 @@ class ApprovalRecord(BaseModel):
     decision: ApprovalDecision
     decided_at: datetime
     simulation_only: bool = False
+    revoked: bool = False
 
     @field_validator("decided_at")
     @classmethod
@@ -110,6 +111,8 @@ class ApprovalRecord(BaseModel):
                 "APPROVAL_STALE",
                 "approval target, policy, action or Run has changed",
             )
+        if self.revoked:
+            raise DomainError("APPROVAL_STALE", "historical approval is revoked")
         if self.decision is not ApprovalDecision.APPROVED:
             raise DomainError("APPROVAL_DENIED", "approval decision is not approved")
         return self

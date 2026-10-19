@@ -6,6 +6,7 @@ from threading import Event
 
 import pytest
 
+from tests.helpers.sqlite_records import delete_metadata, read_metadata, write_metadata
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     QUALITY_PYTEST_POLICY_REVISION,
@@ -169,7 +170,7 @@ def test_pytest_report_toolrun_stream_and_policy_staleness_block(
         UnitTestHarness(project, "1001", run_id, workspace, tool_run_id).verify().status
         is HarnessStatus.FAILED
     )
-    (root / "tool-runs" / f"{tool_run_id}.json").unlink()
+    delete_metadata(root / "tool-runs" / f"{tool_run_id}.json")
     assert (
         UnitTestHarness(project, "1001", run_id, workspace, tool_run_id).verify().status
         is HarnessStatus.FAILED
@@ -183,9 +184,9 @@ def test_stale_policy_approval_blocks_before_process(tmp_path: Path) -> None:
     run_id = str(prepared["run_id"])
     approval = _approval(service, store, run_id, "stale")
     path = store.event_journal_path(run_id).parent / "approvals/stale.json"
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(read_metadata(path))
     value["policy_revision"] = "obsolete"
-    path.write_text(json.dumps(value), encoding="utf-8")
+    write_metadata(path, json.dumps(value))
     with pytest.raises(DomainError, match="APPROVAL_STALE"):
         service.run_pytest(
             "1001",
@@ -224,9 +225,9 @@ def test_unit_harness_rechecks_persisted_approval(tmp_path: Path) -> None:
         store.event_journal_path(run_id).parent
         / "approvals/approval-approval-verify.json"
     )
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(read_metadata(path))
     value["policy_revision"] = "obsolete"
-    path.write_text(json.dumps(value), encoding="utf-8")
+    write_metadata(path, json.dumps(value))
     report = UnitTestHarness(project, "1001", run_id, workspace, tool_run_id).verify()
     assert _check_status(report, "PYTEST-APPROVAL-001") is HarnessStatus.FAILED
 
@@ -258,9 +259,9 @@ def test_unit_harness_blocks_forged_pytest_command_provenance(tmp_path: Path) ->
     run_id, tool_run_id = str(result["run_id"]), str(result["tool_run_id"])
     workspace = WorkspaceService(project, GitRunner()).prepare("1001", "sample", run_id)
     path = store.event_journal_path(run_id).parent / f"tool-runs/{tool_run_id}.json"
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(read_metadata(path))
     value["argv"][0] = r"C:\fake\python.exe"
-    path.write_text(json.dumps(value), encoding="utf-8")
+    write_metadata(path, json.dumps(value))
 
     report = UnitTestHarness(project, "1001", run_id, workspace, tool_run_id).verify()
 

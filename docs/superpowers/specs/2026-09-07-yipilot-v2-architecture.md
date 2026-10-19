@@ -2,7 +2,7 @@
 
 版本：2.0 / 2026-09-07。状态：**Proposed，完整设计基线；现有能力的入口与职责收敛已部分实施**。
 
-产品范围与输入输出以 [产品定义](../../product/vision.md) 为准；当前代码能力以 [状态页](../../product/status.md) 为准。本文件中的 SQLite、目录拆分、首个 Git host 等是技术提案，不是用户原始要求或已完成实现。旧 M0–M8 规格只提供历史依据，不与本方案并列指导实施。
+产品范围与输入输出以 [产品定义](../../product/vision.md) 为准；当前代码能力以 [状态页](../../product/status.md) 为准。用户已确认 SQLite 和首版 GitHub + GitHub Actions；现有业务状态的 SQLite 迁移已完成，具体范围见第 11 节及状态页。下文其余目标模块与交付能力不因此视为已实现。旧 M0–M8 规格只提供历史依据，不与本方案并列指导实施。
 
 本文承接用户最新目标：给出项目目录和需求，自动形成需求与设计、经 Agent 评审、实现、验证、发布分支/PR，并收集配置的 CI 结果后交接。用户已明确取消自动合并；合并不属于本项目的执行职责。本方案不声称现有代码已经具备这些能力。
 
@@ -12,13 +12,13 @@
 
 按 [第一轮执行合同](../plans/2026-09-07-responsibility-refactor.md)，本轮保留 application/runtime/domain/infrastructure/harness 包名：新增 ProjectApplication 公共入口与装配，RunExecutor 管理现有模型 Run 生命周期；终端提交批准意图，业务层绑定并保存；工作区实际能力迁入 workspace，共用路径保护归 security。已删除三份旧 application facade，CLI/交互共用生成路径，应用/验证/有限修复可无 stdin 调用。
 
-本段描述当前实现，下面的完整目录、SQLite、持久 respond/resume、多轮 Agent、需求/设计语义评审和 PR/CI 仍是目标。确认回调并非 durable WaitItem，代码仍以现有文件存储和单次提案运行。参见 [实际依赖、验证与限制](../../architecture/responsibility-refactor.md)。
+本段保留 2026-09-07 第一轮重构记录。后续入口与目录分级、现有业务状态的 SQLite 迁移已完成；文件继续保存工件正文。持久 respond/resume、多轮 Agent、需求/设计语义评审和 PR/CI 仍是目标，确认回调并非 durable WaitItem，当前执行仍围绕单次提案。参见 [实际依赖、验证与限制](../../architecture/responsibility-refactor.md)。
 
 ## 1. 产品定义与首版边界
 
 Yipilot 是面向 Python 仓库的本地自动研发交付控制器。Agent 负责理解与执行，确定性工作流负责阶段推进、验收和交付授权。系统保留可解释的需求、设计、审查、代码、测试与远端结果，不依赖某条聊天中的“已完成”。
 
-首版支持：一个本机项目、一个目标 Git 仓库、一个任务分支、同一时间一个活动阶段；Python 3.11+；首个受控执行环境为现有 Docker Desktop Linux worker；首个模型 Adapter 为现有 OpenAI-compatible 协议升级版；首个代码托管 Adapter 为 GitHub，CI 可消费 GitHub required checks，Jenkins 是可选的外部结果 Adapter。没有 Jenkins 也能使用已配置的 CI。
+首版支持：一个本机项目、一个目标 Git 仓库、一个任务分支、同一时间一个活动阶段；Python 3.11+；首个受控执行环境为现有 Docker Desktop Linux worker；首个模型 Adapter 为现有 OpenAI-compatible 协议升级版；代码托管与 CI 首版统一为 GitHub + GitHub Actions，消费已配置的 required checks；不建设 Jenkins Adapter。
 
 不预先实现：多仓库分布式事务、多租户、远程 worker 集群、任意语言执行平台、可视化流程编辑器、动态插件市场。目录中标记“交付阶段新增”的文件只在对应功能实施时创建。
 
@@ -143,10 +143,8 @@ src/yipilot/
 
   delivery/                      # 到交付里程碑才增加
     types.py                     # Candidate、PullRequestRef、CheckResult、Receipt
-    ports.py                     # GitHost / CiBackend
     git_publish.py               # 受控 commit/push、本地提交与远端 SHA 对账
-    github.py                    # PR/checks/review；带条件写入
-    jenkins.py                   # 可选：trigger/queue/build/result 适配
+    github.py                    # GitHub PR、Actions runs/jobs/checks；带条件写入
 
   persistence/
     database.py                  # sqlite3 连接、事务、受控查询
@@ -389,6 +387,8 @@ Provider凭据留控制器模型Adapter；Git host token留delivery；构建网�
 
 ## 11. 持久化：采用 SQLite，而非继续手写跨文件事务
 
+2026-09-08 实施补充：用户已明确选择 SQLite，现有业务记录的迁移实现见 [SQLite 持久化映射](../../architecture/sqlite-persistence.md)。当前保持原文件工件路径，未实现内容寻址目录、WaitItem、交付动作或多 Worker；下文仍是完整 V2 目标，不据此扩大本次完成范围。旧数据只通过显式迁移切换，不能把本次持久化完成视为整个 V2 完成。
+
 ### 为什么现在调整
 
 现有文件Store值得保留的是数据合同、hash、原子写与可检查证据，不必永远保留分散JSON作为元数据唯一事实源。V2需要一次动作同时预留request/attempt、更新阶段状态、保存wait/approval与事件；SQLite通过标准库提供本机事务，比新增一套文件WAL和恢复协议更简单。
@@ -453,7 +453,9 @@ Run状态：pending/running/succeeded/failed/cancelled；阶段暂停用WaitItem
 
 取消分为请求取消、停止执行、收敛状态三步。取消标记持久化；模型/工具响应信号并关闭资源，允许固定宽限后终止所属进程。已经发生的写入不因取消被自动reset；已推送分支和已创建PR不会因取消被自动删除，应查询远端并记录真实发布结果。
 
-## 13. 交付与 CI/Jenkins 设计
+## 13. 交付与 CI 设计（GitHub Actions）
+
+CI 是持续集成检查流程，GitHub Actions 是本项目选定的执行平台。Yipilot 的研发 Workflow 决定何时发布、等待、修复及交接；目标仓库的 Actions workflow 定义具体检查步骤并由 runner 执行。两者通过 PR、提交 SHA 与检查结果衔接。取消 Jenkins 接入，不取消 CI 阶段；本阶段也不包含自动部署或自动合并。
 
 Candidate固定repo/base、snapshot/tree hash、requirement/design refs、verification/review refs、policy版本。提交只由可信GitPublish执行；Agent不能直接push或merge。
 
@@ -465,7 +467,11 @@ PR创建/更新使用稳定head/base和Operation标记；重放先查询已存�
 
 记录provider、repository、head_sha、tested_sha、subject（head或merge_candidate）、base_sha（适用时）、check_name、external_id、status/conclusion、started/completed时间、URL与原始receipt ref。GitHub检查可能针对测试合并提交；必须核实其与当前head/base的映射，不能把所有tested_sha不同于head的结果一律误判，也不能接受无关联构建。success/pending/failure/cancelled/skipped/unknown分开；missing和unknown绝不当passed。必需check清单来自可信profile并服从Git host实际保护规则，模型不能缩减。
 
-Jenkins触发传入准确SHA；queue item URL/ID与build number分别保存，不能把进入队列当构建成功。可信Pipeline必须按该SHA checkout并在结果中返回实际built SHA；仅看构建名称或SUCCESS不够。遇到响应丢失时按关联参数和已知queue/build查询，不能盲目重复触发。凭据/网络/SCM配置在Adapter外配置，未经实际企业fixture验证不得宣称公司Jenkins兼容。
+GitHub Actions 复用目标仓库 `.github/workflows/`，默认由 PR 创建及更新触发 `pull_request` 检查。Yipilot 发布后查询并持久化 workflow/run ID、run attempt、job/check ID 与结果链接；重启后继续查询，不能因等待超时盲目重触发。首版由 `delivery/github.py` 处理 PR 与 Actions 查询，不预建多 CI 后端接口。
+
+检查绑定当前 head SHA；测试合并候选时同时绑定实际 tested SHA 与 base SHA，head/base 变化后旧结果失效。可信项目配置固定必需 workflow/job 身份及检查清单，不能仅凭同名检查通过放行。失败日志作为受限诊断材料进入修复循环，修复后新提交重新运行检查；缺失、跳过、未知或等待中的必需检查不得算成功。目标仓库未配置 CI 时记录 `not_configured`。
+
+执行候选代码使用最小权限的 `pull_request` workflow，不使用 `pull_request_target` 执行未经信任的候选代码。CI 配置和凭据权限变更遵循现有授权边界；首次接入核验发布凭据能触发预期事件，不把创建 PR 成功当成 CI 已启动。无需单独维护 Jenkins 服务。
 
 ### 交接边界
 
@@ -474,7 +480,7 @@ Workflow 在发布和检查完成后输出 PR/MR 链接、head SHA、变更摘�
 不提供 merge 工具、自动合并开关、merge queue 接入或合并授权。后续人工审核与合并由代码托管平台及团队流程处理，不阻塞已完成的交接任务。
 
 
-Jenkins接口依据：[Remote Access API](https://www.jenkins.io/doc/book/using/remote-access-api/)。远端系统不能与SQLite组成事务，本方案保证持久意图、对账与受条件约束的重试，不宣称跨系统exactly-once。
+GitHub Actions 依据：[工作流触发事件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows)、[Workflow runs API](https://docs.github.com/en/rest/actions/workflow-runs)。远端系统不能与SQLite组成事务，本方案保证持久意图、对账与受条件约束的重试，不宣称跨系统exactly-once。
 
 ## 14. 公共入口与产品体验
 
@@ -540,7 +546,7 @@ Pi 的可编程会话与 TUI 分离、差分渲染、粘贴与补全值得借鉴
 | R1 状态可靠性 | SQLite/工件、幂等预留、Run结束事务、事件回放、v1导入 | 重放不重复；故障注入不会制造成功；旧数据可读 |
 | R2 通用Agent与Workspace | 真流、多轮工具、上下文、取消、统一Docker工具执行 | 同一Agent能完成文档schema与小代码任务；主目录不变 |
 | R3 本地研发闭环 | 需求/设计/评审/实现/验证/修复、profile环境 | 一次授权自动到verified；真实service失败修复后重验 |
-| R4 分支/PR/CI | 一个Git host、checks、可选Jenkins、持久wait | 准确SHA对齐；重启不重复PR/push；旧CI不能放行 |
+| R4 分支/PR/CI | 一个Git host、checks、GitHub Actions、持久wait | 准确SHA对齐；重启不重复PR/push；旧CI不能放行 |
 
 每个里程碑做到可运行再继续；调整目录随职责迁移发生，不先进行大规模纯搬家。R0可短暂保留内部兼容适配，但迁移某条入口后立即收敛调用方并写移除条件。模型/执行替身只存在测试注入，不恢复产品fake/replay开关。
 
@@ -576,6 +582,6 @@ Pi 的可编程会话与 TUI 分离、差分渲染、粘贴与补全值得借鉴
 
 ## 18. 实施前可确认的结论与限制
 
-本方案已结合现有代码调用链与当日官方资料，具体目录、数据、阶段、恢复、权限、交付和迁移均给出设计选择。本轮仅收敛现有入口、Run生命周期与工作区职责，尚未完成通用Runtime、数据迁移或远端连接，不能称为完整已实现架构；真实企业Jenkins、Git权限和项目依赖环境仍需用对应fixture/opt-in测试验证。
+本方案已结合现有代码调用链与当日官方资料，具体目录、数据、阶段、恢复、权限、交付和迁移均给出设计选择。现有入口与目录职责收敛、现有业务状态的 SQLite 迁移及真实项目切换已完成，尚未完成通用 Runtime、完整恢复工作流或远端交付集成，不能称为完整已实现架构；真实 GitHub Actions 配置、Git权限和项目依赖环境仍需用对应fixture/opt-in测试验证。
 
 方案成功的判断不是文件变多或变少，而是：增加设计评审不改模型循环；更换Docker执行后端不改研发流程；增加CLI/HTTP入口不复制审批与修复逻辑；新增CI不改Agent；任何成功都能追溯到正确版本的结果证据。

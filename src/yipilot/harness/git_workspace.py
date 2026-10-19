@@ -257,7 +257,7 @@ class GitWorkspaceHarness:
         )
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        except (DomainError, OSError, UnicodeDecodeError, json.JSONDecodeError):
             value = None
         expected = {
             "task_id": self._workspace.task_id,
@@ -457,10 +457,11 @@ class GitWorkspaceHarness:
         )
 
     def _source_repository(self) -> _SourceRepository:
-        metadata_path = _repo_root(self._workspace.path) / "metadata.json"
+        from yipilot.persistence.database import Database
+        runtime = next(p for p in self._workspace.path.parents if p.name == ".yipilot")
         try:
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            metadata = json.loads(Database(runtime.parent).record("repo", f"{self._workspace.task_id}:{self._workspace.repo_alias}", "SOURCE_METADATA_INVALID"))
+        except (DomainError, OSError, UnicodeDecodeError, json.JSONDecodeError):
             return _SourceRepository(None, None, "SOURCE_METADATA_INVALID")
         if not isinstance(metadata, dict):
             return _SourceRepository(None, None, "SOURCE_METADATA_INVALID")

@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from tests.helpers.sqlite_records import event_text
 from yipilot.domain.errors import DomainError
 from yipilot.domain.provider import ProviderProfile
 from yipilot.harness.models import HarnessCheck, HarnessReport, HarnessStatus
@@ -85,8 +86,7 @@ def test_event_artifact_and_harness_persistence_redact_credentials(tmp_path) -> 
         checks=[HarnessCheck(id="TEST", status=HarnessStatus.PASSED, message=text)], summary=text,
     )
     HarnessReportStore(store).save(report)
-    persisted = "".join(path.read_text(encoding="utf-8") for path in [
-        store.event_journal_path(run.run_id),
+    persisted = event_text(store.event_journal_path(run.run_id)) + "".join(path.read_text(encoding="utf-8") for path in [
         store.event_journal_path(run.run_id).parent / artifact.relative_path,
         HarnessReportStore(store).report_path(run.run_id),
     ])

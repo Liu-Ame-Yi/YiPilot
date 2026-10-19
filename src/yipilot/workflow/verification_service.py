@@ -32,6 +32,7 @@ from yipilot.harness.report_store import HarnessReportStore
 from yipilot.persistence.approval_store import FileApprovalStore
 from yipilot.persistence.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.ownership import exclusive_execution
 from yipilot.persistence.task_store import FileTaskStore, RunRecord, RunStatus
 from yipilot.security.approval import ApprovalGate, approval_action_type
 from yipilot.workspace.executors import LocalCommandRunner
@@ -110,6 +111,7 @@ class VerificationService:
                 )
         return values
 
+    @exclusive_execution
     def prepare(
         self, task_id: str, apply_run_id: str, *, request_id: str | None = None
     ) -> VerificationPreparation:
@@ -185,6 +187,7 @@ class VerificationService:
             self._fail(run, journal, error.code)
             raise
 
+    @exclusive_execution
     def run(
         self,
         task_id: str,
@@ -221,7 +224,7 @@ class VerificationService:
                     confirm_token=token,
                     policy_revision=policy.revision,
                 )
-            self._store.set_run_status(run.run_id, RunStatus.RUNNING)
+            self._store.set_run_status(run.run_id, RunStatus.RUNNING, event_payload={"apply_run_id": details["apply_run_id"]})
             journal.append("run.started", {"apply_run_id": details["apply_run_id"]})
             before = GitWorkspaceHarness(workspace).run()
             if before.status is not HarnessStatus.PASSED:
@@ -271,11 +274,11 @@ class VerificationService:
                     "verification changed the applied diff",
                 )
             handoff = self._handoff(run, details, results, report_ref)
-            self._store.set_run_status(run.run_id, RunStatus.SUCCEEDED)
             journal.append(
                 "harness.completed",
                 {"report_artifact_id": report_ref.artifact_id, "status": "passed"},
             )
+            self._store.set_run_status(run.run_id, RunStatus.SUCCEEDED, event_payload={"handoff_artifact_id": handoff.artifact_id})
             journal.append(
                 "run.succeeded", {"handoff_artifact_id": handoff.artifact_id}
             )

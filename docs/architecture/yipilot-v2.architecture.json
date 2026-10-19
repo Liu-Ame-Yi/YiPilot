@@ -19,7 +19,7 @@
     {"id": "model", "type": "external", "label": "模型适配", "sublabel": "消息 · 流 · usage", "pos": [540, 65], "size": [170, 76]},
     {"id": "state", "type": "database", "label": "SQLite + 工件", "sublabel": "事务状态 · 不可变证据", "pos": [270, 65], "size": [170, 76]},
     {"id": "delivery", "type": "backend", "label": "交付集成", "sublabel": "提交 · PR · 检查 · 交接", "pos": [270, 480], "size": [170, 76]},
-    {"id": "remote", "type": "external", "label": "代码托管 / CI", "sublabel": "GitHub · Jenkins", "pos": [540, 480], "size": [170, 76]}
+    {"id": "remote", "type": "external", "label": "代码托管 / CI", "sublabel": "GitHub Actions", "pos": [540, 480], "size": [170, 76]}
   ],
   "connections": [
     {"from": "entry", "to": "workflow", "variant": "emphasis"},

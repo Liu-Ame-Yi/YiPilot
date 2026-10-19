@@ -755,6 +755,8 @@ def _watch_journal(
             cursor = event.sequence
             if is_terminal_event(event):
                 return
+        if not events and any(is_terminal_event(event) and event.sequence <= cursor for event in journal.read_after(0)):
+            return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise typer.Exit(code=4)
@@ -892,3 +894,39 @@ def _validate_output(output: str) -> None:
         raise typer.BadParameter(
             "must be either 'human' or 'json'", param_hint="--output"
         )
+
+
+storage_app = typer.Typer(help="SQLite migration; legacy files are retained.")
+app.add_typer(storage_app, name="storage")
+
+
+@storage_app.command("migrate")
+def storage_migrate(
+    project: Annotated[Path, typer.Option("--project")],
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    executors_stopped: bool = typer.Option(False, "--executors-stopped"),
+) -> None:
+    """Scan only with --dry-run; import only after stopping old executors."""
+    from yipilot.persistence.migration import migrate, public_report, scan
+    try:
+        report = scan(project) if dry_run else migrate(project, executors_stopped=executors_stopped)
+        typer.echo(json.dumps(public_report(report), ensure_ascii=False, indent=2))
+        if report.get("errors"):
+            raise typer.Exit(code=1)
+    except DomainError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=1) from error
+
+
+@storage_app.command("audit")
+def storage_audit(project: Annotated[Path, typer.Option("--project")]) -> None:
+    """Report damaged references and orphan bodies without deleting files."""
+    from yipilot.persistence.artifact_store import audit_artifacts
+    try:
+        report = audit_artifacts(FileTaskStore(project))
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+        if report["errors"]:
+            raise typer.Exit(code=1)
+    except DomainError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=1) from error

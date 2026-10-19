@@ -1,7 +1,6 @@
-"""Locked append-only JSONL persistence for Run events."""
+"""SQLite events; JSONL is a renderer/export, never a project write store."""
 
 import json
-import os
 import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
@@ -9,15 +8,15 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from filelock import FileLock
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from yipilot.domain.errors import DomainError
+from yipilot.persistence.database import Database
 from yipilot.security.redaction import SecretRedactor
 
 MAX_EVENT_PAYLOAD_BYTES = 16_384
 
-_EVENT_TYPES = {
+EVENT_TYPES = {
     "run.started",
     "turn.started",
     "turn.completed",
@@ -46,6 +45,7 @@ _AUTHORIZATION_PATTERN = re.compile(
 
 class EventRecord(BaseModel):
     sequence: int
+    cursor: int | None = None
     event_id: str
     task_id: str
     run_id: str
@@ -57,7 +57,7 @@ class EventRecord(BaseModel):
 
 
 class JsonlEventJournal:
-    """Append and replay one Run's events under a cross-platform file lock."""
+    """Append and replay SQLite events under the historical source-level name."""
 
     def __init__(
         self,
@@ -68,10 +68,15 @@ class JsonlEventJournal:
         stage: str = "",
     ) -> None:
         self._path = Path(path)
-        self._lock = FileLock(str(self._path.with_suffix(f"{self._path.suffix}.lock")))
         self._task_id = task_id
         self._run_id = run_id
         self._stage = stage
+        runtime = next((p for p in self._path.parents if p.name == ".yipilot"), None)
+        if runtime is None:
+            raise DomainError("EVENT_PATH_INVALID", "event locator must belong to a project Run")
+        self._db = Database(runtime.parent)
+        self._run_id = run_id or self._path.parent.name
+        self._task_id = task_id or self._path.parents[2].name
 
     def append(
         self,
@@ -80,70 +85,46 @@ class JsonlEventJournal:
         *,
         visibility: Literal["user", "audit"] = "user",
     ) -> EventRecord:
-        if event_type not in _EVENT_TYPES:
+        if event_type not in EVENT_TYPES:
             raise DomainError("EVENT_TYPE_INVALID", "event type is not supported")
         redacted_payload = _prepare_payload(payload)
-        with self._lock:
-            existing = self._read_all_unlocked()
-            event = EventRecord(
-                sequence=len(existing) + 1,
-                event_id=str(uuid4()),
-                task_id=self._task_id,
-                run_id=self._run_id,
-                stage=self._stage,
-                timestamp=_timestamp(),
-                type=event_type,
-                visibility=visibility,
-                payload=redacted_payload,
-            )
-            line = json.dumps(
-                event.model_dump(mode="json"),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            with self._path.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(f"{line}\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            return event
+        return self._append_sqlite(event_type, redacted_payload, visibility)
 
     def read_after(self, after_sequence: int) -> list[EventRecord]:
         if after_sequence < 0:
             raise DomainError("EVENT_CURSOR_INVALID", "event cursor must be non-negative")
-        with self._lock:
-            return [
-                event
-                for event in self._read_all_unlocked()
-                if event.sequence > after_sequence
-            ]
+        with self._db.transaction() as connection:
+            try:
+                events = [EventRecord.model_validate_json(row[1]) for row in connection.execute(
+                    "SELECT sequence,body FROM events WHERE run_id=? ORDER BY sequence", (self._run_id,))]
+                if any(event.sequence != index for index, event in enumerate(events, 1)):
+                    raise ValueError("non-contiguous sequence")
+                return [event for event in events if event.sequence > after_sequence]
+            except ValueError as error:
+                raise DomainError("EVENT_JOURNAL_CORRUPT", "invalid persisted event") from error
 
-    def _read_all_unlocked(self) -> list[EventRecord]:
-        if not self._path.exists():
-            return []
-        events: list[EventRecord] = []
-        try:
-            with self._path.open("r", encoding="utf-8") as handle:
-                for expected_sequence, line in enumerate(handle, start=1):
-                    if not line.endswith("\n"):
-                        raise DomainError(
-                            "EVENT_JOURNAL_CORRUPT", "event journal has a damaged tail"
-                        )
-                    event = EventRecord.model_validate_json(line)
-                    if event.sequence != expected_sequence:
-                        raise DomainError(
-                            "EVENT_JOURNAL_CORRUPT",
-                            "event sequence is not contiguous",
-                        )
-                    events.append(event)
-        except DomainError:
-            raise
-        except (OSError, ValidationError, ValueError) as error:
-            raise DomainError(
-                "EVENT_JOURNAL_CORRUPT", "event journal contains an invalid line"
-            ) from error
-        return events
+    def _append_sqlite(self, event_type: str, payload: dict[str, object],
+                       visibility: Literal["user", "audit"]) -> EventRecord:
+        with self._db.transaction() as connection:
+            if event_type in {"run.started", "run.paused", "run.succeeded", "run.failed", "run.cancelled"}:
+                from yipilot.persistence.task_store import FileTaskStore
+                store = FileTaskStore(self._db.project)
+                target = "running" if event_type == "run.started" else event_type[4:]
+                if store.find_run(self._run_id).status.value != target:
+                    store.set_run_status(self._run_id, target, error_code=str(payload["error_code"]) if payload.get("error_code") else None, event_payload=payload)
+            if event_type in {"run.started", "run.succeeded", "run.failed", "run.cancelled"}:
+                row = connection.execute("SELECT body FROM events WHERE run_id=? AND type=? ORDER BY sequence DESC LIMIT 1", (self._run_id, event_type)).fetchone()
+                if row:
+                    return EventRecord.model_validate_json(row[0])
+            sequence = connection.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM events WHERE run_id=?", (self._run_id,)).fetchone()[0]
+            event = EventRecord(sequence=sequence, event_id=str(uuid4()), task_id=self._task_id,
+                run_id=self._run_id, stage=self._stage, timestamp=_timestamp(), type=event_type,
+                visibility=visibility, payload=payload)
+            cursor = connection.execute("INSERT INTO events(event_id,run_id,sequence,type,body) VALUES (?,?,?,?,?)",
+                (event.event_id, self._run_id, sequence, event_type, event.model_dump_json())).lastrowid
+            event = event.model_copy(update={"cursor": cursor})
+            connection.execute("UPDATE events SET body=? WHERE cursor=?", (event.model_dump_json(), cursor))
+            return event
 
 
 def _prepare_payload(payload: Mapping[str, object]) -> dict[str, object]:

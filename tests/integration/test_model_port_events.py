@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from tests.helpers.fake_executor import FakeExecutor
+from tests.helpers.sqlite_records import event_text
 from yipilot.agent.model_planner import ModelPlanner
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
@@ -275,6 +276,6 @@ def test_default_model_redaction_hides_environment_secret_assignment(tmp_path: P
         FileRuntimeEvidence(FileArtifactStore(store), journal),
     ).execute(run.task_id, run.operation_id, run.run_id, instruction, harness=lambda: True)
 
-    persisted = store.event_journal_path(run.run_id).parent.joinpath("events.jsonl").read_text(encoding="utf-8")
+    persisted = event_text(store.event_journal_path(run.run_id).parent.joinpath("events.jsonl"))
     assert secret not in persisted
     assert "YIPILOT_TEST_SECRET=[REDACTED]" in persisted

@@ -19,6 +19,7 @@ from yipilot.models.selection import ModelSelectionService
 from yipilot.persistence.approval_store import FileApprovalStore
 from yipilot.persistence.artifact_store import ArtifactRecord
 from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.ownership import exclusive_execution
 from yipilot.persistence.task_store import RunRecord
 from yipilot.workflow.code_service import CodeGenerateResult, CodeService
 from yipilot.workflow.project_service import ProjectService
@@ -99,6 +100,7 @@ class ProjectApplication:
         return self.specifications.clarify(task_id, flow_id, answers, request_id=request_id,
                                           expected_input_sha256=expected_input_sha256)
 
+    @exclusive_execution
     def generate(self, task_id: str, alias: str, instruction: str, *,
                  request_id: str | None = None, model_selector: str | None = None,
                  context_files: Iterable[str] = ()) -> CodeGenerateResult:
@@ -108,8 +110,9 @@ class ProjectApplication:
     def proposals(self, task_id: str) -> list[dict[str, object]]:
         return self.code.proposals(task_id)
 
+    @exclusive_execution
     def apply(self, task_id: str, proposal_run_id: str, *, proposal_hash: str,
-              confirm: Callable[[ApprovalPrompt], bool]) -> str | None:
+              confirm: Callable[[ApprovalPrompt], bool], request_id: str | None = None) -> str | None:
         selected = next((p for p in self.proposals(task_id)
                          if p["proposal_run_id"] == proposal_run_id), None)
         if selected is None:
@@ -125,8 +128,16 @@ class ProjectApplication:
         request = self.sandbox.prepare(
             task_id, str(selected["repository_alias"]), str(selected["base_sha"]),
             cast(PatchProposal, selected["proposal"]), digest,
-            proposal_run_id=proposal_run_id,
+            proposal_run_id=proposal_run_id, request_id=request_id,
             root_proposal_run_id=str(selected.get("root_proposal_run_id", proposal_run_id)))
+        existing = self.sandbox.store.get_run(task_id, request.run_id)
+        if existing.status.value == "succeeded":
+            self.sandbox.accepted(task_id, request.run_id)
+            return request.run_id
+        if existing.status.value in {"failed", "cancelled"}:
+            return None
+        if existing.status.value != "pending":
+            raise DomainError("EXTERNAL_RESULT_UNCERTAIN", "existing apply requires reconciliation")
         try:
             approval = self._approve(ApprovalPrompt(task_id, request.operation_id,
                 request.run_id, "sandbox_execution", request.fingerprint,
@@ -152,15 +163,23 @@ class ProjectApplication:
         return [r for r in self.sandbox.store.list_runs(task_id)
                 if r.stage == "sandbox_apply" and r.status.value == "succeeded"]
 
+    @exclusive_execution
     def verify(self, task_id: str, apply_run_id: str, *,
                confirm: Callable[[ApprovalPrompt], bool],
-               model_selector: str | None = None) -> VerificationOutcome:
+               model_selector: str | None = None, request_id: str | None = None) -> VerificationOutcome:
         prepared = None
         try:
             if not any(r.run_id == apply_run_id for r in self.applied_runs(task_id)):
                 raise DomainError("APPLY_RUN_NOT_FOUND", "no successful sandbox apply Run")
             copies, request, evidence = self.sandbox.accepted(task_id, apply_run_id)
-            prepared = self.verification.prepare(copies, request, apply_policy(), evidence)
+            prepared = self.verification.prepare(copies, request, apply_policy(), evidence, request_id=request_id)
+            existing = self.sandbox.store.get_run(task_id, prepared.run_id)
+            if existing.status.value == "succeeded":
+                return VerificationOutcome(handoff=self.verification.handoff(copies, request, apply_policy(), evidence, prepared.run_id))
+            if existing.status.value in {"failed", "cancelled"}:
+                return VerificationOutcome(error=DomainError(existing.error_code or "VERIFICATION_FAILED", "previous verification result"), cancelled=existing.status.value == "cancelled")
+            if existing.status.value != "pending":
+                raise DomainError("EXTERNAL_RESULT_UNCERTAIN", "existing verification requires reconciliation")
             approval = self._approve(ApprovalPrompt(task_id, prepared.operation_id,
                 prepared.run_id, "sandbox_verification", prepared.approval_fingerprint,
                 REVISION, requests=prepared.requests, patch_sha256=evidence.patch_sha256,
@@ -205,12 +224,13 @@ class ProjectApplication:
             policy_revision=prompt.revision,
             decision=ApprovalDecision.APPROVED if approved else ApprovalDecision.DENIED,
             decided_at=datetime.now(UTC))
-        FileApprovalStore(self.sandbox.store).save(record)
-        JsonlEventJournal(self.sandbox.store.event_journal_path(run.run_id),
-            task_id=run.task_id, run_id=run.run_id, stage=run.stage).append(
-                "stage.progress", {"message": "approval decided", "approval_id": record.approval_id,
-                    "action_type": prompt.action, "decision": record.decision.value,
-                    "target_fingerprint": prompt.fingerprint})
+        with self.sandbox.store.db.transaction():
+            FileApprovalStore(self.sandbox.store).save(record)
+            JsonlEventJournal(self.sandbox.store.event_journal_path(run.run_id),
+                task_id=run.task_id, run_id=run.run_id, stage=run.stage).append(
+                    "stage.progress", {"message": "approval decided", "approval_id": record.approval_id,
+                        "action_type": prompt.action, "decision": record.decision.value,
+                        "target_fingerprint": prompt.fingerprint})
         return record.approval_id if approved else None
 
 

@@ -357,16 +357,7 @@ def test_sync_uses_sha256_cache_and_records_remote_head(
     assert metadata.cache_path.is_dir()
     assert metadata.head_sha == expected_head
 
-    metadata_path = (
-        project
-        / ".yipilot"
-        / "tasks"
-        / "1001"
-        / "repos"
-        / "sample"
-        / "metadata.json"
-    )
-    record = json.loads(metadata_path.read_text(encoding="utf-8"))
+    record = json.loads(FileTaskStore(project).db.record("repo", "1001:sample", "REPO_NOT_FOUND"))
     assert record == {
         "alias": "sample",
         "cache_path": f".yipilot/cache/repos/{metadata.url_hash}",

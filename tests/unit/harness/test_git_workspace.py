@@ -54,19 +54,28 @@ def _manifest_path(workspace: PreparedWorkspace) -> Path:
     return workspace.path.parent / f"{workspace.run_id}.json"
 
 
-def _metadata_path(workspace: PreparedWorkspace) -> Path:
-    return workspace.path.parents[1] / "metadata.json"
+def _metadata_store(workspace):
+    runtime = next(p for p in workspace.path.parents if p.name == ".yipilot")
+    return FileTaskStore(runtime.parent).db
+
+
+def _read_metadata(workspace):
+    return json.loads(_metadata_store(workspace).record("repo", f"{workspace.task_id}:{workspace.repo_alias}", "REPO_NOT_FOUND"))
+
+
+def _write_metadata(workspace, body):
+    with _metadata_store(workspace).transaction() as connection:
+        connection.execute("UPDATE records SET body=? WHERE kind='repo' AND id=?", (body, f"{workspace.task_id}:{workspace.repo_alias}"))
 
 
 def _retarget_source(
     workspace: PreparedWorkspace, normalized_url: str
 ) -> PreparedWorkspace:
     repo_hash = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()
-    metadata_path = _metadata_path(workspace)
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata = _read_metadata(workspace)
     metadata["normalized_url"] = normalized_url
     metadata["url_hash"] = repo_hash
-    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    _write_metadata(workspace, json.dumps(metadata))
     manifest_path = _manifest_path(workspace)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["repo_hash"] = repo_hash
@@ -1125,8 +1134,7 @@ def test_source_checkout_change_is_git_workspace_004_failure(
 def test_invalid_local_repo_metadata_is_git_workspace_004_failure(
     prepared_workspace: PreparedWorkspace,
 ) -> None:
-    metadata_path = _metadata_path(prepared_workspace)
-    metadata_path.write_bytes(b"\xff")
+    _write_metadata(prepared_workspace, "not-json")
 
     report = GitWorkspaceHarness(prepared_workspace).run()
 
@@ -1137,10 +1145,9 @@ def test_invalid_local_repo_metadata_is_git_workspace_004_failure(
 def test_tampered_local_repo_metadata_cannot_disable_git_workspace_004(
     prepared_workspace: PreparedWorkspace,
 ) -> None:
-    metadata_path = _metadata_path(prepared_workspace)
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata = _read_metadata(prepared_workspace)
     metadata["normalized_url"] = "https://example.invalid/repo.git"
-    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    _write_metadata(prepared_workspace, json.dumps(metadata))
 
     report = GitWorkspaceHarness(prepared_workspace).run()
 

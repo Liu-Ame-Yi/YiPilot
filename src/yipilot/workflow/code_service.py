@@ -39,6 +39,7 @@ from yipilot.persistence.artifact_store import (
 )
 from yipilot.persistence.event_journal import JsonlEventJournal
 from yipilot.persistence.filesystem import project_path
+from yipilot.persistence.ownership import exclusive_execution
 from yipilot.persistence.runtime_evidence import FileRuntimeEvidence
 from yipilot.persistence.task_store import FileTaskStore, RunRecord
 from yipilot.security.approval import ApprovalGate, approval_action_type
@@ -123,6 +124,7 @@ class CodeService:
         self._git = git or GitRunner()
         self._models = model_selection_service or ModelSelectionService(settings_dir)
 
+    @exclusive_execution
     def generate(
         self,
         task_id: str,
@@ -137,6 +139,19 @@ class CodeService:
             raise DomainError("INSTRUCTION_INVALID", "instruction is required")
         self._store.get_task(task_id)
         WorkspaceService(self._project_root, self._git).validate_repository(task_id, alias)
+        fingerprint = _sha256(instruction)
+        key = request_id or fingerprint
+        operation_key = f"code-generate:{task_id}:{alias}:{key}"
+        context_files = tuple(context_files)
+        previous = self._store.find_operation(task_id, operation_key)
+        if previous:
+            payload = json.loads(previous.request_json)["payload"]
+            if (payload["instruction_fingerprint"] != fingerprint
+                or payload.get("context_files", []) != list(context_files)
+                or model_selector is not None and model_selector not in {payload["model_selector"], payload.get("requested_model_selector")}):
+                raise DomainError("OPERATION_CONFLICT", "frozen generation input changed")
+            run, _ = self._store.get_or_create_run(task_id, previous.operation_id, "code_generate")
+            return _result(self._store, run)
         resolved = self._models.resolve(explicit_selector=model_selector)
         port = self._models.model_port(resolved)
         fingerprint = _sha256(instruction)
@@ -144,11 +159,13 @@ class CodeService:
         operation = self._store.create_operation(
             task_id,
             "code_generate",
-            f"code-generate:{task_id}:{alias}:{resolved.selector}:{resolved.connection_revision}:{key}",
+            operation_key,
             {
                 "alias": alias,
                 "instruction_fingerprint": fingerprint,
+                "context_files": list(context_files),
                 "model_selector": resolved.selector,
+                "requested_model_selector": model_selector,
                 "provider_revision": resolved.connection_revision,
                 "request_id": key,
             },
@@ -169,6 +186,7 @@ class CodeService:
                 if run.stage in {"code_generate", "code_repair"} and run.status.value == "succeeded"
                 if self._is_proposal(task_id, run.run_id)]
 
+    @exclusive_execution
     def apply(self, task_id: str, proposal_run_id: str, *, request_id: str | None = None) -> CodeApplyResult:
         """Apply one verified Proposal once, through the approved Git tool only."""
         proposal = self._proposal_details(task_id, proposal_run_id)
@@ -185,7 +203,7 @@ class CodeService:
         artifacts = FileArtifactStore(self._store)
         journal = _journal(self._store, run)
         try:
-            self._store.set_run_status(run.run_id, "running")
+            self._store.set_run_status(run.run_id, "running", event_payload={"proposal_run_id": proposal_run_id})
             journal.append("run.started", {"proposal_run_id": proposal_run_id})
             workspace = WorkspaceService(self._project_root, self._git).prepare(
                 task_id, str(proposal["repository_alias"]), run.run_id
@@ -267,7 +285,7 @@ class CodeService:
                     "parent_diff_hash": proposal.get("parent_diff_hash"),
                     "root_proposal_run_id": proposal.get("root_proposal_run_id", proposal_run_id)}, sort_keys=True).encode(),
                 input_fingerprint=binding, operation_id=run.operation_id)
-            self._store.set_run_status(run.run_id, "succeeded")
+            self._store.set_run_status(run.run_id, "succeeded", event_payload={"proposal_run_id": proposal_run_id})
             journal.append("run.succeeded", {"proposal_run_id": proposal_run_id})
         except DomainError as error:
             if self._store.get_run(task_id, run.run_id).status.value == "running":
@@ -284,7 +302,7 @@ class CodeService:
 
     def _proposal_details(self, task_id: str, run_id: str) -> dict[str, object]:
         run = self._store.get_run(task_id, run_id)
-        if run.stage not in {"code_generate", "code_repair"} or run.status.value != "succeeded":
+        if run.legacy or run.stage not in {"code_generate", "code_repair"} or run.status.value != "succeeded":
             raise DomainError("PATCH_PROPOSAL_NOT_FOUND", "proposal Run is not a successful code-generation Run")
         artifacts = FileArtifactStore(self._store)
         records = [record for record in artifacts.list(task_id, run_id) if record.relative_path == _PROPOSAL_PATH]
@@ -372,8 +390,8 @@ class CodeService:
                 journal.append("run.started", {})
                 journal.append("turn.started", {"turn": 1})
             if self._store.get_run(run.task_id, run.run_id).status.value == "running":
-                self._store.set_run_status(run.run_id, "failed", error_code=error.code)
                 journal.append("turn.failed", {"turn": 1, "error_code": error.code})
+                self._store.set_run_status(run.run_id, "failed", error_code=error.code)
                 journal.append("run.failed", {"error_code": error.code})
         return _result(self._store, self._store.get_run(run.task_id, run.run_id))
 
@@ -419,7 +437,11 @@ class CodeService:
 
 
 def _result(store: FileTaskStore, run: RunRecord) -> CodeGenerateResult:
-    records = FileArtifactStore(store).list(run.task_id, run.run_id)
+    artifacts = FileArtifactStore(store)
+    records = artifacts.list(run.task_id, run.run_id)
+    if run.status.value == "succeeded":
+        for record in records:
+            artifacts.verify(run.task_id, run.run_id, record.artifact_id)
     plan = next((record for record in records if record.relative_path == _PLAN_PATH), None)
     proposal = next((record for record in records if record.relative_path == _PROPOSAL_PATH), None)
     return CodeGenerateResult(

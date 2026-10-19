@@ -33,6 +33,7 @@ from yipilot.harness.report_store import HarnessReportStore
 from yipilot.persistence.approval_store import FileApprovalStore
 from yipilot.persistence.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.persistence.filesystem import atomic_write_bytes, project_path
+from yipilot.persistence.ownership import exclusive_execution
 from yipilot.persistence.task_store import FileTaskStore
 from yipilot.security.paths import read_evidence, require_plain_path
 from yipilot.workspace.docker_worker import DockerSandboxWorker
@@ -106,12 +107,14 @@ class SandboxVerificationService:
         self._apply = SandboxApplyService(self._root, self._git)
         self._output = SandboxOutputService(self._root, self._git)
 
+    @exclusive_execution
     def prepare(
         self,
         prepared: PreparedSources,
         request: SandboxRequest,
         policy: ExecutionPolicy,
         evidence: SandboxDiffEvidence,
+        *, request_id: str | None = None,
     ) -> SandboxVerificationPreparation:
         """Freeze three independent inputs; the caller must obtain a human approval."""
         self._apply.verify(prepared, request, policy, evidence)
@@ -122,12 +125,16 @@ class SandboxVerificationService:
         operation = self._store.create_operation(
             request.task_id,
             "sandbox_verification",
-            str(uuid4()),
+            f"sandbox-verify:{request.task_id}:{request_id or uuid4()}",
             {"apply_run_id": request.run_id, "patch_sha256": evidence.patch_sha256},
         )
-        run = self._store.create_run(
+        run, created = self._store.get_or_create_run(
             request.task_id, operation.operation_id, "sandbox_verification"
         )
+        if not created:
+            context, previous_requests = self._inputs(prepared, request, policy, evidence, run.run_id)
+            return SandboxVerificationPreparation(request.task_id, operation.operation_id,
+                run.run_id, hashlib.sha256(_json(context)).hexdigest(), previous_requests)
         root = self._store.event_journal_path(run.run_id).parent
         requests = []
         try:
@@ -213,6 +220,7 @@ class SandboxVerificationService:
                 ) from error
             raise
 
+    @exclusive_execution
     def run(
         self,
         prepared: PreparedSources,
@@ -256,6 +264,9 @@ class SandboxVerificationService:
                         self._root, verification_policy(), copies, input_manifest=seed
                     ).execute(item, cancel_event=cancel_event)
                     self._verify_tool(item, result, seed)
+                    for relative in ("docker-worker/result.json", "docker-worker/container-after.json", "docker-worker/cleanup.json"):
+                        FileArtifactStore(self._store).register(item.task_id, item.run_id,
+                            producer="sandbox_verification", relative_path=relative, input_fingerprint=item.fingerprint)
                     self._store.set_run_status(item.run_id, "succeeded")
                 self._apply.verify(prepared, request, policy, evidence)
                 self._approval(run_id, request.task_id, approval_id, context)
@@ -605,11 +616,6 @@ class SandboxVerificationService:
         if "/" in approval_id:
             raise DomainError("APPROVAL_REQUIRED", "invalid approval identifier")
         run = self._store.get_run(task_id, run_id)
-        require_plain_path(
-            self._store.event_journal_path(run_id).parent
-            / "approvals"
-            / f"{approval_id}.json"
-        )
         approval = FileApprovalStore(self._store).get(task_id, run_id, approval_id)
         approval.require_fresh(
             task_id=task_id,

@@ -2,6 +2,7 @@
 
 from yipilot.domain.models import RunStatus
 from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.ownership import exclusive_execution
 from yipilot.persistence.task_store import FileTaskStore, RunRecord
 
 
@@ -11,12 +12,13 @@ class RecoveryService:
     def __init__(self, store: FileTaskStore) -> None:
         self._store = store
 
+    @exclusive_execution
     def recover(self, run_id: str) -> RunRecord:
         run = self._store.find_run(run_id)
         if run.status not in {RunStatus.RUNNING, RunStatus.PAUSED}:
             return run
 
-        error_code = "EXECUTION_INTERRUPTED"
+        error_code = "EXECUTION_INTERRUPTED" if run.stage in {"code_generate", "code_repair"} else "EXTERNAL_RESULT_UNCERTAIN"
         journal = JsonlEventJournal(
             self._store.event_journal_path(run_id),
             task_id=run.task_id,

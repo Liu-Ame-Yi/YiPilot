@@ -5,7 +5,6 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
 
 from yipilot.agent.model_planner import ModelPlanner
 from yipilot.domain.errors import DomainError
@@ -15,6 +14,7 @@ from yipilot.domain.models import RunStatus
 from yipilot.models.selection import ModelSelectionService
 from yipilot.persistence.artifact_store import FileArtifactStore, artifact_reference
 from yipilot.persistence.event_journal import JsonlEventJournal
+from yipilot.persistence.ownership import exclusive_execution
 from yipilot.persistence.runtime_evidence import FileRuntimeEvidence
 from yipilot.persistence.task_store import FileTaskStore, RunRecord
 from yipilot.workflow.run_executor import RunExecutor
@@ -59,6 +59,7 @@ class RepairService:
         self._output = output or SandboxOutputService(self._project_root, self._sandbox.git)
         self._models = model_selection_service or ModelSelectionService(settings_dir)
 
+    @exclusive_execution
     def repair(
         self,
         task_id: str,
@@ -69,6 +70,14 @@ class RepairService:
     ) -> RepairResult:
         verification = self._store.get_run(task_id, verification_run_id)
         details, copies, diagnostics = self._verification_details(task_id, verification)
+        key = f"repair:{task_id}:{verification_run_id}:{request_id or verification_run_id}"
+        previous = self._store.find_operation(task_id, key)
+        if previous:
+            payload = json.loads(previous.request_json)["payload"]
+            if model_selector is not None and model_selector not in {payload["model_selector"], payload.get("requested_model_selector")}:
+                raise DomainError("OPERATION_CONFLICT", "request model changed")
+            run, _ = self._store.get_or_create_run(task_id, previous.operation_id, "code_repair")
+            return RepairResult(run.run_id, run.status.value, run.error_code)
         attempt = self._attempts(task_id, details["root_proposal_run_id"])
         if attempt >= MAX_REPAIR_ATTEMPTS:
             raise DomainError("REPAIR_ATTEMPT_LIMIT", "repair attempt limit has been reached")
@@ -79,13 +88,13 @@ class RepairService:
         operation = self._store.create_operation(
             task_id,
             "code_repair",
-            f"repair:{task_id}:{verification_run_id}:{request_id or uuid4()}",
+            key,
             {
                 "verification_run_id": verification_run_id,
                 "apply_run_id": details["apply_run_id"],
                 "root_proposal_run_id": details["root_proposal_run_id"],
-                "attempt": attempt + 1,
                 "model_selector": resolved.selector,
+                "requested_model_selector": model_selector,
                 "provider_revision": resolved.connection_revision,
             },
         )
@@ -122,6 +131,7 @@ class RepairService:
                 "maximum_chain_seconds": MAX_REPAIR_CHAIN_SECONDS,
                 "maximum_context_bytes": MAX_REPAIR_CONTEXT_BYTES,
                 "model_selector": resolved.selector,
+                "requested_model_selector": model_selector,
                 "model_revision": resolved.connection_revision,
                 "diagnostic_source_run": verification_run_id,
             }
@@ -167,8 +177,8 @@ class RepairService:
                 journal.append("turn.started", {"turn": 1})
                 current = self._store.get_run(task_id, run.run_id)
             if current.status is RunStatus.RUNNING:
-                self._store.set_run_status(run.run_id, RunStatus.FAILED, error_code=error.code)
                 journal.append("turn.failed", {"turn": 1, "error_code": error.code})
+                self._store.set_run_status(run.run_id, RunStatus.FAILED, error_code=error.code)
                 journal.append("run.failed", {"error_code": error.code})
         finally:
             close = getattr(port, "close", None)

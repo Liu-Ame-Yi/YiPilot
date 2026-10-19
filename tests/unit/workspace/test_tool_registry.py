@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.helpers.fake_executor import FakeExecutor
+from tests.helpers.sqlite_records import event_text
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import (
     QUALITY_PYTEST_ALLOWED_ENV_NAMES,
@@ -277,8 +278,8 @@ def test_local_runner_bounds_output_and_keeps_secrets_out_of_events(
     assert (run_root / result.stderr_artifact_ref.relative_path).read_bytes().endswith(
         b"YIPILOT_OUTPUT_LIMIT_EXCEEDED\n"
     )
-    event_text = store.event_journal_path(run.run_id).read_text(encoding="utf-8")
-    assert "top-secret" not in event_text
+    persisted_events = event_text(store.event_journal_path(run.run_id))
+    assert "top-secret" not in persisted_events
     assert hashlib.sha256(
         (run_root / result.stdout_artifact_ref.relative_path).read_bytes()
     ).hexdigest() == result.stdout_artifact_ref.sha256

@@ -8,7 +8,6 @@ from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import ArtifactRef, ToolResult
 from yipilot.persistence.artifact_store import FileArtifactStore
 from yipilot.persistence.filesystem import (
-    atomic_write_json,
     project_path,
     safe_path_component,
 )
@@ -28,22 +27,16 @@ class FileToolRunStore:
         path = self._path(result.run_id, result.tool_run_id, create=True)
         value = SecretRedactor().redact(result.model_dump(mode="json"))
         assert isinstance(value, dict)
-        atomic_write_json(path, value, ToolResult.model_validate)
+        self._task_store.db.save_record("tool", result.tool_run_id, result.task_id, result.run_id, ToolResult.model_validate(value).model_dump_json())
         return path
 
     def get(self, task_id: str, run_id: str, tool_run_id: str) -> ToolResult:
         safe_path_component(tool_run_id)
         run = self._validate_run(task_id, None, run_id)
-        root = self._root(run_id)
-        if not root.is_dir():
-            raise DomainError("TOOL_RUN_NOT_FOUND", "tool result not found")
-        path = self._path(run_id, tool_run_id)
-        if not path.is_file():
-            raise DomainError("TOOL_RUN_NOT_FOUND", "tool result not found")
         try:
-            result = ToolResult.model_validate_json(path.read_text(encoding="utf-8"))
-        except (OSError, ValidationError) as error:
-            raise DomainError("TOOL_RUN_INVALID", "tool result is invalid") from error
+            result = ToolResult.model_validate_json(self._task_store.db.record("tool", tool_run_id, "TOOL_RUN_NOT_FOUND"))
+        except ValidationError as error:
+            raise DomainError("TOOL_RUN_INVALID", "invalid record") from error
         if (
             result.task_id != run.task_id
             or result.operation_id != run.operation_id
@@ -58,15 +51,8 @@ class FileToolRunStore:
 
     def list(self, task_id: str, run_id: str) -> list[ToolResult]:
         self._validate_run(task_id, None, run_id)
-        root = self._root(run_id)
-        if not root.exists():
-            return []
-        if not root.is_dir():
-            raise DomainError("TOOL_RUN_INVALID", "tool results path is not a directory")
-        return sorted(
-            (self.get(task_id, run_id, path.stem) for path in root.glob("*.json")),
-            key=lambda result: (result.started_at, result.tool_run_id),
-        )
+        records = [ToolResult.model_validate_json(body) for body in self._task_store.db.records("tool", task_id, run_id)]
+        return sorted((self.get(task_id, run_id, r.tool_run_id) for r in records), key=lambda result: (result.started_at, result.tool_run_id))
 
     def _validate_result(self, result: ToolResult) -> None:
         self._validate_run(result.task_id, result.operation_id, result.run_id)

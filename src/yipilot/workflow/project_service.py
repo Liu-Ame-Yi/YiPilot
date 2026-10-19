@@ -39,7 +39,7 @@ class ProjectService:
             return task
 
         run = self._store.create_run(task_id, operation.operation_id, "task_init")
-        run = self._store.set_run_status(run.run_id, RunStatus.RUNNING)
+        run = self._store.set_run_status(run.run_id, RunStatus.RUNNING, event_payload={"message": "task initialization started"})
         journal = self._journal(run)
         journal.append("run.started", {"message": "task initialization started"})
         journal.append("run.succeeded", {"message": "task initialization completed"})

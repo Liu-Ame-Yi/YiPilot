@@ -28,7 +28,7 @@
 
 | 能力 | 当前事实 | 源码依据 |
 | --- | --- | --- |
-| 任务与证据 | 文件化 Task/Operation/Run、事件、工件与任务 worktree | [TaskStore](../../src/yipilot/persistence/task_store.py)、[Git workspace](../../src/yipilot/harness/git_workspace.py) |
+| 任务与证据 | SQLite Task/Operation/Run、事件和结构化索引；文件工件与任务 worktree | [TaskStore](../../src/yipilot/persistence/task_store.py)、[Git workspace](../../src/yipilot/harness/git_workspace.py) |
 | 模型选择 | 用户设置、连接/模型、冻结选择和密钥引用 | [CLI](../../src/yipilot/transport/cli/app.py)、[交互入口](../../src/yipilot/transport/cli/interactive.py) |
 | 真实提案 | /run 与 code generate 共用 ProjectApplication → CodeService → RunExecutor → runtime.ModelPlanner/AgentRuntime，返回 PatchProposal | [CodeService](../../src/yipilot/workflow/code_service.py) |
 | 受控应用 | /apply 经用户确认，在离线 Docker 副本应用，再检查输出并确认写入任务 worktree | [ProjectApplication](../../src/yipilot/app.py)、[SandboxCliService](../../src/yipilot/workflow/sandbox_application.py) |
@@ -44,8 +44,8 @@
 - 真实 SRS/SDD 生成与独立语义评审已接入固定闭环；尚未自动连接编码及后续交付，确定性 fixture 不代表理解了用户需求。真实验收仅覆盖下述小样例和明确模型配置。
 - 当前 /run、/apply、/verify 已通过 ProjectApplication 收敛业务路径，仍保留逐次人工确认；不是预授权自动推进或可持久恢复工作流。
 - /logs、/cancel 尚不可用；不能将 V2 恢复/取消设计当成当前能力。
-- 自动 commit/push、PR/MR 创建和目标仓库 CI/Jenkins 接入尚未完成。Yipilot 自身的 CI 不等于目标仓库交付集成。
-- SQLite 迁移、通用上下文管理及完整需求追踪尚属设计提案。
+- 自动 commit/push、PR/MR 创建和目标仓库 GitHub Actions CI 接入尚未完成。Yipilot 自身的 CI 不等于目标仓库交付集成。
+- SQLite 已接入现有业务状态，提供显式旧数据迁移；通用上下文管理及完整需求追踪仍未实现。
 - 已有幂等、恢复、流式与测试判定仍有已知缺口，见 [代码缺口分析](../research/2026-09-07-yipilot-code-gaps.md)。已有记录/类不等于所有恢复情景均可靠。
 - Docker 路径已经接入，但镜像、依赖和本机环境仍须单独检查；不能宣称任意 Python 仓库都已可验证。
 
@@ -70,3 +70,35 @@
 第二轮文件分级验证（2026-09-08）：完整 pytest 612 passed / 41 skipped，477.66 秒；Ruff、mypy（66 个源文件）、CLI help、模块导入检查及文档链接检查通过。仅迁移现有代码与引用，未新增完整工作流能力。
 
 提交前复核（2026-09-08）：当前两轮重构工作树完整 pytest 612 passed / 41 skipped（482.77 秒）；Ruff、mypy（66 个源文件）、CLI help 和暂存区 diff --check 通过。测试期间源码、测试及依赖配置指纹未变化。真实模型、Docker 和远端验收未运行。
+
+
+## 本轮 SQLite 持久化迁移
+
+现有 Task、仓库登记、Operation 幂等请求、Run 尝试和生命周期、Approval、ToolRun、业务事件及 Artifact 元数据已接入项目 `.yipilot/state.db`。正文与 Git/Docker 资源保留文件，用户级模型配置和密钥不变。旧文件元数据不再参与日常读写，旧项目必须显式迁移。
+
+相关状态、结果引用和生命周期事件原子提交；文件先发布并核对哈希。服务执行使用独占 OS 锁，SQLite 写锁不代替执行所有权。生成、应用、验证和修复的显式请求可重放，修复计数不再改变原请求身份。中断的外部动作不自动重复，保留不确定错误和回执供核对；这不是完整断点续跑。
+
+提供只读扫描、逐文件备份验证、独立目标转换、校验后切换、重复导入保护和工件审计。旧审批撤销执行资格，未结束旧 Run 归档，不自动继续。迁移和故障测试先在临时 fixture 上验收。2026-09-09 经用户明确授权，真实项目已完成停机迁移：项目记录 1 条，原始文件 1 个，无 Task/Run；备份与原文件哈希一致，SQLite integrity_check 为 ok、foreign_key_check 为空，应用读取配置一致，工件审计 errors/orphans 为空。备份为 `.yipilot-backup-f7c6f515a4bb5ab1`；原始文件保留，当前事实源已切换为 `.yipilot/state.db`。
+
+详见 [事务与数据映射](../architecture/sqlite-persistence.md)、[操作、备份与回滚](../guides/sqlite-migration.md)。实现前基线：612 passed / 41 skipped（543.76 秒）。最终全量离线验证（2026-09-09）：636 passed / 41 skipped，916.04 秒，退出码 0；Ruff、mypy（69 个源文件）、CLI help 和 git diff --check 通过。源码、测试及依赖配置哈希在本轮完整验收期间未变化。迁移专项 23 项通过，覆盖并发请求、事务回滚、孤立/损坏工件、重启回放、旧数据导入与切换失败、旧审批失效及链接锁保护；实际 ProjectApplication 服务组合通过。未运行真实模型、真实 Docker 或远端验收。
+
+
+## 2026-09-11 真实服务验收补充
+
+真实 DeepSeek + 本机 Docker 已在带 shebang 的独立 Python 样例上完成生成、应用、pytest/Ruff/mypy 验证和结果重放；原样例仓库保持不变。普通无 shebang 样例曾因容器内 EXE002 失败，相关有限修复未成功，不代表 Windows 文件模式兼容性或环境故障自动修复已解决。GitHub MCP 已在用户指定 Test01 私有仓库创建草稿 PR #1，真实 Actions 完成通过、故意失败、修复后通过三轮验证，并核对各 head/base/tested merge SHA。PR 未合并；这是平台实测，产品 GitHub/Actions 交付集成与远端自动修复尚未实现。详见 [真实验收记录](../guides/live-acceptance-2026-09-11.md)。
+
+### 当前就绪程度与后续建议
+
+关键基础能力已验证，完整交付流程尚未接通，不能标记“所有能力就绪”或“V2 完成”。
+
+| 能力 | 验收边界 |
+| --- | --- |
+| SQLite、幂等、审批、事件与工件校验 | 已实现并通过专项和全量离线测试；真实迁移仅含项目配置，无历史 Task/Run |
+| DeepSeek 生成、Docker 应用与检查 | 指定独立样例真实通过；Windows 文件模式与环境故障修复仍有失败记录 |
+| GitHub 分支、提交、PR 与 Actions | Codex 通过 MCP 在 Test01 真实操作通过，未接入 Yipilot 产品服务 |
+| 自动发布、CI 跟踪与有限修复闭环 | 尚未实现；远端修复提交由本次测试显式操作，不是模型自动修复 CI |
+| 当前 SHA 的 required checks 门禁、远端发布恢复 | 尚未实现或验收；已有本地恢复保护不代表完整断点续跑 |
+
+针对远端交付，建议先接通最小路径：发布测试分支 → 创建草稿 PR → 跟踪当前提交检查 → 持久化结果，再接有限修复。验收需覆盖 head/base/tested merge SHA 关联、旧检查失效、缺失或未结束检查不放行，以及重复请求和外部结果不确定时不重复发布。保持人工决定合并，不自动部署。
+
+这是后续建议，不表示本轮已实施，也不改变 [实施路线](roadmap.md) 的整体里程碑。后续每次能力变化同步更新本页，真实测试的提交、运行链接、失败与限制归入验收记录。

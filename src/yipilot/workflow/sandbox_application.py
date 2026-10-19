@@ -23,7 +23,9 @@ from yipilot.domain.sandbox import (
     SourceManifest,
 )
 from yipilot.persistence.approval_store import FileApprovalStore
+from yipilot.persistence.artifact_store import FileArtifactStore
 from yipilot.persistence.filesystem import atomic_write_bytes
+from yipilot.persistence.ownership import exclusive_execution
 from yipilot.persistence.task_store import FileTaskStore
 from yipilot.security.paths import read_evidence, require_plain_path
 from yipilot.workspace.docker_worker import DockerSandboxWorker
@@ -78,6 +80,7 @@ class SandboxCliService:
         self.store = FileTaskStore(self.root)
         self.git = GitRunner()
 
+    @exclusive_execution
     def prepare(
         self,
         task_id: str,
@@ -88,21 +91,25 @@ class SandboxCliService:
         *,
         proposal_run_id: str | None = None,
         root_proposal_run_id: str | None = None,
+        request_id: str | None = None,
     ) -> SandboxRequest:
         """Freeze reviewable input without executing Docker or repository commands."""
         operation = self.store.create_operation(
             task_id,
             "sandbox_apply",
-            str(uuid4()),
+            f"sandbox-apply:{task_id}:{alias}:{request_id or uuid4()}",
             {
                 "alias": alias,
                 "base_sha": base_sha,
+                "image_digest": image_digest,
                 "proposal_sha256": fingerprint_model(proposal),
                 **({"proposal_run_id": proposal_run_id} if proposal_run_id else {}),
                 **({"root_proposal_run_id": root_proposal_run_id} if root_proposal_run_id else {}),
             },
         )
-        run = self.store.create_run(task_id, operation.operation_id, "sandbox_apply")
+        run, created = self.store.get_or_create_run(task_id, operation.operation_id, "sandbox_apply")
+        if not created:
+            return self.load(task_id, run.run_id)[1]
         copies = None
         try:
             copies = SandboxSourceService(self.root, self.git).prepare(
@@ -210,6 +217,7 @@ class SandboxCliService:
                 "SANDBOX_EVIDENCE_FAILED", "invalid apply inputs"
             ) from error
 
+    @exclusive_execution
     def execute(self, request: SandboxRequest, approval_id: str) -> SandboxResult:
         copies, current = self.load(request.task_id, request.run_id)
         if current != request:
@@ -227,6 +235,8 @@ class SandboxCliService:
         )
         if approval.simulation_only:
             raise DomainError("SANDBOX_OUTPUT_UNAPPROVED", "human approval required")
+        if self.store.get_run(request.task_id, request.run_id).status.value != "pending":
+            raise DomainError("EXTERNAL_RESULT_UNCERTAIN", "existing execution must be reconciled; do not restart")
         self.store.set_run_status(request.run_id, "running")
         try:
             seed = SourceManifest.model_validate_json(
@@ -246,6 +256,12 @@ class SandboxCliService:
         self, task_id: str, run_id: str
     ) -> tuple[PreparedSources, SandboxRequest, SandboxDiffEvidence]:
         copies, request = self.load(task_id, run_id)
+        run = self.store.get_run(task_id, run_id)
+        if run.legacy:
+            raise DomainError("LEGACY_EVIDENCE", "legacy execution is historical only")
+        artifacts = FileArtifactStore(self.store)
+        for identifier in run.result_artifact_ids:
+            artifacts.verify(task_id, run_id, identifier)
         try:
             evidence = SandboxDiffEvidence.model_validate_json(
                 read_evidence(copies.execution.parent / "sandbox-output/evidence.json")
@@ -259,6 +275,7 @@ class SandboxCliService:
         )
         return copies, request, evidence
 
+    @exclusive_execution
     def apply(
         self,
         request: SandboxRequest,
@@ -281,6 +298,11 @@ class SandboxCliService:
             SandboxApplyService(self.root, self.git).apply(
                 copies, request, apply_policy(), evidence
             )
+            artifacts = FileArtifactStore(self.store)
+            for relative in ("docker-worker/result.json", "docker-worker/container-after.json", "docker-worker/cleanup.json",
+                             "sandbox-output/evidence.json", "sandbox-output/patch.diff", "sandbox-apply/result.json"):
+                artifacts.register(request.task_id, request.run_id, producer="sandbox_apply",
+                    relative_path=relative, input_fingerprint=request.fingerprint)
             self.store.set_run_status(request.run_id, "succeeded")
         except BaseException as error:
             self._fail(request, error)

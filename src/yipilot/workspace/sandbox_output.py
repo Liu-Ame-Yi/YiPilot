@@ -341,7 +341,6 @@ class SandboxOutputService:
             ) from error
         if "/" in approval_id:
             raise DomainError(Code.OUTPUT_UNAPPROVED, "invalid approval identifier")
-        require_plain_path(root / "approvals" / f"{approval_id}.json")
         approval = self._approvals.get(request.task_id, request.run_id, approval_id)
         approval.require_fresh(
             task_id=request.task_id,
@@ -391,7 +390,6 @@ class SandboxOutputService:
                 raise DomainError(
                     Code.OUTPUT_INVALID, "stream evidence is not controller-owned"
                 )
-            require_plain_path(root / "artifacts" / "records" / f"{ref.artifact_id}.json")
             path = project_path(root, ref.relative_path)
             require_plain_path(path)
             if not path.is_file() or path.stat().st_size != size:

@@ -8,6 +8,7 @@ from yipilot.agent.planner import PlannerPort
 from yipilot.agent.ports import RuntimeEvidencePort, ToolExecutionPort
 from yipilot.domain.errors import DomainError
 from yipilot.domain.models import RunStatus
+from yipilot.persistence.ownership import exclusive_execution
 from yipilot.persistence.task_store import FileTaskStore
 
 
@@ -18,6 +19,7 @@ class RunExecutor:
         self._evidence = evidence
         self._runtime = AgentRuntime(store, planner, tools, evidence)
 
+    @exclusive_execution
     def execute(self, task_id: str, operation_id: str, run_id: str, instruction: str,
                 *, approvals: Mapping[int, ApprovalInfo] | None = None,
                 harness: Callable[[], bool]) -> AgentRuntimeResult:

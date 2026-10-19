@@ -7,7 +7,6 @@ from pydantic import ValidationError
 from yipilot.domain.errors import DomainError
 from yipilot.domain.execution import ApprovalRecord
 from yipilot.persistence.filesystem import (
-    atomic_write_json,
     project_path,
     safe_path_component,
 )
@@ -23,22 +22,16 @@ class FileApprovalStore:
     def save(self, approval: ApprovalRecord) -> Path:
         self._validate_run(approval.task_id, approval.operation_id, approval.run_id)
         path = self._path(approval.run_id, approval.approval_id, create=True)
-        atomic_write_json(path, approval.model_dump(mode="json"), ApprovalRecord.model_validate)
+        self._task_store.db.save_record("approval", approval.approval_id, approval.task_id, approval.run_id, approval.model_dump_json())
         return path
 
     def get(self, task_id: str, run_id: str, approval_id: str) -> ApprovalRecord:
         safe_path_component(approval_id)
         run = self._validate_run(task_id, None, run_id)
-        root = self._root(run_id)
-        if not root.is_dir():
-            raise DomainError("APPROVAL_NOT_FOUND", "approval record not found")
-        path = self._path(run_id, approval_id)
-        if not path.is_file():
-            raise DomainError("APPROVAL_NOT_FOUND", "approval record not found")
         try:
-            approval = ApprovalRecord.model_validate_json(path.read_text(encoding="utf-8"))
-        except (OSError, ValidationError) as error:
-            raise DomainError("APPROVAL_INVALID", "approval record is invalid") from error
+            approval = ApprovalRecord.model_validate_json(self._task_store.db.record("approval", approval_id, "APPROVAL_NOT_FOUND"))
+        except ValidationError as error:
+            raise DomainError("APPROVAL_INVALID", "invalid record") from error
         if (
             approval.task_id != run.task_id
             or approval.operation_id != run.operation_id
@@ -52,15 +45,8 @@ class FileApprovalStore:
 
     def list(self, task_id: str, run_id: str) -> list[ApprovalRecord]:
         self._validate_run(task_id, None, run_id)
-        root = self._root(run_id)
-        if not root.exists():
-            return []
-        if not root.is_dir():
-            raise DomainError("APPROVAL_INVALID", "approval records path is not a directory")
-        return sorted(
-            (self.get(task_id, run_id, path.stem) for path in root.glob("*.json")),
-            key=lambda approval: (approval.decided_at, approval.approval_id),
-        )
+        records = [ApprovalRecord.model_validate_json(body) for body in self._task_store.db.records("approval", task_id, run_id)]
+        return sorted((self.get(task_id, run_id, r.approval_id) for r in records), key=lambda approval: (approval.decided_at, approval.approval_id))
 
     def _validate_run(
         self, task_id: str, operation_id: str | None, run_id: str

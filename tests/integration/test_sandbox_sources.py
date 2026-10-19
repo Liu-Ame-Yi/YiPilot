@@ -106,7 +106,7 @@ def test_cli_prepares_frozen_patch_data_and_requires_exact_human_approval(setup,
     assert (copies.baseline / "app.py").read_bytes() == b"value = 1\n"
     assert (copies.execution / "app.py").read_bytes() == b"value = 1\n"
     assert request.input_manifest_hash
-    with pytest.raises(DomainError, match="approval"):
+    with pytest.raises(DomainError, match="APPROVAL_NOT_FOUND"):
         service.execute(request, "missing")
     approval = ApprovalRecord(approval_id="fixture", task_id="1", operation_id=request.operation_id,
         run_id=request.run_id, action_type="sandbox_execution", target_fingerprint=request.fingerprint,
@@ -502,7 +502,7 @@ def approve_output(s):
         update={"output_manifest_hash": s.candidate.manifest.fingerprint}
     )
     s.approval = ApprovalRecord(
-        approval_id="output-approval",
+        approval_id=f"output-approval-{len(FileApprovalStore(s.store).list(s.task.task_id, s.run.run_id))}",
         task_id=s.task.task_id,
         operation_id=s.run.operation_id,
         run_id=s.run.run_id,
@@ -686,8 +686,8 @@ def test_missing_or_stale_approval_is_rejected(output_setup, field):
         "decision": ApprovalDecision.DENIED,
     }[field]
     approval = s.approval.model_copy(update={field: value})
-    path = s.root / "approvals/output-approval.json"
-    path.write_text(approval.model_dump_json(), encoding="utf-8")
+    with FileTaskStore(s.project).db.transaction() as connection:
+        connection.execute("UPDATE records SET body=? WHERE kind='approval' AND id=?", (approval.model_dump_json(), s.approval.approval_id))
     with pytest.raises(DomainError):
         collect_output(s)
     assert_no_output(s)
@@ -828,7 +828,7 @@ def test_same_size_log_tampering_is_rejected(output_setup):
         s.task.task_id,
         s.run.run_id,
         producer="fixture",
-        relative_path="artifacts/stdout.txt",
+        relative_path="artifacts/new-stdout.txt",
         content=b"yes",
         input_fingerprint=s.request.fingerprint,
     )
@@ -843,7 +843,7 @@ def test_same_size_log_tampering_is_rejected(output_setup):
     s.result = s.result.model_copy(
         update={"stdout_artifact_ref": ref, "stdout_bytes": 3}
     )
-    (s.root / "artifacts/stdout.txt").write_bytes(b"bad")
+    (s.root / "artifacts/new-stdout.txt").write_bytes(b"bad")
     with pytest.raises(DomainError, match="ARTIFACT_STALE"):
         collect_output(s)
     assert_no_output(s)

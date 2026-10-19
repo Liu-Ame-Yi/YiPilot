@@ -130,8 +130,8 @@ def test_approval_store_rejects_mismatched_or_corrupt_record(tmp_path: Path) -> 
             )
         )
     approvals.save(approval)
-    path = store.event_journal_path(request.run_id).parent / "approvals" / "approval-1.json"
-    path.write_text("{not-json", encoding="utf-8")
+    with store.db.transaction() as connection:
+        connection.execute("UPDATE records SET body=? WHERE kind='approval'", ("{not-json",))
     with pytest.raises(DomainError, match="^APPROVAL_INVALID:"):
         approvals.get(request.task_id, request.run_id, approval.approval_id)
 
@@ -150,16 +150,17 @@ def test_tool_run_store_rejects_tampered_records(
     store, _run, request, policy = _context(tmp_path, ToolKind.READ_ONLY)
     journal = JsonlEventJournal(store.event_journal_path(request.run_id), task_id=request.task_id, run_id=request.run_id)
     result = ToolRegistry(policy, FakeExecutor(FileArtifactStore(store), journal)).execute(tmp_path, request)
-    path = store.event_journal_path(request.run_id).parent / "tool-runs" / f"{result.tool_run_id}.json"
     if mutation == "corrupt":
-        path.write_text("{not-json", encoding="utf-8")
+        body = "{not-json"
     else:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(store.db.record("tool", result.tool_run_id, "TOOL_RUN_NOT_FOUND"))
         if mutation == "operation":
             record["operation_id"] = "00000000-0000-0000-0000-000000000000"
         else:
             record["stdout_artifact_ref"]["sha256"] = "b" * 64
-        path.write_text(json.dumps(record), encoding="utf-8")
+        body = json.dumps(record)
+    with store.db.transaction() as connection:
+        connection.execute("UPDATE records SET body=? WHERE kind='tool'", (body,))
 
     with pytest.raises(DomainError, match=rf"^{expected}:"):
         FileToolRunStore(store).get(request.task_id, request.run_id, result.tool_run_id)

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.helpers.sqlite_records import event_text, read_metadata, write_metadata
 from yipilot.domain.errors import DomainError
 from yipilot.domain.model import ModelChunk, ModelResponse
 from yipilot.domain.provider import ProviderProfile
@@ -45,7 +46,7 @@ def test_fake_quality_documents_are_run_scoped_and_harnessed(tmp_path: Path) -> 
         SddHarness(project, "1001", result.run_id, profile_revision=1).run().status
         is HarnessStatus.PASSED
     )
-    events = (root / "events.jsonl").read_text(encoding="utf-8")
+    events = event_text(root / "events.jsonl")
     assert "Build a redacted" not in events
     assert "quality-model-response" not in events
 
@@ -420,9 +421,9 @@ def _replace_registered_metadata(
         / "artifacts/records"
         / f"{record.artifact_id}.json"
     )
-    record_value = json.loads(record_path.read_text(encoding="utf-8"))
+    record_value = json.loads(read_metadata(record_path))
     record_value["sha256"] = hashlib.sha256(content).hexdigest()
-    record_path.write_text(json.dumps(record_value), encoding="utf-8")
+    write_metadata(record_path, json.dumps(record_value))
 
 
 def test_sdd_harness_blocks_coherent_fingerprint_and_upstream_ref_mismatch(

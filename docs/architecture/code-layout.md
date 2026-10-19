@@ -42,7 +42,7 @@ src/yipilot/
     executors.py
     tool_registry.py
     tool_gateway.py
-  persistence/            # 现有文件存储；没有迁移SQLite
+  persistence/            # SQLite 状态、文件工件、显式迁移与 OS 执行锁
     task_store.py
     artifact_store.py
     approval_store.py
@@ -64,7 +64,7 @@ src/yipilot/
 ## 已实施依赖约束
 
 - transport 调 app/已有管理入口；app 组合 workflow、models、workspace 及持久化。
-- workflow 处理业务规则，可调用 agent、workspace、models、harness 和文件存储。
+- workflow 处理业务规则，可调用 agent、workspace、models、harness 和持久化存储。
 - agent 仅使用领域类型和注入协议，不导入 app、workflow、workspace、models实现或persistence。
 - workspace 不导入 app、workflow 或 agent；工具网关通过已有工具合同适配。
 - models/persistence/security/domain 不导入 app、workflow、workspace 或 agent。
@@ -120,3 +120,10 @@ tests/unit 按 agent、models、persistence、workspace、architecture 等实际
 迁移前包边界和 ProjectApplication 组合测试通过。迁移后完整 pytest：612 passed、41 skipped，477.66 秒；Ruff 通过，mypy 66 个源文件通过，CLI help、66 个模块的静态绝对导入无环检查和 git diff --check 通过。51 份 Markdown 的本地链接检查通过。跳过项为需显式镜像的真实 Docker、需显式启用的真实模型，以及 Windows 不支持的文件名情景；没有运行远端写操作。这些结果证明本轮目录迁移的离线验证，不代表 V2 功能完成。
 
 历史文档链接已指向当前文件；历史正文中的旧目录名仍作为当时记录，不倒写历史。长期目标见 [V2](../superpowers/specs/2026-09-07-yipilot-v2-architecture.md)，当前能力见 [状态页](../product/status.md)。
+
+
+## SQLite 持久化补充
+
+目录分级保持不变。在 persistence 内增加 database.py、migration.py 和 ownership.py，并替换现有 Store 的实现；没有新建一套按表拆分的 Repository/Factory。RepoMetadataRecord 归入现有持久化合同，仓库服务与迁移工具共用，保持 persistence 不导入 workspace。
+
+数据库表、写入方、事务、事件游标和恢复边界见 [SQLite 实施映射](sqlite-persistence.md)。上述 612 测试记录属于先前目录迁移；本轮验收以 [当前状态](../product/status.md) 的 SQLite 记录为准。

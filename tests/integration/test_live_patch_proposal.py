@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from tests.helpers.sqlite_records import event_text
 from yipilot.domain.model import ModelChunk, ModelRequest
 from yipilot.domain.provider import ModelEntry, ProviderConnection
 from yipilot.models.secrets import SecretStore
@@ -111,7 +112,7 @@ def test_provider_failure_is_a_failed_turn_without_secret_leak(tmp_path: Path) -
 
     assert result.status == "failed"
     assert _git(source, "status", "--porcelain") == ""
-    text = FileTaskStore(project).event_journal_path(result.run_id).read_text(encoding="utf-8")
+    text = event_text(FileTaskStore(project).event_journal_path(result.run_id))
     assert "unit-secret" not in text and "instruction-secret" not in text and "Authorization" not in text
 
 

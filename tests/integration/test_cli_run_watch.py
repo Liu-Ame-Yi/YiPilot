@@ -66,6 +66,7 @@ def test_run_watch_jsonl_is_one_machine_readable_event_per_line(tmp_path: Path) 
         run_id=run.run_id,
         stage="task_init",
     )
+    journal.append("run.started", {})
     journal.append("model.delta", {"content": "hello"})
     journal.append("model.message_completed", {})
     journal.append("run.succeeded", {"message": "done"})
@@ -77,9 +78,10 @@ def test_run_watch_jsonl_is_one_machine_readable_event_per_line(tmp_path: Path) 
 
     lines = result.stdout.splitlines()
     assert result.exit_code == 0
-    assert len(lines) == 3
+    assert len(lines) == 4
     assert "\x1b" not in result.stdout
     assert [json.loads(line)["type"] for line in lines] == [
+        "run.started",
         "model.delta",
         "model.message_completed",
         "run.succeeded",
@@ -102,6 +104,7 @@ def test_run_watch_human_streams_model_text_and_sends_diagnostics_to_stderr(
         run_id=run.run_id,
         stage="task_init",
     )
+    journal.append("run.started", {})
     journal.append("model.delta", {"content": "hello"})
     journal.append("model.delta", {"content": " world"})
     journal.append("model.message_completed", {})
@@ -225,6 +228,7 @@ def test_run_watch_follows_events_appended_after_its_first_empty_poll(
     watcher.start()
     assert first_empty_poll.wait(timeout=1)
 
+    journal.append("run.started", {})
     journal.append("stage.progress", {"message": "followed"})
     journal.append("run.succeeded", {"message": "done"})
     watcher.join(timeout=1)
@@ -235,6 +239,7 @@ def test_run_watch_follows_events_appended_after_its_first_empty_poll(
     assert [json.loads(line)["sequence"] for line in result.stdout.splitlines()] == [  # type: ignore[union-attr]
         1,
         2,
+        3,
     ]
 
 
@@ -296,7 +301,9 @@ def test_run_watch_maps_unknown_run_and_corrupt_journal_to_stable_errors(
         "1001", "task_init", "task-init-1001", {"task_id": "1001"}
     )
     run = store.create_run("1001", operation.operation_id, "task_init")
-    store.event_journal_path(run.run_id).write_text("not-json\n", encoding="utf-8")
+    store.set_run_status(run.run_id, "running")
+    with store.db.transaction() as connection:
+        connection.execute("UPDATE events SET body='not-json'")
 
     corrupt = runner.invoke(
         app,
