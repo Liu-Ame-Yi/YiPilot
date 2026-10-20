@@ -6,7 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from policy import BRIDGE, NETWORK, PROFILE, validate_network
+from policy import BRIDGE, NETWORK, validate_network
 
 INPUT = "YIPILOT-INPUT"
 FORWARD = "YIPILOT-FORWARD"
@@ -39,10 +39,10 @@ def setup(install=False):
         command(["docker", "network", "create", "--internal", "--driver", "bridge",
                  "--opt", f"com.docker.network.bridge.name={BRIDGE}",
                  "--opt", "com.docker.network.bridge.enable_icc=false",
-                 "--label", f"io.yipilot.profile={PROFILE}", NETWORK])
+                 "--label", "io.yipilot.network-owner=yipilot", NETWORK])
     network = json.loads(command(["docker", "network", "inspect", NETWORK]))[0]
     validate_network(network)
-    if network.get("Labels", {}).get("io.yipilot.profile") != PROFILE:
+    if network.get("Labels", {}).get("io.yipilot.network-owner") != "yipilot":
         raise ValueError("The network is not owned by this profile")
     chains = iptables("-S")
     for chain, rules in RULES.items():

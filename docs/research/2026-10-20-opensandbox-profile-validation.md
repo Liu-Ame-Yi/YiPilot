@@ -1,5 +1,7 @@
 # OpenSandbox 固定 profile：部署候选与阻断项
 
+**Historical reference：这是 v1 的失败验收记录。** 控制通道阻断项已由 [v2 修复与实测](2026-10-20-opensandbox-control-isolation.md)接替；下文保留当时事实，不作为当前服务状态。
+
 日期：2026-10-20（Asia/Shanghai）。Implemented 范围：已形成固定版本的 Server 隔离候选制品，并在现有华为云上完成受信 fixture 验收。**12 组检查中 11 组通过，execd 初始化重绑检查失败，G1 未放行。** 尚未实现 Runner，也未迁移 YiPilot 的正式执行调用。
 
 这是[第一阶段记录](2026-10-20-opensandbox-phase1-validation.md)的后续实施，按[迁移安排](2026-10-19-opensandbox-implementation-plan.md)执行。部署文件与构建说明见 [deploy/opensandbox](../../deploy/opensandbox/README.md)，结构化结果见[本轮证据](evidence/2026-10-20-opensandbox-profile.json)。

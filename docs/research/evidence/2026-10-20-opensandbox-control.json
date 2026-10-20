@@ -1,0 +1,133 @@
+{
+  "build": {
+    "upstream_server": "1.1.1",
+    "source_sha256": {
+      "api/proxy.py": "09e9ffaa83ec8894322a044a033d0e3d6fa683164b45cc53fd8245e44dc9ca93",
+      "services/docker/container_ops.py": "fb852b4f88142e814ae4ef3f45503553e8f3f468bfab839cfff6f8cb165f1b13",
+      "services/docker/docker_service.py": "b688b393a1ca24b63b6ffbcaf125cafb4445ef720d10f5264da08db0d3a0a451",
+      "services/docker/networking.py": "ced0f2189c1025111dd7be87e504e85cd467b0638b73188c425814d8e5ade415",
+      "services/docker/runtime.py": "84222fb1e69257ec433469efa0c5da8eaad220e9ed971e907677cbff2ae499be"
+    },
+    "assets_sha256": {
+      "server.patch": "1dde3353ade5a30f3144ffb1b89c77aeeff9775e10c5f6ab5b485c9449fc2704",
+      "policy.py": "3eaf54538ce95e438cb16d0c44a30cf5fb42f91baf1b2eb4910e46c2e4befe06",
+      "control.py": "6f549feb83e8cfbaee774f5cc9e5ee2ceafdfdf6795b57d87f1ba98d5686d2af",
+      "build.py": "90f6c23c0eb7c5459afcef276a14a7c42a8ba0cdb57c56647744ae534235a263"
+    },
+    "patched_sha256": {
+      "api/proxy.py": "3db9709f0cc0723a95f67a178e2f5fdda5fa4a0eaef58e11c77e86f71faf0be1",
+      "services/docker/container_ops.py": "4e95325a8bb5e0c20862bfe686ddc10f31a42252b514951e613808db68aed829",
+      "services/docker/docker_service.py": "ff7388cf31815b5a5cb55a8c7b1e7119c900ce52e209e728af28897108ff18f7",
+      "services/docker/networking.py": "32b3cb8ef7f8fb5bc807128874b42466354ae5390a0d35d7cc5217062699f73d",
+      "services/docker/runtime.py": "2ea4a9cffca4fdb8cb87612fb86c2467e9172d31a5731fc699255c060c04b3a7",
+      "yipilot_profile.py": "3eaf54538ce95e438cb16d0c44a30cf5fb42f91baf1b2eb4910e46c2e4befe06",
+      "yipilot_control.py": "6f549feb83e8cfbaee774f5cc9e5ee2ceafdfdf6795b57d87f1ba98d5686d2af"
+    }
+  },
+  "acceptance": {
+    "trusted_fixtures_only": true,
+    "profile": "yipilot-python-v2",
+    "jobs": [
+      "ebf44a6f68e96cf4083e57ab6637ccba",
+      "d0dd63f4b0c2b961ed0586ca55e56950"
+    ],
+    "checks": {
+      "reject_before_side_effects": true,
+      "creation_limits": true,
+      "nonroot": true,
+      "readonly": true,
+      "work_roundtrip": true,
+      "control_paths_inaccessible": true,
+      "uid_zero_denied": true,
+      "cross_job_host_metadata_and_unrestricted_peer_blocked": true,
+      "management_secrets_absent_and_sidecar_policy_protected": true,
+      "runtime_identity_immutable": true,
+      "cancel_then_destroy_live_writers": true,
+      "timeout_then_destroy_and_stable_host_collection": true,
+      "task_capabilities_zero": true,
+      "control_process_protected": true,
+      "control_port_bind_denied": true,
+      "proxy_surface_restricted": true,
+      "filesystem_identity_enforced": true,
+      "task_loopback_preserved": true
+    },
+    "roles": {
+      "container_user": "0:0",
+      "controller_cap_add": [
+        "NET_BIND_SERVICE",
+        "SETGID",
+        "SETUID"
+      ],
+      "task_uid": 10001,
+      "task_gid": 10001,
+      "task_cap_eff": 0,
+      "control_port": 443,
+      "unprivileged_port_start": 1024
+    },
+    "init_probe": {
+      "denied": {
+        "443/internal/init": "kernel denied",
+        "443/command": "kernel denied",
+        "443/files/upload": "kernel denied",
+        "443/v1/filesystem/0/0/files/upload": "kernel denied",
+        "443/pty": "kernel denied",
+        "443/session": "kernel denied",
+        "44772/internal/init": "kernel denied",
+        "44772/command": "kernel denied",
+        "44772/files/upload": "kernel denied",
+        "44772/v1/filesystem/0/0/files/upload": "kernel denied",
+        "44772/pty": "kernel denied",
+        "44772/session": "kernel denied"
+      },
+      "binding_changed": false
+    },
+    "cancel_writer_count_before": 2,
+    "residual_containers": 0,
+    "residual_volumes": 0,
+    "profile_acceptance_passed": true,
+    "ready_for_untrusted_code": false
+  },
+  "faults": {
+    "trusted_fixtures_only": true,
+    "profile": "yipilot-python-v2",
+    "guard_failure_before_task_start": true,
+    "guard_failure_resources_cleaned": true,
+    "controller_death_takeover": {
+      "task_uid": 10001,
+      "cap_eff": 0,
+      "control_bind_denied_after_death": true
+    },
+    "residual_containers": 0,
+    "residual_volumes": 0
+  },
+  "restart": {
+    "trusted_fixture_only": true,
+    "drained_before_restart": true,
+    "docker_pid_changed": true,
+    "profile_pid_changed": true,
+    "profile_health": "healthy",
+    "network_reinstalled_and_verified": true,
+    "original_service_restored": true,
+    "containers": 0,
+    "volumes": 0
+  },
+  "collected_at_utc": "2026-10-20T11:20:44.429364+00:00",
+  "scope": "Trusted fixtures only; no Runner, business cutover, host reboot, or four-slot capacity validation",
+  "candidate_service": {
+    "state": "inactive",
+    "enabled": false,
+    "listener": "127.0.0.1:8081"
+  },
+  "original_service": {
+    "health": {
+      "status": "healthy"
+    },
+    "config_unchanged": true,
+    "package_unchanged": true
+  },
+  "network_verified": true,
+  "containers": 0,
+  "volumes": 0,
+  "dependencies_consistent": true,
+  "ready_for_untrusted_code": false
+}

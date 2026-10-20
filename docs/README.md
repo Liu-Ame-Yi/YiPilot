@@ -25,7 +25,7 @@
 
 2026-10-20 已授权开始第一阶段；实际代码基线修复、隔离实测和 G1 剩余门槛见[第一阶段记录](research/2026-10-20-opensandbox-phase1-validation.md)。
 
-后续固定 profile 候选的源码补丁、真实验收与初始化重绑阻断项见[候选制品实测](research/2026-10-20-opensandbox-profile-validation.md)。新候选服务已停止，尚不能接收不可信任务。
+最新的 [v2 控制通道修复与实测](research/2026-10-20-opensandbox-control-isolation.md)记录 18 项 profile 检查、故障及 Docker 重启验收；[v1 失败记录](research/2026-10-20-opensandbox-profile-validation.md)保留历史证据。候选验收后已停止，Runner、业务替换和四并发尚未完成，尚未放行正式不可信任务。
 
 | 位置 | 如何使用 |
 | --- | --- |

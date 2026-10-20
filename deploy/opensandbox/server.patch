@@ -24,21 +24,22 @@
          security_opts: list[str] = []
          docker_cfg = self.app_config.docker
          if docker_cfg.no_new_privileges:
-@@ -397,6 +405,9 @@
+@@ -397,6 +405,10 @@
                  f"Using Docker runtime '{self.docker_runtime}' for container creation"
              )
              host_config_kwargs["runtime"] = self.docker_runtime
 +        host_config_kwargs["cap_drop"] = ["ALL"]
++        host_config_kwargs["cap_add"] = ["SETUID", "SETGID", "NET_BIND_SERVICE"]
 +        host_config_kwargs["security_opt"] = ["no-new-privileges=true"]
 +        host_config_kwargs["pids_limit"] = 128
          return host_config_kwargs
  
      def _create_and_start_container(
-@@ -428,6 +439,7 @@
+@@ -428,6 +440,7 @@
              with self._docker_operation("create sandbox container", sandbox_id):
                  container_kwargs = {
                      "image": image_uri,
-+                    "user": "10001:10001",
++                    "user": "0:0",
                      "command": bootstrap_command,
                      "ports": (
                          [normalize_container_port_spec(p) for p in exposed_ports]
@@ -70,16 +71,17 @@
                  status_code=status.HTTP_400_BAD_REQUEST,
 --- a/services/docker/networking.py
 +++ b/services/docker/networking.py
-@@ -20,6 +20,8 @@
+@@ -20,6 +20,9 @@
  """
  
  from __future__ import annotations
 +
 +from opensandbox_server.yipilot_profile import NETWORK, validate_network
++from opensandbox_server.yipilot_control import CONTROL_PORT, protect_namespace
  
  import json
  import logging
-@@ -129,7 +131,7 @@
+@@ -129,7 +132,7 @@
          if not self._is_user_defined_network():
              return
          try:
@@ -88,7 +90,7 @@
          except DockerNotFound:
              raise HTTPException(
                  status_code=status.HTTP_400_BAD_REQUEST,
-@@ -169,9 +171,8 @@
+@@ -169,9 +172,8 @@
                  },
              )
  
@@ -100,7 +102,7 @@
              raise HTTPException(
                  status_code=status.HTTP_400_BAD_REQUEST,
                  detail={
-@@ -257,18 +258,15 @@
+@@ -257,18 +259,15 @@
                  },
              ) from exc
  
@@ -119,17 +121,18 @@
 -                    port,
 -                )
 +                sidecar = self.docker_client.containers.get(f"sandbox-egress-{sandbox_id}")
-+                endpoint = self._resolve_internal_endpoint(sidecar, port)
++                endpoint = self._resolve_internal_endpoint(sidecar, CONTROL_PORT if port == 44772 else port)
 +                self._attach_egress_auth_headers(endpoint, labels, port)
 +                return endpoint
              return self._resolve_internal_endpoint(container, port)
  
          # The server-side proxy needs a locally reachable host: when the
-@@ -508,7 +506,14 @@
+@@ -508,8 +507,16 @@
              sidecar_port_bindings.update(extra_port_bindings)
  
          base_sidecar_host_config_kwargs: dict[str, Any] = {
 -            "network_mode": BRIDGE_NETWORK_MODE,
+-            "cap_add": ["NET_ADMIN"],
 +            "network_mode": self.network_mode,
 +            "mem_limit": 64 * 1024**2,
 +            "memswap_limit": 64 * 1024**2,
@@ -138,10 +141,28 @@
 +            "cap_drop": ["ALL"],
 +            "security_opt": ["no-new-privileges=true"],
 +            "log_config": {"type": "none"},
-             "cap_add": ["NET_ADMIN"],
++            "sysctls": {"net.ipv4.ip_unprivileged_port_start": 1024},
++            "cap_add": ["NET_ADMIN", "NET_BIND_SERVICE"],
              "port_bindings": normalize_port_bindings(sidecar_port_bindings),
          }
-@@ -632,7 +637,8 @@
+         sidecar_binds: list[str] = []
+@@ -530,6 +537,7 @@
+             if include_ipv6_sysctls:
+                 # Optional: disable IPv6 in the shared namespace when egress.disable_ipv6 is set.
+                 sidecar_host_config_kwargs["sysctls"] = {
++                    **sidecar_host_config_kwargs["sysctls"],
+                     "net.ipv6.conf.all.disable_ipv6": 1,
+                     "net.ipv6.conf.default.disable_ipv6": 1,
+                     "net.ipv6.conf.lo.disable_ipv6": 1,
+@@ -596,6 +604,7 @@
+                     egress_token,
+                     timeout_seconds=self.app_config.egress.readiness_timeout_seconds,
+                 )
++            protect_namespace(sidecar_container, NETWORK)
+             return sidecar_container
+         except Exception as exc:
+             if sidecar_container is not None:
+@@ -632,7 +641,8 @@
          timeout_seconds: float,
      ) -> None:
          deadline = time.monotonic() + timeout_seconds
@@ -153,7 +174,16 @@
              request = urllib.request.Request(
 --- a/services/docker/runtime.py
 +++ b/services/docker/runtime.py
-@@ -195,6 +195,14 @@
+@@ -20,6 +20,8 @@
+ """
+ 
+ from __future__ import annotations
++
++from opensandbox_server.yipilot_control import install_control_launcher
+ 
+ import io
+ import logging
+@@ -195,6 +197,14 @@
          normalized_path = path.rstrip("/")
          if not normalized_path:
              return
@@ -168,3 +198,61 @@
          tar_stream = io.BytesIO()
          with tarfile.open(fileobj=tar_stream, mode="w") as tar:
              dir_info = tarfile.TarInfo(name=normalized_path.lstrip("/"))
+@@ -386,3 +396,4 @@
+         self._copy_bwrap_to_container(container, sandbox_id, platform)
+         self._copy_session_gate_to_container(container, sandbox_id, platform)
+         self._copy_launcher_to_container(container, sandbox_id, platform)
++        install_control_launcher(container)
+--- a/api/proxy.py
++++ b/api/proxy.py
+@@ -15,6 +15,8 @@
+ """
+ HTTP and WebSocket proxy routes for reaching services inside sandboxes via the lifecycle API.
+ """
++
++from opensandbox_server.yipilot_control import prepare_proxy_request
+ 
+ import hmac
+ import logging
+@@ -349,6 +351,10 @@
+     *,
+     internal: bool = False,
+ ) -> StreamingResponse:
++    try:
++        full_path, profile_body = await prepare_proxy_request(request, port, full_path, internal=internal)
++    except ValueError as exc:
++        raise HTTPException(status_code=403, detail={"code": "YIPILOT::CONTROL_REJECTED", "message": str(exc)}) from exc
+     resolve_internal = get_config().proxy.resolve_internal
+     endpoint = lifecycle.sandbox_service.get_endpoint(
+         sandbox_id,
+@@ -380,12 +386,14 @@
+         # observed by this trusted proxy, so clients cannot spoof transport state.
+         _set_forwarded_headers(headers, request)
+ 
++        if profile_body is not None:
++            headers = {key: value for key, value in headers.items() if key.lower() != "content-length"}
+         stream_body = request.method in ("POST", "PUT", "PATCH", "DELETE")
+         req = client.build_request(
+             method=request.method,
+             url=target_url,
+             headers=headers,
+-            content=request.stream() if stream_body else None,
++            content=profile_body if profile_body is not None else (request.stream() if stream_body else None),
+         )
+ 
+         resp = await client.send(req, stream=True)
+@@ -731,7 +739,7 @@
+     port: int,
+ ):
+     """Proxy WebSocket connections targeting the backend root path."""
+-    await _proxy_websocket_request(websocket, sandbox_id, port, "")
++    await _fail_client_websocket(websocket, status.WS_1008_POLICY_VIOLATION, "WebSocket APIs are unavailable in this profile")
+ 
+ 
+ @router.websocket("/sandboxes/{sandbox_id}/proxy/{port}/{full_path:path}")
+@@ -742,4 +750,4 @@
+     full_path: str,
+ ):
+     """Proxy WebSocket connections to sandbox-backed services."""
+-    await _proxy_websocket_request(websocket, sandbox_id, port, full_path)
++    await _fail_client_websocket(websocket, status.WS_1008_POLICY_VIOLATION, "WebSocket APIs are unavailable in this profile")

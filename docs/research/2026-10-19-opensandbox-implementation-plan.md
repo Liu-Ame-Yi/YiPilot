@@ -2,7 +2,7 @@
 
 日期：2026-10-19（Asia/Shanghai）。状态：**Proposed 技术方案；2026-10-20 已授权启动第一阶段**。规划交付时未修改应用、部署 Runner 或压测；后续实际基线修复和隔离探针见[第一阶段记录](2026-10-20-opensandbox-phase1-validation.md)。本计划细化本次沙箱专项请求，不表示任何验收已经通过。
 
-最新实施：固定 Server profile 候选已在服务器完成受信验收，12 组检查中 init 重绑一组失败，新服务已停止且未启用；详见[候选实测](2026-10-20-opensandbox-profile-validation.md)。CI 收集问题已修复，`ca95ea6` 完整基线 700 passed、42 skipped；下方“现状”表是本计划首次交付时的状态。
+最新实施：v2 固定 profile 已修复 v1 的 init 重绑问题，通过 18 项真实检查、控制进程死亡/安装失败测试和排空后的 Docker 重启验收；见[v2 记录](2026-10-20-opensandbox-control-isolation.md)。候选验收后停止且未启用，Runner、业务替换和四并发尚未完成；下方“现状”表是本计划首次交付时的状态。此前 CI 收集问题已修复，`ca95ea6` 完整基线 700 passed、42 skipped。
 
 ## 1. 目标与现状
 

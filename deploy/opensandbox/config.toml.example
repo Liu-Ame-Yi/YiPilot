@@ -27,7 +27,7 @@ publish_host = "127.0.0.1"
 drop_capabilities = ["ALL"]
 no_new_privileges = true
 pids_limit = 128
-sandbox_env = { HOME = "/tmp", PYTHONDONTWRITEBYTECODE = "1" }
+sandbox_env = { HOME = "/opt/opensandbox/control", PYTHONDONTWRITEBYTECODE = "1", EXECD = "/opt/opensandbox/yipilot-execd" }
 
 [egress]
 mode = "dns+nft"

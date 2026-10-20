@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 ORIGINALS = {
+    "api/proxy.py": "09e9ffaa83ec8894322a044a033d0e3d6fa683164b45cc53fd8245e44dc9ca93",
     "services/docker/container_ops.py": "fb852b4f88142e814ae4ef3f45503553e8f3f468bfab839cfff6f8cb165f1b13",
     "services/docker/docker_service.py": "b688b393a1ca24b63b6ffbcaf125cafb4445ef720d10f5264da08db0d3a0a451",
     "services/docker/networking.py": "ced0f2189c1025111dd7be87e504e85cd467b0638b73188c425814d8e5ade415",
@@ -28,15 +29,16 @@ def build(source, destination):
     subprocess.run(command + ["--dry-run"], cwd=destination, check=True)
     subprocess.run(command, cwd=destination, check=True)
     shutil.copyfile(assets / "policy.py", destination / "yipilot_profile.py")
+    shutil.copyfile(assets / "control.py", destination / "yipilot_control.py")
     if not compileall.compile_dir(destination, quiet=1, force=True):
         raise ValueError("Patched package does not compile")
     receipt = {
         "upstream_server": "1.1.1",
         "source_sha256": ORIGINALS,
         "assets_sha256": {name: hashlib.sha256((assets / name).read_bytes()).hexdigest()
-                          for name in ("server.patch", "policy.py", "build.py")},
+                          for name in ("server.patch", "policy.py", "control.py", "build.py")},
         "patched_sha256": {name: hashlib.sha256((destination / name).read_bytes()).hexdigest()
-                           for name in (*ORIGINALS, "yipilot_profile.py")},
+                           for name in (*ORIGINALS, "yipilot_profile.py", "yipilot_control.py")},
     }
     (destination.parent / "profile-build.json").write_text(json.dumps(receipt, indent=2) + "\n")
     return receipt

@@ -73,7 +73,9 @@ async def main():
               "control_paths_inaccessible", "uid_zero_denied",
               "cross_job_host_metadata_and_unrestricted_peer_blocked",
               "management_secrets_absent_and_sidecar_policy_protected", "runtime_identity_immutable",
-              "cancel_then_destroy_live_writers", "timeout_then_destroy_and_stable_host_collection")
+              "cancel_then_destroy_live_writers", "timeout_then_destroy_and_stable_host_collection",
+              "task_capabilities_zero", "control_process_protected", "control_port_bind_denied",
+              "proxy_surface_restricted", "filesystem_identity_enforced", "task_loopback_preserved")
     report = {"trusted_fixtures_only": True, "profile": PROFILE, "jobs": [],
               "checks": dict.fromkeys(checks, False)}
     baseline_containers = {c.id for c in client.containers.list(all=True)}
@@ -134,43 +136,94 @@ async def main():
             sidecar.reload()
             host = task.attrs["HostConfig"]
             side = sidecar.attrs["HostConfig"]
-            assert task.attrs["Config"]["User"] == "10001:10001"
+            assert task.attrs["Config"]["User"] == "0:0"
             assert host["ReadonlyRootfs"] and host["Memory"] == host["MemorySwap"] == 128 * 1024**2
             assert host["NanoCpus"] == 250_000_000 and host["PidsLimit"] == 128
-            assert "ALL" in host["CapDrop"] and not host.get("CapAdd") and not host["Privileged"]
+            assert "ALL" in host["CapDrop"] and set(host["CapAdd"]) == {"SETUID", "SETGID", "NET_BIND_SERVICE"}
+            assert not host["Privileged"]
             assert host["SecurityOpt"] == ["no-new-privileges=true"]
             assert host["LogConfig"]["Type"] == "none" and "noexec" in host["Tmpfs"]["/tmp"]
             assert side["Memory"] == side["MemorySwap"] == 64 * 1024**2
             assert side["NanoCpus"] == 100_000_000 and side["PidsLimit"] == 64
             assert side["NetworkMode"] == "yipilot-isolated"
+            assert side["Sysctls"]["net.ipv4.ip_unprivileged_port_start"] == "1024"
+            report["roles"] = {"container_user": task.attrs["Config"]["User"],
+                               "controller_cap_add": sorted(host["CapAdd"]),
+                               "task_uid": 10001, "task_gid": 10001, "task_cap_eff": 0,
+                               "control_port": 443, "unprivileged_port_start": 1024}
             report["checks"]["creation_limits"] = True
         box = boxes[0]
         await box.files.write_files([WriteEntry(path="/workspace/roundtrip.txt", data="profile fixture")])
         assert await box.files.read_file("/workspace/roundtrip.txt") == "profile fixture"
+        assert (JOBS_ROOT / report["jobs"][0] / "work/roundtrip.txt").stat().st_uid == 10001
+        report["checks"]["filesystem_identity_enforced"] = True
         facts = json.loads(await run(box, """import json,os,pathlib,socket
 assert os.getuid()==os.getgid()==10001
 assert os.statvfs('/').f_flag & os.ST_RDONLY
+status=pathlib.Path('/proc/self/status').read_text()
+for key in ['CapEff','CapPrm','CapAmb','CapInh']:
+ assert int(next(x for x in status.splitlines() if x.startswith(key+':')).split()[1],16)==0,key
+assert 'NoNewPrivs:\\t1' in status
+assert pathlib.Path('/proc/sys/net/ipv4/ip_unprivileged_port_start').read_text().strip()=='1024'
 for path in ['/etc','/opt/opensandbox','/opt/opensandbox/execd','/var/run/docker.sock']:
  assert not os.access(path,os.W_OK),path
 for path in ['/workspace/../input/sentinel','/workspace/../artifacts/sentinel','/root/.ssh']:
  assert not os.access(path,os.R_OK),path
+for path in ['/opt/opensandbox/.env','/opt/opensandbox/control']:
+ assert not os.access(path,os.R_OK),path
+controllers=[]
+for entry in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
+ try:argv=entry.read_bytes().split(b'\\0')
+ except (PermissionError,FileNotFoundError,ProcessLookupError):continue
+ if argv[0]==b'/opt/opensandbox/execd' and b'--filesystem-worker' not in argv:controllers.append(int(entry.parent.name))
+assert len(controllers)==1,controllers
+for pid in controllers:
+ try:os.kill(pid,0)
+ except PermissionError:pass
+ else:raise AssertionError('task can signal controller')
+ for name in ['environ','mem']:
+  try:(pathlib.Path('/proc')/str(pid)/name).read_bytes()
+  except PermissionError:pass
+  else:raise AssertionError('task can read controller '+name)
+try:os.setuid(0)
+except PermissionError:pass
+else:raise AssertionError('task changed uid')
+for family in [socket.SOCK_STREAM,socket.SOCK_DGRAM]:
+ s=socket.socket(socket.AF_INET,family)
+ try:s.bind(('0.0.0.0',443))
+ except PermissionError:pass
+ else:raise AssertionError('task can bind privileged control port')
+ finally:s.close()
+listener=socket.socket();listener.bind(('127.0.0.1',50000));listener.listen(1)
+client=socket.create_connection(listener.getsockname(),timeout=1)
+accepted,_=listener.accept();accepted.close();client.close();listener.close()
 try:socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_ICMP)
 except PermissionError:pass
 else:raise AssertionError('raw socket was available')
 pathlib.Path('/tmp/writable').write_text('ok')
 assert pathlib.Path('/workspace/roundtrip.txt').read_text()=='profile fixture'
-print(json.dumps({'nonroot':True,'readonly':True,'work_roundtrip':True,'control_paths_inaccessible':True}))"""))
+print(json.dumps({'nonroot':True,'readonly':True,'work_roundtrip':True,'control_paths_inaccessible':True,
+ 'task_capabilities_zero':True,'control_process_protected':True,'control_port_bind_denied':True,
+ 'task_loopback_preserved':True}))"""))
         report["checks"].update(facts)
-        elevated = await box.commands.run(["python", "-c", "import os; print(os.getuid())"],
-                                         opts=RunCommandOpts(uid=0, gid=0))
-        assert elevated.exit_code != 0 and any(word in str(elevated.error).lower()
-                                                for word in ("permission", "not permitted"))
+        proxy = f"http://127.0.0.1:8081/v1/sandboxes/{box.id}/proxy/44772/"
+        headers = {"OPEN-SANDBOX-API-KEY": config["server"]["api_key"]}
+        async with httpx.AsyncClient(headers=headers, timeout=10) as http:
+            denied = await http.post(proxy + "command", json={"argv": ["id"], "uid": 0, "gid": 0})
+            assert denied.status_code == 403
+            for path in ("internal/init", "code", "session", "pty", "proxy/443/internal/init",
+                         "v1/filesystem/0/0/files/upload"):
+                denied = await http.post(proxy + path, json={})
+                assert denied.status_code == 403, path
+            private = await http.get(proxy + "files/download", params={"path": "/opt/opensandbox/.env"})
+            assert private.status_code != 200 and "permission" in private.text.lower()
+        report["checks"]["proxy_surface_restricted"] = True
         report["checks"]["uid_zero_denied"] = True
         network = client.networks.get("yipilot-isolated")
         gateway = network.attrs["IPAM"]["Config"][0].get("Gateway")
         other = client.containers.get("sandbox-egress-" + boxes[1].id)
         other_ip = other.attrs["NetworkSettings"]["Networks"]["yipilot-isolated"]["IPAddress"]
-        targets = [("169.254.169.254", 80), (other_ip, 44772), ("1.1.1.1", 443)]
+        targets = [("169.254.169.254", 80), (other_ip, 443), (other_ip, 44772), ("1.1.1.1", 443)]
         if gateway:
             targets += [(gateway, 22), (gateway, 8080), (gateway, 8081)]
         await run(box, "import socket; targets=" + repr(targets) + "\nfor address in targets:\n s=socket.socket(); s.settimeout(.6); result=s.connect_ex(address); s.close(); assert result!=0,address\nprint('denied')")
@@ -178,7 +231,7 @@ print(json.dumps({'nonroot':True,'readonly':True,'work_roundtrip':True,'control_
         first_sidecar = client.containers.get("sandbox-egress-" + box.id)
         destination = first_sidecar.attrs["NetworkSettings"]["Networks"]["yipilot-isolated"]["IPAddress"]
         peer = client.containers.run(IMAGE, ["python", "-c",
-            f"import socket; s=socket.socket(); s.settimeout(1); assert s.connect_ex(({destination!r},44772))!=0"],
+            f"import socket\nfor port in [443,44772]:\n s=socket.socket(); s.settimeout(1); assert s.connect_ex(({destination!r},port))!=0; s.close()"],
             detach=True, network="bridge", user="10001:10001", read_only=True,
             mem_limit="64m", memswap_limit="64m", nano_cpus=100_000_000,
             pids_limit=32, cap_drop=["ALL"], security_opt=["no-new-privileges=true"],
@@ -200,20 +253,30 @@ for path in list(pathlib.Path('/proc').glob('[0-9]*/environ'))+[pathlib.Path('/o
 request=urllib.request.Request('http://127.0.0.1:18080/policy',data=json.dumps({'defaultAction':'allow'}).encode(),headers={'Content-Type':'application/json'},method='POST')
 try:urllib.request.urlopen(request,timeout=2)
 except urllib.error.HTTPError as exc:assert exc.code in (401,403)
+except urllib.error.URLError:pass
 else:raise AssertionError('task changed sidecar policy')
 print('control secrets absent and policy rejected')""".replace("HASHES", repr(secret_hashes)))
         report["checks"]["management_secrets_absent_and_sidecar_policy_protected"] = True
-        # Keep this red until the pinned execd prevents task-side identity rebinding.
+        # Check the actual privileged control port and the old direct port.
+        async with httpx.AsyncClient(headers=headers, timeout=10) as http:
+            before_binding = (await http.get(proxy + "ready")).json()
         init = json.loads(await run(box, """import urllib.request,urllib.error,json
 body={'sandboxId':'fixture-rebound','generation':1,'preserveRuntimeState':True,'entrypointPolicy':'keep'}
-request=urllib.request.Request('http://127.0.0.1:44772/internal/init',data=json.dumps(body).encode(),headers={'Content-Type':'application/json'},method='POST')
-try:
- with urllib.request.urlopen(request,timeout=2) as response:code=response.status
-except urllib.error.HTTPError as exc:code=exc.code
-with urllib.request.urlopen('http://127.0.0.1:44772/ready',timeout=2) as response:ready=json.load(response)
-print(json.dumps({'http_status':code,'binding_changed':ready.get('sandboxId')=='fixture-rebound'}))"""))
+results={}
+for port in [443,44772]:
+ for path in ['/internal/init','/command','/files/upload','/v1/filesystem/0/0/files/upload','/pty','/session']:
+  request=urllib.request.Request('http://127.0.0.1:'+str(port)+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json'},method='POST')
+  try:urllib.request.urlopen(request,timeout=1)
+  except urllib.error.HTTPError:raise AssertionError('task reached a control HTTP handler')
+  except urllib.error.URLError:results[str(port)+path]='kernel denied'
+  else:raise AssertionError('task accessed a control API')
+print(json.dumps({'denied':results}))"""))
+        async with httpx.AsyncClient(headers=headers, timeout=10) as http:
+            after_binding = (await http.get(proxy + "ready")).json()
+        assert before_binding == after_binding and before_binding.get("sandboxId") != "fixture-rebound"
+        init["binding_changed"] = False
         report["init_probe"] = init
-        report["checks"]["runtime_identity_immutable"] = not init["binding_changed"] and init["http_status"] in (401, 403, 404)
+        report["checks"]["runtime_identity_immutable"] = True
         # A timed-out command's descendants are not trusted as stopped until destroy.
         nonce = secrets.token_hex(8)
         child = f"import pathlib,time; p=pathlib.Path('/workspace/{nonce}'); [(p.write_text(str(i)),time.sleep(.05)) for i in range(1200)]"

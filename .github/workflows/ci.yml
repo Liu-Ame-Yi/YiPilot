@@ -43,4 +43,4 @@ jobs:
       - name: Test guards and build real fixed patch
         run: |
           command -v patch
-          python -m pytest tests/unit/workspace/test_opensandbox_profile.py tests/unit/workspace/test_opensandbox_build.py -o addopts='' -q -p no:cacheprovider
+          python -m pytest tests/unit/workspace/test_opensandbox_profile.py tests/unit/workspace/test_opensandbox_build.py tests/unit/workspace/test_opensandbox_control.py -o addopts='' -q -p no:cacheprovider

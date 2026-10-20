@@ -44,6 +44,7 @@ def test_patch_builds_real_pinned_upstream_without_mutating_it(tmp_path):
     destination = tmp_path / "release/opensandbox_server"
     receipt = builder.build(source, destination)
     assert receipt["upstream_server"] == "1.1.1"
-    assert len(receipt["patched_sha256"]) == 5
+    assert len(receipt["patched_sha256"]) == 7
     assert (destination / "yipilot_profile.py").read_bytes() == (ASSETS / "policy.py").read_bytes()
+    assert (destination / "yipilot_control.py").read_bytes() == (ASSETS / "control.py").read_bytes()
     assert before == {name: (source / name).read_bytes() for name in builder.ORIGINALS}

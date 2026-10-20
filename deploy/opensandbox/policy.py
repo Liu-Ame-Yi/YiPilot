@@ -4,7 +4,7 @@ import re
 import stat
 from pathlib import Path, PurePosixPath
 
-PROFILE = "yipilot-python-v1"
+PROFILE = "yipilot-python-v2"
 NETWORK = "yipilot-isolated"
 BRIDGE = "yipilot0"
 JOBS_ROOT = Path("/srv/yipilot-runner/jobs")
@@ -81,7 +81,8 @@ def validate_config(config):
             or not config["server"].get("api_key")
             or egress.get("image") != EGRESS or egress.get("mode") != "dns+nft"
             or not egress.get("disable_ipv6") or egress.get("upstream_proxy")
-            or docker.get("sandbox_env") != {"HOME": "/tmp", "PYTHONDONTWRITEBYTECODE": "1"}):
+            or docker.get("sandbox_env") != {"HOME": "/opt/opensandbox/control",
+                "PYTHONDONTWRITEBYTECODE": "1", "EXECD": "/opt/opensandbox/yipilot-execd"}):
         raise ValueError("Server configuration does not match the fixed YiPilot profile")
 
 
