@@ -1,0 +1,38 @@
+[server]
+host = "127.0.0.1"
+port = 8081
+api_key = "REPLACE_WITH_INDEPENDENT_RANDOM_KEY"
+max_sandbox_timeout_seconds = 900
+thread_pool_max_workers = 8
+limit_concurrency = 32
+
+[runtime]
+type = "docker"
+execd_image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd@sha256:cda2bc35409bbf57561599b316cafb899598f7dce671332e7ceda14eb1cfeded"
+
+[proxy]
+resolve_internal = true
+
+[storage]
+allowed_host_paths = ["/srv/yipilot-runner/jobs"]
+
+[store]
+type = "sqlite"
+path = "/var/lib/opensandbox/yipilot-profile.db"
+
+[docker]
+network_mode = "yipilot-isolated"
+host_ip = "127.0.0.1"
+publish_host = "127.0.0.1"
+drop_capabilities = ["ALL"]
+no_new_privileges = true
+pids_limit = 128
+sandbox_env = { HOME = "/tmp", PYTHONDONTWRITEBYTECODE = "1" }
+
+[egress]
+mode = "dns+nft"
+disable_ipv6 = true
+image = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress@sha256:bce2cc2e4dc3a3594678b91ac29efb0669fccebfdfc137727018d3b087fbb13a"
+
+[log]
+level = "WARNING"

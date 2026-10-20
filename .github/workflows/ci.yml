@@ -21,7 +21,7 @@ jobs:
       - name: Install locked development dependencies
         run: uv sync --group dev --frozen
       - name: Lint
-        run: uv run ruff check src tests --no-cache
+        run: uv run ruff check src tests deploy/opensandbox --no-cache
       - name: Type check
         run: uv run mypy src --cache-dir "$env:TEMP\\yipilot-m3-m4-mypy"
       - name: Test
@@ -29,3 +29,18 @@ jobs:
         run: uv run pytest -o addopts='' -q -p no:cacheprovider --basetemp "$env:RUNNER_TEMP/yipilot-tests"
       - name: Check diff format
         run: git diff --check
+  opensandbox-profile-build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned upstream wheel without runtime dependencies
+        run: python -m pip install --no-deps --require-hashes -r deploy/opensandbox/requirements-build.txt
+      - name: Install test runner
+        run: python -m pip install pytest==8.4.2
+      - name: Test guards and build real fixed patch
+        run: |
+          command -v patch
+          python -m pytest tests/unit/workspace/test_opensandbox_profile.py tests/unit/workspace/test_opensandbox_build.py -o addopts='' -q -p no:cacheprovider

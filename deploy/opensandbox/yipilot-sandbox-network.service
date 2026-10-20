@@ -1,0 +1,14 @@
+[Unit]
+Description=YiPilot dedicated sandbox bridge and firewall
+Requires=docker.service
+After=docker.service
+PartOf=docker.service
+Before=opensandbox-profile.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/opensandbox/yipilot-profile/deploy/network.py --install
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,77 @@
+{
+  "upstream_server": "1.1.1",
+  "acceptance": {
+    "trusted_fixtures_only": true,
+    "profile": "yipilot-python-v1",
+    "jobs": [
+      "be98fa5b20296f9e26084c906239ab2c",
+      "41feda5d9461690b63f7f44877396f93"
+    ],
+    "checks": {
+      "reject_before_side_effects": true,
+      "creation_limits": true,
+      "nonroot": true,
+      "readonly": true,
+      "work_roundtrip": true,
+      "control_paths_inaccessible": true,
+      "uid_zero_denied": true,
+      "cross_job_host_metadata_and_unrestricted_peer_blocked": true,
+      "management_secrets_absent_and_sidecar_policy_protected": true,
+      "runtime_identity_immutable": false,
+      "cancel_then_destroy_live_writers": true,
+      "timeout_then_destroy_and_stable_host_collection": true
+    },
+    "init_probe": {
+      "http_status": 200,
+      "binding_changed": true
+    },
+    "cancel_writer_count_before": 2,
+    "residual_containers": 0,
+    "residual_volumes": 0,
+    "profile_acceptance_passed": false,
+    "ready_for_untrusted_code": false
+  },
+  "build": {
+    "upstream_server": "1.1.1",
+    "source_sha256": {
+      "services/docker/container_ops.py": "fb852b4f88142e814ae4ef3f45503553e8f3f468bfab839cfff6f8cb165f1b13",
+      "services/docker/docker_service.py": "b688b393a1ca24b63b6ffbcaf125cafb4445ef720d10f5264da08db0d3a0a451",
+      "services/docker/networking.py": "ced0f2189c1025111dd7be87e504e85cd467b0638b73188c425814d8e5ade415",
+      "services/docker/runtime.py": "84222fb1e69257ec433469efa0c5da8eaad220e9ed971e907677cbff2ae499be"
+    },
+    "assets_sha256": {
+      "server.patch": "b0809aba0babce8f92ab8a237f33bb34ccc899774a3f24bccc453136da288093",
+      "policy.py": "4fbee7b0aebc04bdd368201495ced63a89fdeb5a0adf44ec2c3dbe0867d595fb",
+      "build.py": "80eed3812cb3f4dae2dc977281d0540a0194011902c2d31ac2c3470e5b524a3d"
+    },
+    "patched_sha256": {
+      "services/docker/container_ops.py": "e076291e74b477d1002873a7dd7130c155a8602ef70822bd5729cda733a9446c",
+      "services/docker/docker_service.py": "ff7388cf31815b5a5cb55a8c7b1e7119c900ce52e209e728af28897108ff18f7",
+      "services/docker/networking.py": "1608e50be8794654ab81c58296879b4534a786a811eef74aec86f61997eed2bd",
+      "services/docker/runtime.py": "49b2de3338f455ff85971f1c6d91d4b3b9eeb1137d619491e29eff49f89d78ed",
+      "yipilot_profile.py": "4fbee7b0aebc04bdd368201495ced63a89fdeb5a0adf44ec2c3dbe0867d595fb"
+    }
+  },
+  "deployed_assets_sha256": {
+    "opensandbox-profile.service": "363b0db389ec6bb631755b03f182515fe1a37ee7f425bba697aa8bdbcb4591a0",
+    "policy.py": "4fbee7b0aebc04bdd368201495ced63a89fdeb5a0adf44ec2c3dbe0867d595fb",
+    "network.py": "f5b38d526b9b42689f577c1b9e88c2c24e58fda2d73655b8124e19003c8217a4",
+    "acceptance.py": "37ea096065d057f309d11ccf5d2dfac1f93825dd991c256adf9e4219558db3aa",
+    "README.md": "323d001c1f97479d7e8dc40a7ffbf4329eb454ca1324ba5221d72dd318851171",
+    "server.patch": "b0809aba0babce8f92ab8a237f33bb34ccc899774a3f24bccc453136da288093",
+    "config.toml.example": "25ed6ad8a2cf7ee5d67beba2c53faa6e22484bf871fcf8f41e703f97f006a64c",
+    "build.py": "80eed3812cb3f4dae2dc977281d0540a0194011902c2d31ac2c3470e5b524a3d",
+    "yipilot-sandbox-network.service": "b9a255d9629bc9ed1ced72f1ea6188e1c44a5a5636a6eb645affa0f2a3572f96"
+  },
+  "final_state": {
+    "units": {
+      "opensandbox": "active",
+      "opensandbox-profile": "inactive",
+      "yipilot-sandbox-network": "active"
+    },
+    "new_service_enabled": "disabled",
+    "containers": 0,
+    "volumes": 0,
+    "original_config_sha256": "b4500d04c25253827034395f5af281823cd87172df1f652ae8a0e398c4a6718f"
+  }
+}

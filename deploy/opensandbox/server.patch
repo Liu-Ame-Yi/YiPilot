@@ -1,0 +1,170 @@
+--- a/services/docker/container_ops.py
++++ b/services/docker/container_ops.py
+@@ -317,6 +317,7 @@
+         self, request: CreateSandboxRequest, sandbox_id: str
+     ) -> tuple[str, Optional[dict]]:
+         image_uri = request.image.uri
++        self.docker_client.images.get(image_uri)  # Pinned images must already be cached.
+         auth_config = None
+         if request.image.auth:
+             auth_config = {
+@@ -366,7 +367,14 @@
+         network_mode: str,
+         gpu_count: Optional[int] = None,
+     ) -> Dict[str, Any]:
+-        host_config_kwargs: Dict[str, Any] = {"network_mode": network_mode}
++        host_config_kwargs: Dict[str, Any] = {
++            "network_mode": network_mode,
++            "read_only": True,
++            "memswap_limit": mem_limit,
++            "tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=64m,mode=1777"},
++            "shm_size": 16 * 1024**2,
++            "log_config": {"type": "none"},
++        }
+         security_opts: list[str] = []
+         docker_cfg = self.app_config.docker
+         if docker_cfg.no_new_privileges:
+@@ -397,6 +405,9 @@
+                 f"Using Docker runtime '{self.docker_runtime}' for container creation"
+             )
+             host_config_kwargs["runtime"] = self.docker_runtime
++        host_config_kwargs["cap_drop"] = ["ALL"]
++        host_config_kwargs["security_opt"] = ["no-new-privileges=true"]
++        host_config_kwargs["pids_limit"] = 128
+         return host_config_kwargs
+ 
+     def _create_and_start_container(
+@@ -428,6 +439,7 @@
+             with self._docker_operation("create sandbox container", sandbox_id):
+                 container_kwargs = {
+                     "image": image_uri,
++                    "user": "10001:10001",
+                     "command": bootstrap_command,
+                     "ports": (
+                         [normalize_container_port_spec(p) for p in exposed_ports]
+--- a/services/docker/docker_service.py
++++ b/services/docker/docker_service.py
+@@ -20,6 +20,8 @@
+ """
+ 
+ from __future__ import annotations
++
++from opensandbox_server.yipilot_profile import validate_config, validate_request, validate_resources
+ 
+ import asyncio
+ import inspect
+@@ -612,6 +614,14 @@
+         return sandbox_id, created_at, expires_at
+ 
+     async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
++        try:
++            validate_config(self.app_config.model_dump())
++            validate_request(request.model_dump(by_alias=True, exclude_none=True))
++            validate_resources(self._resolve_resource_limits(request))
++        except (ValueError, OSError) as exc:
++            raise HTTPException(status_code=400, detail={
++                "code": "YIPILOT::PROFILE_REJECTED", "message": str(exc),
++            }) from exc
+         if request.lifecycle is not None:
+             raise HTTPException(
+                 status_code=status.HTTP_400_BAD_REQUEST,
+--- a/services/docker/networking.py
++++ b/services/docker/networking.py
+@@ -20,6 +20,8 @@
+ """
+ 
+ from __future__ import annotations
++
++from opensandbox_server.yipilot_profile import NETWORK, validate_network
+ 
+ import json
+ import logging
+@@ -129,7 +131,7 @@
+         if not self._is_user_defined_network():
+             return
+         try:
+-            self.docker_client.networks.get(self.network_mode)
++            validate_network(self.docker_client.networks.get(self.network_mode).attrs)
+         except DockerNotFound:
+             raise HTTPException(
+                 status_code=status.HTTP_400_BAD_REQUEST,
+@@ -169,9 +171,8 @@
+                 },
+             )
+ 
+-        # User-defined networks cannot be combined with networkPolicy: the egress sidecar
+-        # always runs on the default bridge, which would silently discard the configured network.
+-        if self._is_user_defined_network():
++        # The patched sidecar explicitly joins the fixed isolated network.
++        if self._is_user_defined_network() and self.network_mode != NETWORK:
+             raise HTTPException(
+                 status_code=status.HTTP_400_BAD_REQUEST,
+                 detail={
+@@ -257,18 +258,15 @@
+                 },
+             ) from exc
+ 
+-        if resolve_internal:
++        if resolve_internal or self.network_mode == NETWORK:
+             container = self._get_container_by_sandbox_id(sandbox_id)
+             labels = container.attrs.get("Config", {}).get("Labels") or {}
+-            # Sandboxes created with egress sidecar share the sidecar network namespace, so the
+-            # main container's private IP is not a stable proxy target. In that case, treat the
+-            # server-proxy target as the server-local host-mapped endpoint instead of a container IP.
++            # The internal bridge has no host-published ports; use the namespace owner.
+             if labels.get(SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY):
+-                return self._resolve_host_mapped_endpoint(
+-                    self._resolve_proxy_host(),
+-                    labels,
+-                    port,
+-                )
++                sidecar = self.docker_client.containers.get(f"sandbox-egress-{sandbox_id}")
++                endpoint = self._resolve_internal_endpoint(sidecar, port)
++                self._attach_egress_auth_headers(endpoint, labels, port)
++                return endpoint
+             return self._resolve_internal_endpoint(container, port)
+ 
+         # The server-side proxy needs a locally reachable host: when the
+@@ -508,7 +506,14 @@
+             sidecar_port_bindings.update(extra_port_bindings)
+ 
+         base_sidecar_host_config_kwargs: dict[str, Any] = {
+-            "network_mode": BRIDGE_NETWORK_MODE,
++            "network_mode": self.network_mode,
++            "mem_limit": 64 * 1024**2,
++            "memswap_limit": 64 * 1024**2,
++            "nano_cpus": 100_000_000,
++            "pids_limit": 64,
++            "cap_drop": ["ALL"],
++            "security_opt": ["no-new-privileges=true"],
++            "log_config": {"type": "none"},
+             "cap_add": ["NET_ADMIN"],
+             "port_bindings": normalize_port_bindings(sidecar_port_bindings),
+         }
+@@ -632,7 +637,8 @@
+         timeout_seconds: float,
+     ) -> None:
+         deadline = time.monotonic() + timeout_seconds
+-        url = f"http://{self._resolve_proxy_host()}:{host_port}/healthz"
++        sidecar = self.docker_client.containers.get(f"sandbox-egress-{sandbox_id}")
++        url = f"http://{self._extract_bridge_ip(sidecar)}:18080/healthz"
+         last_error: Exception | None = None
+         while time.monotonic() < deadline:
+             request = urllib.request.Request(
+--- a/services/docker/runtime.py
++++ b/services/docker/runtime.py
+@@ -195,6 +195,14 @@
+         normalized_path = path.rstrip("/")
+         if not normalized_path:
+             return
++        if normalized_path == OPENSANDBOX_DIR:
++            container.reload()
++            expected_volume = f"opensandbox-runtime-{sandbox_id}"
++            if any(m.get("Type") == "volume" and m.get("Name") == expected_volume
++                   and m.get("Destination") == OPENSANDBOX_DIR and m.get("RW")
++                   for m in container.attrs.get("Mounts", [])):
++                return
++            raise ValueError("A private managed runtime volume is required for read-only rootfs")
+         tar_stream = io.BytesIO()
+         with tarfile.open(fileobj=tar_stream, mode="w") as tar:
+             dir_info = tarfile.TarInfo(name=normalized_path.lstrip("/"))

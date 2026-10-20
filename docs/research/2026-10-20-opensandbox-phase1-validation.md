@@ -2,6 +2,8 @@
 
 日期：2026-10-20（Asia/Shanghai）。本轮按用户授权开始[迁移计划](2026-10-19-opensandbox-implementation-plan.md)第一阶段。**已修复三个测试环境问题，并取得隔离组合的可行性证据；G1 正式隔离门槛仍未放行。** Runner 和 YiPilot 应用执行迁移尚未实施，实验补丁没有安装到常驻服务。
 
+后续已形成独立的固定 Server profile 候选并完成真实验收，确认了 task-side init 重绑阻断项；部署和服务停止状态见[候选制品实测](2026-10-20-opensandbox-profile-validation.md)。下文保留此前实验批次的事实，不能视为最新一批已经放行。
+
 ## 1. 代码基线的具体修改
 
 | 问题 | 复现与措施 | 验证 |

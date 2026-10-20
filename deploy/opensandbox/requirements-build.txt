@@ -1,0 +1,2 @@
+# Only the pure server wheel is needed to validate and compile the source patch.
+opensandbox-server==1.1.1 --hash=sha256:7da042ecd5cfdd38bd8a96ca92d28d02bd91af2c26e5250382dd7a21c4bf04b8
