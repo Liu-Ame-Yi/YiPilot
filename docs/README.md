@@ -21,6 +21,10 @@
 
 ## 历史与依据
 
+本轮 OpenSandbox 专项的 **Proposed 实施安排**见[远程迁移计划](research/2026-10-19-opensandbox-implementation-plan.md)：包含四阶段、验收条件、代码整合范围与用户下一步。它不是当前可用能力或对产品 roadmap 的更新；服务器现状与源码分发分别见[安装记录](research/2026-10-19-opensandbox-server-installation.md)、[GitHub 同步记录](research/2026-10-19-yipilot-github-sync.md)。
+
+2026-10-20 已授权开始第一阶段；实际代码基线修复、隔离实测和 G1 剩余门槛见[第一阶段记录](research/2026-10-20-opensandbox-phase1-validation.md)。
+
 | 位置 | 如何使用 |
 | --- | --- |
 | [原始规划书](../规划书.md) | AI 对 Go 原项目的二次总结，混有重写建议；只作参考，不要求兼容所有协议、目录或功能 |

@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from tests.helpers.sqlite_records import event_text
@@ -125,4 +126,4 @@ def test_cli_uses_model_and_rejects_old_planner(tmp_path: Path, monkeypatch: pyt
     old = runner.invoke(app, ["code", "generate", "--taskid", "1001", "--alias", "sample", "--instruction", "change", "--planner", "fake"])
 
     assert result.exit_code == 0 and json.loads(result.stdout)["status"] == "succeeded"
-    assert old.exit_code != 0 and "--planner" in old.output
+    assert old.exit_code != 0 and "--planner" in Text.from_ansi(old.output).plain

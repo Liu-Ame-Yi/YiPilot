@@ -2,6 +2,8 @@
 
 日期：2026-10-19。服务器通过本机 SSH 别名 `huawei-opensandbox` 管理，主机名 `hcss-ecs-ccf9`。本次完成基础服务安装与单沙箱验证；未修改 YiPilot 应用代码，也未安装拟议的 ExecutionRunner。
 
+2026-10-20 后续检查与独立进程隔离探针见[第一阶段验证](2026-10-20-opensandbox-phase1-validation.md)。临时补丁没有安装到本页所述常驻服务，不能把探针配置当作已生效的默认配置。
+
 ## 1. 已完成的步骤
 
 | 顺序 | 实际操作 | 验证结果 |
@@ -93,4 +95,4 @@ ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 huawei-opensandbox
 
 当前只运行了自有受信测试。实测容器用户仍为 root，rootfs 可写，bridge 出网尚未加入 deny 策略；这与现有 YiPilot DockerWorker 的非 root、只读 rootfs、断网合同存在差异。正式接收模型生成或其他不可信仓库代码前，须完成对应运行 profile 与隔离验收，不能因本次基础连通性通过就视为等价替换。
 
-下一步按顺序推进：运行 profile 与隔离差异处理 → 轻量 fixture 的 1/2/4 并发压测 → 最小 Runner Job 链路 → 项目执行、证据、审批和 apply 调用的整体替换。Kubernetes、Redis、Celery、预热池和多租户服务均未部署。总体代码整合方案见[接入方式与远程 Runner 设计](2026-10-19-opensandbox-integration-alternatives-review.md)。
+下一步的安排已收敛到[远程迁移实施计划](2026-10-19-opensandbox-implementation-plan.md)：代码基线与隔离验收 → 最小 Runner Job 链路 → 含 Runner 开销的 1/2/4 并发及故障验收 → 全调用替换。Kubernetes、Redis、Celery、预热池和多租户服务均未部署。总体方案取舍见[接入方式与远程 Runner 设计](2026-10-19-opensandbox-integration-alternatives-review.md)。

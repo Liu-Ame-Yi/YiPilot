@@ -1,0 +1,185 @@
+{
+  "sampled_at_utc": "2026-10-20T05:33:16.670879+00:00",
+  "probes": {
+    "2026-10-20-isolation-result.json": {
+      "probe_id": "69d1c981b63f4d04ab2bebba3e655875",
+      "trusted_fixture_only": true,
+      "profiles": {
+        "stock": {
+          "sandbox_id": "343535bd-bebc-488f-abcf-e655408f2396",
+          "facts": {
+            "uid": 0,
+            "gid": 0,
+            "network": {
+              "public_443": "blocked_or_unreachable",
+              "metadata_80": "connected",
+              "host_ssh": "connected",
+              "self_execd": "connected"
+            },
+            "tmp_write_read": true,
+            "etc_write": true,
+            "self_ping_without_token": 200
+          },
+          "runtime": {
+            "configured_user": "root",
+            "readonly_rootfs": false,
+            "memory": 268435456,
+            "memory_swap": 536870912,
+            "cpu": 250000000,
+            "pids": 128,
+            "network_mode": "bridge",
+            "cap_drop": [
+              "ALL"
+            ],
+            "security_opt": [
+              "no-new-privileges=true"
+            ]
+          }
+        },
+        "image_user_10001": {
+          "sandbox_id": "b723693e-e6d2-4be5-b050-72fdee7295e4",
+          "facts": {
+            "uid": 10001,
+            "gid": 10001,
+            "network": {
+              "public_443": "blocked_or_unreachable",
+              "metadata_80": "connected",
+              "host_ssh": "connected",
+              "self_execd": "connected",
+              "other_probe_execd": "connected"
+            },
+            "tmp_write_read": true,
+            "etc_write": false,
+            "etc_write_errno": 13,
+            "self_ping_without_token": 200
+          },
+          "runtime": {
+            "configured_user": "10001:10001",
+            "readonly_rootfs": false,
+            "memory": 268435456,
+            "memory_swap": 536870912,
+            "cpu": 250000000,
+            "pids": 128,
+            "network_mode": "bridge",
+            "cap_drop": [
+              "ALL"
+            ],
+            "security_opt": [
+              "no-new-privileges=true"
+            ]
+          }
+        }
+      },
+      "nonroot_image_id": "sha256:3c7512c3a1f780f20917b0102488cf99f81fd6e180fd8209b99fc78e7fe3a6d3",
+      "readonly_runtime_injection": {
+        "accepted": false,
+        "http_status": 400,
+        "readonly_error": true
+      },
+      "probe_completed": true,
+      "emergency_cleanup_used": false,
+      "residual_probe_containers": 0,
+      "destroy_errors": [],
+      "temporary_image_removed": true,
+      "elapsed_seconds": 10.67,
+      "ready_for_untrusted_code": false
+    },
+    "2026-10-20-network-result.json": {
+      "probe_id": "750be5d8f42807b2d5efae53",
+      "trusted_fixture_only": true,
+      "temporary_server_port": 18081,
+      "egress_image": "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress@sha256:bce2cc2e4dc3a3594678b91ac29efb0669fccebfdfc137727018d3b087fbb13a",
+      "network_policy": {
+        "defaultAction": "deny",
+        "egress": [
+          {
+            "action": "deny",
+            "target": "*"
+          }
+        ]
+      },
+      "sidecar_original_memory_limit": 0,
+      "probe_sidecar_memory_cap": 67108864,
+      "task_connections": {
+        "metadata_80": "blocked_or_unreachable",
+        "host_ssh": "blocked_or_unreachable",
+        "peer_execd": "blocked_or_unreachable",
+        "public_443": "blocked_or_unreachable",
+        "self_ping_without_token": 200
+      },
+      "unrestricted_peer_to_policy_execd_without_token": {
+        "http_status": 200,
+        "marker_seen": true
+      },
+      "task_network_mode": "container:b79560a8c312319a5e7195b427e591d2523254530ca193ca19f6a8e636e845a8",
+      "probe_completed": true,
+      "residual_primary_count": 0,
+      "residual_sidecar_count": 0,
+      "residual_volume_count": 0,
+      "destroy_errors": [],
+      "temporary_server_stopped": true,
+      "ready_for_untrusted_code": false
+    },
+    "2026-10-20-readonly-network-result.json": {
+      "probe_id": "a2625621edea7400af6b6434",
+      "experimental_only": true,
+      "network_policy_enabled": true,
+      "temporary_image_id": "sha256:18b36765a93a2d87edbbded01602ea7e721692ae423f3955bf31b18e3b0bb1bd",
+      "facts": {
+        "uid": 10001,
+        "rootfs_readonly": true,
+        "runtime_not_task_writable": true,
+        "tmp_file_roundtrip": true
+      },
+      "uid_zero_request": {
+        "exit_code": null,
+        "stdout": "",
+        "permission_denied": true
+      },
+      "runtime": {
+        "readonly_rootfs": true,
+        "memory": 268435456,
+        "memory_swap": 268435456,
+        "tmpfs": {
+          "/tmp": "rw,noexec,nosuid,nodev,size=64m,mode=1777"
+        },
+        "log_driver": "none",
+        "cap_drop": [
+          "ALL",
+          "NET_ADMIN"
+        ],
+        "security_opt": [
+          "no-new-privileges=true"
+        ]
+      },
+      "metadata_connect_blocked": true,
+      "runtime_mounts": [
+        {
+          "destination": "/opt/opensandbox",
+          "rw": true
+        }
+      ],
+      "probe_completed": true,
+      "emergency_cleanup_used": false,
+      "temporary_image_removed": true,
+      "destroy_error": null,
+      "residual_containers": 0,
+      "temporary_server_stopped": true,
+      "ready_for_untrusted_code": false
+    }
+  },
+  "script_sha256": {
+    "2026-10-20-isolation.py": "d9ce2170ffeea98c693dd1db41e2103f0b2cabe27a00efcfb369ddba0d63ee7f",
+    "2026-10-20-network.py": "e1f29912a3b8c1780e46a5a81cc1844f6b1dce129203bd5d557f36c125471b05",
+    "2026-10-20-readonly.py": "618fa201812bf817aec5ef3d88e838b9be9c80c764a75e75418df274a0cfcdc4"
+  },
+  "after_cleanup": {
+    "containers": 0,
+    "volumes": 0,
+    "closed_probe_ports": {
+      "18081": true,
+      "18082": true,
+      "18083": true
+    }
+  }
+}
