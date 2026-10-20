@@ -1,6 +1,6 @@
 # 当前实现状态
 
-2026-10-20 OpenSandbox 专项新增了独立 Runner 的受信样例闭环：耐久 Job、HTTP 客户端、可信产物与本地重建，见[实施记录](../research/2026-10-20-opensandbox-runner-validation.md)。正式业务执行调用仍使用下述旧 Docker 路径；完整故障/并发验收和全面替换尚未完成。
+2026-10-20 OpenSandbox 专项已实现独立 Runner、创建租约、每任务磁盘上限和保留期去重；本机 1/2/4 个轻任务与选定故障恢复已实测，见[第三阶段记录](../research/2026-10-20-opensandbox-reliability-validation.md)。正式业务执行调用仍使用下述旧 Docker 路径；项目锁、工具镜像、审批与全部调用的迁移尚未完成，未放行正式不可信任务。
 
 核对日期：2026-09-15。依据当前工作树源码、离线组合测试和 CLI help 检查，**不是发布版本或完整端到端验收声明**。产品目标见 [产品定义](vision.md)，技术目标见 [V2 架构](../superpowers/specs/2026-09-07-yipilot-v2-architecture.md)。
 

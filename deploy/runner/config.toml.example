@@ -3,6 +3,6 @@ port = 8090
 runner_key = "REPLACE_WITH_SEPARATE_RANDOM_KEY"
 opensandbox_key = "READ_FROM_PRIVATE_PROFILE_CONFIG"
 max_slots = 4
-memory_budget = 1342177280
+memory_budget = 805306368
 cpu_budget = 1500
 disk_reserve = 4294967296

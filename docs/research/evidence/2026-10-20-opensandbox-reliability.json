@@ -1,0 +1,580 @@
+{
+  "collected_at_utc": "2026-10-20T15:10:05.896549+00:00",
+  "reports": {
+    "reliability": {
+      "trusted_fixtures_only": true,
+      "capacity": [
+        {
+          "requested": 1,
+          "actual_overlap": 1,
+          "host_available_min": 832888832,
+          "main_memory_peak": {
+            "70a9b1e6f961": 64835584
+          },
+          "sidecar_memory_peak": {
+            "d42e29b1badc": 5840896
+          },
+          "oom_kills": 0,
+          "health_latency_max_seconds": 0.003907410005922429,
+          "controller_rss_peak": 63692800,
+          "elapsed_seconds": 17.065152388007846
+        },
+        {
+          "requested": 2,
+          "actual_overlap": 2,
+          "host_available_min": 749658112,
+          "main_memory_peak": {
+            "2ab695579281": 65011712,
+            "21363ef8dfc0": 64782336
+          },
+          "sidecar_memory_peak": {
+            "f45f45e6837f": 5963776,
+            "0c08f02afce3": 6041600
+          },
+          "oom_kills": 0,
+          "health_latency_max_seconds": 0.014064762013731524,
+          "controller_rss_peak": 66498560,
+          "elapsed_seconds": 17.06458723799733
+        },
+        {
+          "requested": 4,
+          "actual_overlap": 4,
+          "host_available_min": 593362944,
+          "main_memory_peak": {
+            "0da8f4ad279f": 64954368,
+            "f59335b1dfc4": 65118208,
+            "9837b3ec6959": 64905216,
+            "c40445631a41": 64692224
+          },
+          "sidecar_memory_peak": {
+            "741eb074c883": 7450624,
+            "6afb469db7d1": 4472832,
+            "e62980a9dfa4": 5971968,
+            "f3df66d4e7ad": 6635520
+          },
+          "oom_kills": 0,
+          "health_latency_max_seconds": 0.007903076999355108,
+          "controller_rss_peak": 69677056,
+          "elapsed_seconds": 18.509405278993654
+        }
+      ],
+      "checks": {
+        "disk_enospc_isolated_and_released": true,
+        "lost_submit_response_and_download_retry": true,
+        "interrupted_upload_not_accepted": true,
+        "sigkill_running_reconciled_without_replay": true,
+        "failed_release_holds_budget_and_restart_reconciles": true,
+        "api_outage_uses_owned_docker_cleanup": true,
+        "lost_creation_response_reconciled_and_late_create_rejected": true,
+        "restart_ttl_gc_preserves_dedup_and_returns_410": true
+      },
+      "jobs": [
+        "8aa5ffa626b44ea9bd2e5d41c660efce",
+        "933d01f9f08c411da4593b0c807b13e6",
+        "49463b1cb8124dedb1c01b1c651a963a",
+        "3751a5797ddf482881215fc483d2af67",
+        "e24d60f95f5d414f9bd7b01ea418fa59",
+        "80f3c895593b441c993944fd15470383",
+        "f1a40f6ce6fa4c53b5e0aae5542b4de4",
+        "94ca7fc2d47d412e8fceba85e68dc14f",
+        "cfc999fa3f83438095bcad22d12ddbc1",
+        "e7f26071da6844b899ad7385e0960039",
+        "2c462d1ea33345448530aeb2ef86559b",
+        "c8fc4cd6c2d44f2eafa277f205217b1c",
+        "88d0240d2e2544bdbc2ee5f01c687913",
+        "38a4d064a86f4e3e8e0629809137e853",
+        "9732fb09966d493f801a742e08677619"
+      ],
+      "passed": true
+    },
+    "ssh_reconnect": {
+      "actual_ssh_tunnel_terminated_and_reconnected": true,
+      "no_replay_verified": true,
+      "job_id": "11c24150de2247c390836eacf3980f4c",
+      "request_fingerprint": "7d28e057892d4cfa89d2345cfca9b50d931724a69f1bb6840cf550831137c189",
+      "exit_code": 0
+    },
+    "profile": {
+      "trusted_fixtures_only": true,
+      "profile": "yipilot-python-v2",
+      "jobs": [
+        "aafbcdd664581b93cefa7012e3350261",
+        "d3c434c571d71549bead11d9f6135bb7"
+      ],
+      "checks": {
+        "reject_before_side_effects": true,
+        "creation_limits": true,
+        "nonroot": true,
+        "readonly": true,
+        "work_roundtrip": true,
+        "control_paths_inaccessible": true,
+        "uid_zero_denied": true,
+        "cross_job_host_metadata_and_unrestricted_peer_blocked": true,
+        "management_secrets_absent_and_sidecar_policy_protected": true,
+        "runtime_identity_immutable": true,
+        "cancel_then_destroy_live_writers": true,
+        "timeout_then_destroy_and_stable_host_collection": true,
+        "task_capabilities_zero": true,
+        "control_process_protected": true,
+        "control_port_bind_denied": true,
+        "proxy_surface_restricted": true,
+        "filesystem_identity_enforced": true,
+        "task_loopback_preserved": true
+      },
+      "roles": {
+        "container_user": "0:0",
+        "controller_cap_add": [
+          "NET_BIND_SERVICE",
+          "SETGID",
+          "SETUID"
+        ],
+        "task_uid": 10001,
+        "task_gid": 10001,
+        "task_cap_eff": 0,
+        "control_port": 443,
+        "unprivileged_port_start": 1024
+      },
+      "init_probe": {
+        "denied": {
+          "443/internal/init": "kernel denied",
+          "443/command": "kernel denied",
+          "443/files/upload": "kernel denied",
+          "443/v1/filesystem/0/0/files/upload": "kernel denied",
+          "443/pty": "kernel denied",
+          "443/session": "kernel denied",
+          "44772/internal/init": "kernel denied",
+          "44772/command": "kernel denied",
+          "44772/files/upload": "kernel denied",
+          "44772/v1/filesystem/0/0/files/upload": "kernel denied",
+          "44772/pty": "kernel denied",
+          "44772/session": "kernel denied"
+        },
+        "binding_changed": false
+      },
+      "cancel_writer_count_before": 2,
+      "residual_containers": 0,
+      "residual_volumes": 0,
+      "profile_acceptance_passed": true,
+      "ready_for_untrusted_code": false
+    },
+    "profile_faults": {
+      "trusted_fixtures_only": true,
+      "profile": "yipilot-python-v2",
+      "guard_failure_before_task_start": true,
+      "guard_failure_resources_cleaned": true,
+      "controller_death_takeover": {
+        "task_uid": 10001,
+        "cap_eff": 0,
+        "control_bind_denied_after_death": true
+      },
+      "residual_containers": 0,
+      "residual_volumes": 0
+    },
+    "roundtrip": {
+      "trusted_fixtures_only": true,
+      "jobs": [
+        "516d5b392883449dbcb3d5b9060ad488",
+        "46d75586095f482ba27becfbcb0e3b63",
+        "7f10e02bd78b4029a9a862a320f5dc96",
+        "add7e36fbc8048e2b1b4626c3520e260",
+        "663d1456b3644d1382469fa593ee9aa4"
+      ],
+      "checks": {
+        "authenticated_loopback_http": true,
+        "changes": true,
+        "deduplicated_jobs": true,
+        "reconstruct_from_frozen_input": true,
+        "nonzero": true,
+        "output": true,
+        "timeout": true,
+        "cancel": true,
+        "missing_input_digest_and_path_escape_rejected": true
+      },
+      "passed": true
+    }
+  },
+  "outcomes": [
+    {
+      "job_id": "8aa5ffa626b44ea9bd2e5d41c660efce",
+      "request_fingerprint": "c91110fbce66d4ed256fb122a826bd80c542e5263332c1f285e9036f6d5c72e7",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "8aa5ffa6-26b4-4ea9-bd2e-5d41c660efce",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 80,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "933d01f9f08c411da4593b0c807b13e6",
+      "request_fingerprint": "24e949ad063fda7e45e8dd7db18b72907f0888e5094e0f092b37265c98889a78",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "933d01f9-f08c-411d-a459-3b0c807b13e6",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 80,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "49463b1cb8124dedb1c01b1c651a963a",
+      "request_fingerprint": "75b8b702df7afd08d22c2dd8b86e635e0cec0840f21c545e693627e44d851001",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "49463b1c-b812-4ded-b1c0-1b1c651a963a",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 80,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "3751a5797ddf482881215fc483d2af67",
+      "request_fingerprint": "19f44fa21fab7581134604a2037227fa809d8582fe0dbc87d461a50b828485bf",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "3751a579-7ddf-4828-8121-5fc483d2af67",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 80,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "e24d60f95f5d414f9bd7b01ea418fa59",
+      "request_fingerprint": "a15434da771ac1fd48ba0db7bf0b2f9409a2edec937df395df5dcdddc260ceb2",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "e24d60f9-5f5d-414f-9bd7-b01ea418fa59",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 80,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "80f3c895593b441c993944fd15470383",
+      "request_fingerprint": "49a4306f841386e83b100a55635a93379cded15b5e6f15c5f8c5397de6445916",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "80f3c895-593b-441c-9939-44fd15470383",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 80,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "f1a40f6ce6fa4c53b5e0aae5542b4de4",
+      "request_fingerprint": "3ce392f031f47ada69d12dd90945ffaa4381a95c0b67f158008cd02cc83ded03",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "f1a40f6c-e6fa-4c53-b5e0-aae5542b4de4",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 80,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "94ca7fc2d47d412e8fceba85e68dc14f",
+      "request_fingerprint": "aedd1e312eb0be8e7bb28a604ab132c7214240c2cf0bdfe3bf5d3c4b65b1f71f",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "94ca7fc2-d47d-412e-8fce-ba85e68dc14f",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 24,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "cfc999fa3f83438095bcad22d12ddbc1",
+      "request_fingerprint": "8aa376f383b0139a22a754b0a02c09a8686f1534cc2187c959fbc99a42403a01",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "cfc999fa-3f83-4380-95bc-ad22d12ddbc1",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "e7f26071da6844b899ad7385e0960039",
+      "request_fingerprint": "aed7382fbccee6cc5bbcee5e884f191e3d348cf76ebe49f64fcfe89f0e415ad2",
+      "state": "uncertain",
+      "result_expired": false,
+      "gc_state": "retained"
+    },
+    {
+      "job_id": "2c462d1ea33345448530aeb2ef86559b",
+      "request_fingerprint": "4ca7c023a957470c7b88000b0d399d856b12220318889ed6d8221a626033479c",
+      "state": "uncertain",
+      "result_expired": false,
+      "gc_state": "retained"
+    },
+    {
+      "job_id": "c8fc4cd6c2d44f2eafa277f205217b1c",
+      "request_fingerprint": "19667c2c7fc75e67f868a580299fde4a23302c9b0bedd7198974d6bb9e42b1a1",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "c8fc4cd6-c2d4-4f2e-afa2-77f205217b1c",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 21,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "88d0240d2e2544bdbc2ee5f01c687913",
+      "request_fingerprint": "10b2ab4fa551306772b7aedc0434a769d3fce6a316c33aa142e807bf2d592f50",
+      "state": "cancelled",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "88d0240d-2e25-44bd-bc2e-e5f01c687913",
+      "reason": "cancelled",
+      "exit_code": null,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "38a4d064a86f4e3e8e0629809137e853",
+      "request_fingerprint": "8c447376c5fdb78f6ffa0b9dbd60e055e853093ba78847408fe6a5d1899fa12b",
+      "state": "uncertain",
+      "result_expired": false,
+      "gc_state": "retained"
+    },
+    {
+      "job_id": "9732fb09966d493f801a742e08677619",
+      "request_fingerprint": "f8f8a00ffe4401324b3ee0f3382338b17e48563545c6384c42bbe1b30a2b6b3b",
+      "state": "succeeded",
+      "result_expired": true,
+      "gc_state": "removed"
+    },
+    {
+      "job_id": "11c24150de2247c390836eacf3980f4c",
+      "request_fingerprint": "7d28e057892d4cfa89d2345cfca9b50d931724a69f1bb6840cf550831137c189",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "11c24150-de22-47c3-9083-6eacf3980f4c",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 12,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "516d5b392883449dbcb3d5b9060ad488",
+      "request_fingerprint": "da59b47297b8c4e3a34375bb0137456e79bb237aa9dfe4498d3a0a628a3390f2",
+      "state": "succeeded",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "516d5b39-2883-449d-bcb3-d5b9060ad488",
+      "reason": "exited",
+      "exit_code": 0,
+      "stdout_bytes": 11,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "46d75586095f482ba27becfbcb0e3b63",
+      "request_fingerprint": "47cabbf2f2ab869b5ef7faf4e50cf870da286d01556ab9cd8c904e3117c6d836",
+      "state": "failed",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "46d75586-095f-482b-a27b-ecfbcb0e3b63",
+      "reason": "exited",
+      "exit_code": 7,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "7f10e02bd78b4029a9a862a320f5dc96",
+      "request_fingerprint": "419f7e4cbd9e937a101365d612e00cda38039832c89853044da5891614e05916",
+      "state": "failed",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "7f10e02b-d78b-4029-a9a8-62a320f5dc96",
+      "reason": "output_limit",
+      "exit_code": null,
+      "stdout_bytes": 131072,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "add7e36fbc8048e2b1b4626c3520e260",
+      "request_fingerprint": "da9c56f1cc9b645b71b52d580572a9785e5b55eafa3199e3e0dba374059e6638",
+      "state": "failed",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "add7e36f-bc80-48e2-b1b4-626c3520e260",
+      "reason": "timed_out",
+      "exit_code": null,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "job_id": "663d1456b3644d1382469fa593ee9aa4",
+      "request_fingerprint": "538b687725807afeaaacf2b2a33aff95c47a8602aacd31e4714c3a4ed9b60fcf",
+      "state": "cancelled",
+      "result_expired": false,
+      "gc_state": "retained",
+      "sandbox_id": "663d1456-b364-4d13-8246-9fa593ee9aa4",
+      "reason": "cancelled",
+      "exit_code": null,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    }
+  ],
+  "runtime_code_sha256": {
+    "src/yipilot/app.py": "03ea98160334366a09248b89fe5e9f7f93ee7fe7aab678b5bdca95979279d7ca",
+    "src/yipilot/__init__.py": "91447944015cec709e8aa7655f7e9d64e1e4508e7023a57fe3746911c0fc6fed",
+    "src/yipilot/agent/agent_runtime.py": "70ff065ffeec5b83e986a9878991da387e1f70a323bd5c1251140753ea5da253",
+    "src/yipilot/agent/model_planner.py": "c608e805796f48c6028d95bb1b6138eb55c647a3cc6293cda0e2cf7101e25dd3",
+    "src/yipilot/agent/planner.py": "de04c0287e566bbb8766daf057809c3a1c897fc336b876ef03d2e17943d2effb",
+    "src/yipilot/agent/ports.py": "1e02c4905bf665e73093d7520f298c8fb441da5c2379a4c811e31eeedcef4744",
+    "src/yipilot/agent/__init__.py": "c70d7d31f47d4c4c5a2a2c007bdbd3a1ff7f78d13bae688ef1866c75d8a026c4",
+    "src/yipilot/domain/errors.py": "b3ede63a36504252ce62450fe675bb8483aea30f1bcf2398cfdcb0d937116c77",
+    "src/yipilot/domain/execution.py": "28c69cd71598dd0f1c9e9a7f689ecfa9e120f933ade8595b1a4535893fe43308",
+    "src/yipilot/domain/model.py": "dedbfe2624145583f23159f81b84151a3b27ffd9a1200f8c66c8c926958e9389",
+    "src/yipilot/domain/models.py": "9df3abc78480b0a4786f137462aba5bd8126111f8bc66e52fdf2a00b030fc856",
+    "src/yipilot/domain/patch_proposal.py": "125d6b5a65b8fc8d1ba4a2708c0a7b4653d596e8785cf45ef5ba8013f87b4cfc",
+    "src/yipilot/domain/provider.py": "e32ca16554c134d7e811084664e03cfcf0970fc3390433fd0a40656230560802",
+    "src/yipilot/domain/remote_execution.py": "440db128d93468cbf571975e91dcf4c5ad40d46f0862a12dd5d62f1e2dbbfcdd",
+    "src/yipilot/domain/sandbox.py": "8cffcc0bf60831a75229a52ce6003fad84a62e0df0f0c0712c76605cfa3b7bb8",
+    "src/yipilot/domain/specification.py": "ba98e757f8eda1e16919543b6aada0efe49ce5b73fae8fc6823b543796b36d21",
+    "src/yipilot/harness/code.py": "dbc6e4548a00360de4c9168cb72e981f075568a7d209cce30eda95ce37057301",
+    "src/yipilot/harness/git_workspace.py": "549bb9409406bb39c69fd056f9c6eb4e4fee4528ee0e007597c58e8ddf8fb2fc",
+    "src/yipilot/harness/models.py": "fb7b24613b44f399f155203eef4f87855c501ee5b33899af9a7bc28c2048f5e5",
+    "src/yipilot/harness/quality.py": "b1f9a3e8c16d305d19e771662804fe02dd24f99d359f23cc269697b88b163443",
+    "src/yipilot/harness/report_store.py": "fdc125b235ec0e3eabe7d6f87cc899454808efdda7f44ca45da3214d69c05c09",
+    "src/yipilot/harness/task_integrity.py": "37cecd961c744b6d1bfe5c50b32f6babf8aaac6d7bb0cb44bd1a19e943925ff9",
+    "src/yipilot/harness/__init__.py": "60edea6ab231a19793efb55a0abfedc4af7054b2955b9fa8ebf7ad1ef838830a",
+    "src/yipilot/models/fixtures.py": "1673ca0c5c9bd81134265c68818fc275306520cebd4a29810559ecaef2b90df4",
+    "src/yipilot/models/openai_compatible.py": "7566d0fbeaa7bdda94c22334b914b4927244989bc992e1e7e5845f2109c6c746",
+    "src/yipilot/models/secrets.py": "9f15616cd25d686a422069b7e65e8fb820babb4897e5b661ce871cce1fbf9690",
+    "src/yipilot/models/selection.py": "6bb780810da9b639e5888e9b1184b5e7dc0ea736e5644ca5eae7904cf7b8817c",
+    "src/yipilot/models/service.py": "ff8037bed5334181f653ec103e9edaed0073b1908dafd862245ea2014b4a9768",
+    "src/yipilot/models/store.py": "3603dacb48f24500f1bf941807849f40862f2b85858d0831f2aea2163ace01b4",
+    "src/yipilot/models/__init__.py": "a068fbfcf75d5b7aacfc94fc5db905f276f58dcfa5376437c09572255aa4e2c2",
+    "src/yipilot/persistence/approval_store.py": "5a7927a0cb42db30ce49bdce1ddaa695910111fe7a98ad396f75219e2518f6cd",
+    "src/yipilot/persistence/artifact_store.py": "13b5b12a8bd6f4ec96953c88d9d49f1d69b6d1242161f73b8ba1a1f763ad0b3c",
+    "src/yipilot/persistence/database.py": "de54fb14d1812fc47c6a98853187a4ee90960d7784c6c8c1f917d5582b5a382e",
+    "src/yipilot/persistence/event_journal.py": "8841c2cb1f8d3de589eda81a37a9bed45dd15c13aaccd6bc0de8f0fcea820ea5",
+    "src/yipilot/persistence/filesystem.py": "10367af30eac1e514f7519cf03d1d715e896b997233ca1b54bcb443188bb2ef9",
+    "src/yipilot/persistence/migration.py": "aa73eff4e3ee81a8bfd551fa80f3ba28347fb522868210000f5f8537d4b496bc",
+    "src/yipilot/persistence/ownership.py": "e50c804beb8636257bdcdff6ef993b5f98e5dac784ceb768f458f58445f7fa1b",
+    "src/yipilot/persistence/runtime_evidence.py": "b03ca96df24a489624f9e391bd349da3c9e8ba004386bfe0557b84619ec63950",
+    "src/yipilot/persistence/task_store.py": "563bffec5238140192b91775e7661ffb431c9af62614faf70007cd25e79e64a5",
+    "src/yipilot/persistence/tool_run_store.py": "22c51f0aa3a642b6976b539deacd23b51a104eeb462910f0f8d3dfb59732abec",
+    "src/yipilot/persistence/__init__.py": "aa41830708efe995ff234223c6a399b84e2443102439f97a615f33ba88fda9f8",
+    "src/yipilot/runner/disk.py": "218cc6a394f1a5f6d2c8831c70e5e0a3a41f3243cfa2a28057a18a55e50b184d",
+    "src/yipilot/runner/http.py": "3ca66f4e24ea7150a12dab950dbca885d50fbc3d80690f5c4ccf943d074f0aea",
+    "src/yipilot/runner/runtime.py": "f2c6084fa207e9cd69ed5a1016ff947dc6f4d4497b36820f7b7fe103f7d5ea7b",
+    "src/yipilot/runner/service.py": "4c3eab353a366c76deaa99fd3406b14bc0b4858f4a19195c866f38de6d191b3f",
+    "src/yipilot/runner/store.py": "8c06a04f9fd2e4b4dd57cd631ffe94f914fe23cdb65406d2ca2923b15f129026",
+    "src/yipilot/runner/__init__.py": "01486c33b57a3b9e053b441487d704e5067783d4f931daed08192c6dfd9b7379",
+    "src/yipilot/security/approval.py": "3f1c26471dabfa39373425c19f192e94473fb285ed47a7162a24011cbc9bd939",
+    "src/yipilot/security/paths.py": "cb1803d0a3b6b841f5a58d9b623f01a842894034c62b538c8bc0f20ec08a6ad8",
+    "src/yipilot/security/redaction.py": "990a9d6c033cbfeb5cd01f8871cb8ca91566e3b1052f895a52e94f322faaa2b6",
+    "src/yipilot/security/__init__.py": "8d38ec83b50b1442b1855a6cff0cc6a47c119f953b1a74d7bb6ea8e4a7ee70e7",
+    "src/yipilot/transport/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/yipilot/transport/cli/app.py": "52b38151aa62d1a30d05ea346c72a4f15306ed92647de34ce9621628369d296d",
+    "src/yipilot/transport/cli/events.py": "0a8afb31f1d4afd7024da3640e678a2af40df04056ef3a4acc56e5e9566d0f1d",
+    "src/yipilot/transport/cli/interactive.py": "10432489fc99512eea1d8a88691f84b576b4d251ab95a4df96a4f9aeb84936d0",
+    "src/yipilot/transport/cli/specification.py": "c4f0ad3ffafd53be249c3151302f2b9473dbc5e438c4635611c2cdba46b7c9b9",
+    "src/yipilot/transport/cli/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/yipilot/workflow/code_service.py": "0b6b28e330329f0c172beb88da64dc9302e4270cfb8579a8ef7f92494721007d",
+    "src/yipilot/workflow/project_service.py": "827229f4742508436d5e6ad1d7169c311392ebec4c445a43e9ed704835506de7",
+    "src/yipilot/workflow/quality_artifacts.py": "66ab7d2be1e38185476339c5fec5b61819f694c454303da8f37f65460c7c342a",
+    "src/yipilot/workflow/recovery_service.py": "95cec7dbdb414e4fd96e0e20987c0e3fedb4e802b4533a31ee497552b37abbe9",
+    "src/yipilot/workflow/repair_service.py": "e515bb5322271081e091b5362d8e6eba32729d9f99a4b79e98db838cac549f3e",
+    "src/yipilot/workflow/run_executor.py": "44e9aa76852376769152821beec61ae1e72dd6adf2a34163fe50ead8bb302ccf",
+    "src/yipilot/workflow/sandbox_application.py": "d239ebcff14be35acab6e6588c32d603d30acb174735af14d393e213a0bde49c",
+    "src/yipilot/workflow/sandbox_verification.py": "30bbaf303952555023da7376632246869e826522cc582def7d4bad51ade4266c",
+    "src/yipilot/workflow/specification_service.py": "e38b947e446e10826de3d6f5d2e9d85f83495cfd4142ed24cb751ac394870eec",
+    "src/yipilot/workflow/verification_service.py": "a049bc9688bea8e50f56aba74cce38b45e52c4f27fa6b1249dd8b76c3312ad74",
+    "src/yipilot/workflow/__init__.py": "4047687b02a5541210633959b97a516110b3c652824ded22a7be912a16c939a1",
+    "src/yipilot/workspace/docker_worker.py": "5d9eeacd47302f50cf3179594de639bad9bbafc9818f0bf390006a23bc2be71b",
+    "src/yipilot/workspace/executors.py": "1d81386e768bd4c61a964a5618fdef281bbff50f7ef917b856300189378cfdec",
+    "src/yipilot/workspace/git_runner.py": "d6f42ab31794da54b8459c0e85d377e60d65f797d0a2478e8b38fc514939d35b",
+    "src/yipilot/workspace/remote_bundle.py": "c98934fb6268629ef23dbfad04a8b17426682488b379d9c6825ed0b27681bd7c",
+    "src/yipilot/workspace/repo_service.py": "b6756b1fcc59eb46a01058619ee75fa6608e11953ce0ec34fe613a28f05394ea",
+    "src/yipilot/workspace/runner_client.py": "b897aeb5065aab0451833a4d94591bcd8d6ed090f3678dba88c973940551bdbd",
+    "src/yipilot/workspace/sandbox_apply.py": "9d60e5597f39dfabbc557e8fc808b6e640b2db076340a02337eb9be9ac0a02d0",
+    "src/yipilot/workspace/sandbox_output.py": "8285a558c9aca63bc134b083fbad8fd4f67ccf5019a5fe285f14a6769d822173",
+    "src/yipilot/workspace/sandbox_sources.py": "ebb3a3403944f0fed822ad55b8ddb777a9b015c2fff4530fc4adc4cad9b757df",
+    "src/yipilot/workspace/tool_gateway.py": "a6330f59580b99ff38f288a1c7940721c4b72ea08de97742324f0d0f9cc6ec5b",
+    "src/yipilot/workspace/tool_registry.py": "10f587b6fa4f505f857719250b3b5bf99715c77200efc6862b64a908fe9433e8",
+    "src/yipilot/workspace/workspace_service.py": "63e05f24aa4ef335fdb9cfc4e0d48354215297df159bce13a476fc28a0d43fdd",
+    "src/yipilot/workspace/__init__.py": "7276eb1be5e2c59919ef2aa71c5d8cf4680f3cb18667c69ef50ab14af91aa699"
+  },
+  "deployment_assets_sha256": {
+    "pyproject.toml": "93bb7f7e7e5ab9bdea0fc215f5d62363938056293f6451935d6238951174e7b1",
+    "uv.lock": "bff8128b053e57f8e3d1e6777cfd0ed519052f400c924356b5fb81ed082c641a",
+    "deploy/runner/acceptance.py": "402fc024075d7fc6579de2457b54a1ca8c6d10a27ab03e665f68de116fd6f82b",
+    "deploy/runner/config.toml.example": "40fbce88ffc9be01438008101f212afdecafc050e159a5a22602e37a2b00b996",
+    "deploy/runner/README.md": "caabffcb74af4b264626d0061836e65075d3f1ffdb68fa3530d6cea1c5e2de01",
+    "deploy/runner/reliability.py": "71fda3bfb1c84cdb2543d5714acdd4c37a0a45dad94216d2964b6a4960ab6c1d",
+    "deploy/runner/yipilot-runner.service": "00ae3511989838786fa73b7e74b37a0bb19f6d622b0f4fcdb1a71512fa51b372"
+  },
+  "profile_build": {
+    "upstream_server": "1.1.1",
+    "source_sha256": {
+      "api/proxy.py": "09e9ffaa83ec8894322a044a033d0e3d6fa683164b45cc53fd8245e44dc9ca93",
+      "services/docker/container_ops.py": "fb852b4f88142e814ae4ef3f45503553e8f3f468bfab839cfff6f8cb165f1b13",
+      "services/docker/docker_service.py": "b688b393a1ca24b63b6ffbcaf125cafb4445ef720d10f5264da08db0d3a0a451",
+      "services/docker/networking.py": "ced0f2189c1025111dd7be87e504e85cd467b0638b73188c425814d8e5ade415",
+      "services/docker/runtime.py": "84222fb1e69257ec433469efa0c5da8eaad220e9ed971e907677cbff2ae499be"
+    },
+    "assets_sha256": {
+      "server.patch": "4dc638e9cb66da7410193800891663658115cd8e81775ec7335adb289b7bc790",
+      "policy.py": "3eaf54538ce95e438cb16d0c44a30cf5fb42f91baf1b2eb4910e46c2e4befe06",
+      "control.py": "1f3ca34fc48ae3461a9f692321d2a9dba715aaba12b447fad10b20863d094a6d",
+      "build.py": "90f6c23c0eb7c5459afcef276a14a7c42a8ba0cdb57c56647744ae534235a263"
+    },
+    "patched_sha256": {
+      "api/proxy.py": "3db9709f0cc0723a95f67a178e2f5fdda5fa4a0eaef58e11c77e86f71faf0be1",
+      "services/docker/container_ops.py": "4e95325a8bb5e0c20862bfe686ddc10f31a42252b514951e613808db68aed829",
+      "services/docker/docker_service.py": "dceefad416de709852dc298d1e368f8716d0ac6d96d6b6e9d9de94ce0befda42",
+      "services/docker/networking.py": "32b3cb8ef7f8fb5bc807128874b42466354ae5390a0d35d7cc5217062699f73d",
+      "services/docker/runtime.py": "2ea4a9cffca4fdb8cb87612fb86c2467e9172d31a5731fc699255c060c04b3a7",
+      "yipilot_profile.py": "3eaf54538ce95e438cb16d0c44a30cf5fb42f91baf1b2eb4910e46c2e4befe06",
+      "yipilot_control.py": "1f3ca34fc48ae3461a9f692321d2a9dba715aaba12b447fad10b20863d094a6d"
+    }
+  },
+  "runtime": {
+    "python": "3.11.15",
+    "sdk": "1.1.1"
+  },
+  "database": {
+    "schema_version": 2,
+    "ledger_jobs": 77,
+    "retained_payloads": 32,
+    "expired_tombstones": 45,
+    "integrity": "ok",
+    "drained_restart_preserved_rows": true
+  },
+  "budget": {
+    "max_slots": 4,
+    "memory_bytes": 805306368,
+    "cpu_millis": 1500,
+    "disk_reserve": 4294967296,
+    "per_job_work_bytes": 268435456
+  },
+  "services": {
+    "runner": "inactive, disabled",
+    "profile": "inactive, disabled",
+    "original": "healthy, unchanged config"
+  },
+  "containers": 0,
+  "volumes": 0,
+  "job_work_mounts": 0,
+  "dependencies_consistent": true,
+  "tested_and_final_packaged_runtime_bytes_identical": true,
+  "four_light_slot_capacity_validated": true,
+  "production_ready": false,
+  "business_cutover": false,
+  "same_project_business_concurrency_validated": false
+}

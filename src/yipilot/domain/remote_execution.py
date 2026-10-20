@@ -86,6 +86,7 @@ class JobStatus(RemoteModel):
     cancel_requested: bool = False
     sandbox_id: SandboxId | None = None
     error_code: str | None = None
+    result_expired: bool = False
 
 
 class JobResult(RemoteModel):

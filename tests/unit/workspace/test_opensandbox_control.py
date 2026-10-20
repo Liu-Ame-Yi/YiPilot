@@ -4,11 +4,13 @@ import asyncio
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+from uuid import UUID
 
 import pytest
 
@@ -17,6 +19,40 @@ spec = importlib.util.spec_from_file_location("profile_control", ASSETS / "contr
 assert spec and spec.loader
 control = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(control)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux creation protocol uses POSIX flock")
+def test_creation_lease_is_single_use_and_revocation_prevents_late_effects(tmp_path, monkeypatch):
+    import fcntl
+
+    job = "a" * 32
+    root = tmp_path / job
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr(control, "JOBS_ROOT", tmp_path)
+    original = Path.lstat
+
+    def owned_stat(path, *args, **kwargs):
+        result = original(path, *args, **kwargs)
+        values = list(result)
+        values[4] = 0
+        return os.stat_result(values)
+
+    monkeypatch.setattr(Path, "lstat", owned_stat)
+    path = root / "runtime.json"
+    value = {"job_id": job, "sandbox_id": str(UUID(job)), "state": "authorized"}
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    with control.creation_guard(job):
+        assert json.loads(path.read_text())["state"] == "consumed"
+        with (root / "runtime.lock").open("a+b") as lock, pytest.raises(BlockingIOError):
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert json.loads(path.read_text())["state"] == "settled"
+    with pytest.raises(ValueError, match="consumed"), control.creation_guard(job):
+        pytest.fail("Duplicate create was permitted")
+    value["state"] = "revoked"
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="revoked"), control.creation_guard(job):
+        pytest.fail("Late create after cleanup was permitted")
 
 
 class Request:

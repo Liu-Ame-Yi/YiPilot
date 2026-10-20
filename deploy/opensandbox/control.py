@@ -6,9 +6,13 @@ import os
 import re
 import subprocess
 import tarfile
+from contextlib import contextmanager
+from pathlib import Path
+from uuid import UUID
 
 CONTROL_PORT = 443
 TASK_UID = 10001
+JOBS_ROOT = Path("/srv/yipilot-runner/jobs")
 MAX_COMMAND_BYTES = 64 * 1024
 WORKER_PREFIX = "v1/filesystem/10001/10001/"
 FILESYSTEM_ROUTES = {
@@ -22,6 +26,51 @@ add chain inet yipilot_control output { type filter hook output priority -300; p
 add rule inet yipilot_control output meta skuid 10001 tcp dport { 53, 443, 8080, 18080, 44772 } reject with tcp reset
 add rule inet yipilot_control output meta skuid 10001 udp dport { 53, 443, 8080, 18080, 44772 } reject
 """
+
+
+@contextmanager
+def creation_guard(job_id):
+    import fcntl
+
+    root = JOBS_ROOT / job_id
+    if re.fullmatch(r"[0-9a-f]{32}", job_id) is None:
+        raise ValueError("Invalid Job identity")
+    # The validated work directory has a root-private parent; task code cannot reach this lease.
+    with (root / "runtime.lock").open("a+b") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            path = root / "runtime.json"
+            metadata = path.lstat()
+            if (not path.is_file() or path.is_symlink() or metadata.st_uid != 0
+                    or metadata.st_mode & 0o077 or metadata.st_nlink != 1 or metadata.st_size > 4096):
+                raise ValueError("Private host creation lease required")
+            expected = {"job_id": job_id, "sandbox_id": str(UUID(job_id)), "state": "authorized"}
+            if json.loads(path.read_text()) != expected:
+                raise ValueError("Creation lease is consumed or revoked")
+            expected["state"] = "consumed"
+            publish_lease(root, expected)
+            try:
+                yield
+            finally:
+                expected["state"] = "settled"
+                publish_lease(root, expected)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def publish_lease(root, value):
+    temporary = root / "runtime.partial"
+    with temporary.open("w") as output:
+        os.chmod(temporary, 0o600)
+        json.dump(value, output)
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, root / "runtime.json")
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def protect_namespace(container, expected_network):

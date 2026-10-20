@@ -77,7 +77,7 @@ OpenSandbox Server → Docker 沙箱
 
 1. 基于真实 Runner，依次测 1、2、4 个活跃沙箱；记录主机/容器内存峰值、OOM、耗时、控制面响应、磁盘、吞吐和清理残留。压力上限以不挤爆宿主为准，准入不足时排队。
 2. 四个是本机轻量任务的容量目标，不是所有任务的保证。调度同时检查槽位、资源预算和磁盘；pytest/Ruff/mypy 等子执行共用全局额度。既有约 1 GiB 的验证预算不能偷偷降小以凑并发。
-3. 把覆盖长执行的项目锁缩为 Run/Job 所有权与共享配置/最终应用的短临界区；远程等待不占整个项目锁。同仓库任务使用独立快照，同一目标的最终应用串行并重新核对基线。保留数据库迁移和配置操作的排空协调。
+3. 项目锁缩短随第四阶段实际调用迁移一并交付，避免在旧业务尚未替换时破坏其执行所有权。目标是远程等待不占整个项目锁；同仓库任务使用独立快照，同一目标的最终应用串行并重新核对基线，迁移/配置仍协调排空。Runner 的四并发不等于同项目业务已并发。
 4. 注入重复提交、提交响应丢失、本地断线、Runner 重启、超时、取消、扫描/下载中断、销毁失败；核对同一请求不重复执行，未知结局不自动重放，清理未完成不错误归还额度。
 5. Runner 重启先对账自己已登记的 attempt 与运行时；结果不确定时停止并显式记录 uncertain。准确回收过期 Job 产物，不做全局 Docker prune。
 
@@ -87,7 +87,7 @@ OpenSandbox Server → Docker 沙箱
 
 ### 第四阶段：迁移全部调用并删除旧运行实现
 
-1. 在 `ProjectApplication` 统一装配 RunnerClient；迁移应用、验证、有限 repair、恢复、doctor 与全部 CLI 调用，清除上层 Docker 细节和重复生命周期编排。
+1. 在 `ProjectApplication` 统一装配 RunnerClient；迁移应用、验证、有限 repair、恢复、doctor 与全部 CLI 调用，清除上层 Docker 细节和重复生命周期编排。同时将长项目锁改为 Run/Job 所有权和共享写入/最终应用的短临界区，保留基线重查和迁移排空。
 2. 将本地 Docker inspect 证据依赖改为版本化远程执行事实与本地字节校验；保留审批、源码限制、diff 和可信 Git 应用能力。不伪造旧 Windows backend、`network=none` 或 Docker container ID 来凑 v1 schema。
 3. 历史 v1 记录只读可查；新请求使用新合同与审批指纹，旧审批不能授权新 profile。避免直接改 `SandboxAssociation` 而连带重写所有 SourceManifest；为新增持久化字段做真实版本迁移和备份/失败检查。
 4. 更新相关 fixtures、架构约束与测试；删除旧 `DockerSandboxWorker` 的实时执行、无调用包装和失效分支。保留仍为 Git/可信本地工具服务的 `LocalCommandRunner`。

@@ -45,16 +45,27 @@
                          [normalize_container_port_spec(p) for p in exposed_ports]
 --- a/services/docker/docker_service.py
 +++ b/services/docker/docker_service.py
-@@ -20,6 +20,8 @@
+@@ -20,6 +20,10 @@
  """
  
  from __future__ import annotations
 +
 +from opensandbox_server.yipilot_profile import validate_config, validate_request, validate_resources
++from opensandbox_server.yipilot_control import creation_guard
++from uuid import UUID
  
  import asyncio
  import inspect
-@@ -612,6 +614,14 @@
+@@ -604,7 +608,7 @@
+         self,
+         request: CreateSandboxRequest,
+     ) -> tuple[str, datetime, Optional[datetime]]:
+-        sandbox_id = self.generate_sandbox_id()
++        sandbox_id = str(UUID(request.metadata["yipilot.job_id"]))
+         created_at = datetime.now(timezone.utc)
+         expires_at = None
+         if request.timeout is not None:
+@@ -612,6 +616,14 @@
          return sandbox_id, created_at, expires_at
  
      async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
@@ -69,6 +80,24 @@
          if request.lifecycle is not None:
              raise HTTPException(
                  status_code=status.HTTP_400_BAD_REQUEST,
+@@ -659,11 +671,12 @@
+ 
+         def _run() -> None:
+             try:
+-                result = self._provision_sandbox(
+-                    sandbox_id, request, created_at, expires_at, resource_limits,
+-                    pvc_inspect_cache, auto_created_volumes,
+-                    sandbox_env=sandbox_env, egress_env=egress_env,
+-                )
++                with creation_guard(request.metadata["yipilot.job_id"]):
++                    result = self._provision_sandbox(
++                        sandbox_id, request, created_at, expires_at, resource_limits,
++                        pvc_inspect_cache, auto_created_volumes,
++                        sandbox_env=sandbox_env, egress_env=egress_env,
++                    )
+                 loop.call_soon_threadsafe(future.set_result, result)
+             except BaseException as exc:
+                 # _provision_sandbox only removes these when it fails inside its
 --- a/services/docker/networking.py
 +++ b/services/docker/networking.py
 @@ -20,6 +20,9 @@

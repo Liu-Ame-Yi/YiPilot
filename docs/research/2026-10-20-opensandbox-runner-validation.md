@@ -2,6 +2,8 @@
 
 日期：2026-10-20（Asia/Shanghai）。状态：**Implemented 独立远程 Job 闭环，尚未切换正式业务。** 在 [v2 固定隔离 profile](2026-10-20-opensandbox-control-isolation.md)上新增耐久 Runner、本地 HTTP 客户端和冻结输入/输出包，用自有 Python 样例完成真实服务器验收。[部署及接口说明](../../deploy/runner/README.md)。
 
+本文件保留第二阶段的当时记录。创建归属、磁盘上限、保留期、故障和四并发已有[第三阶段更新](2026-10-20-opensandbox-reliability-validation.md)；下文首版限制和默认预算不代表当前候选。
+
 ## 实际修改与整合
 
 | 位置 | 职责 |

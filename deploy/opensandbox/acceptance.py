@@ -8,6 +8,7 @@ import os
 import secrets
 from datetime import timedelta
 from pathlib import Path
+from uuid import UUID
 
 import docker
 import httpx
@@ -30,6 +31,9 @@ async def run(box, code, **options):
 def job_directory(job):
     root = JOBS_ROOT / job
     root.mkdir(mode=0o700)
+    lease = root / "runtime.json"
+    lease.write_text(json.dumps({"job_id": job, "sandbox_id": str(UUID(job)), "state": "authorized"}))
+    lease.chmod(0o600)
     for name in ("input", "artifacts", "work"):
         directory = root / name
         directory.mkdir(mode=0o700)

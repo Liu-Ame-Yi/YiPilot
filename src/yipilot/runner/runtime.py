@@ -10,10 +10,27 @@ import time
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from uuid import UUID
+
+from filelock import FileLock
 
 from yipilot.domain.remote_execution import IMAGE, PROFILE, JobRequest
+from yipilot.persistence.filesystem import atomic_write_bytes
+from yipilot.runner import disk
+from yipilot.runner.service import sync_directory
 from yipilot.runner.store import JobStore
 from yipilot.security.paths import require_plain_path
+
+JOBS_ROOT = Path("/srv/yipilot-runner/jobs")
+
+
+def lease(job_id: str, state: str) -> None:
+    root = JOBS_ROOT / job_id
+    require_plain_path(root)
+    path = root / "runtime.json"
+    atomic_write_bytes(path, json.dumps({"job_id": job_id, "sandbox_id": str(UUID(job_id)), "state": state}).encode())
+    path.chmod(0o600)
+    sync_directory(root)
 
 
 def docker(*arguments: str) -> Any:
@@ -31,7 +48,18 @@ def writer_group(pid: int) -> Path:
 class OpenSandboxRuntime:
     def __init__(self, connection: Any, *, disk_reserve: int = 4 * 1024**3) -> None:
         self.connection, self.disk_reserve = connection, disk_reserve
-        self._groups: dict[str, Path] = {}
+        self._groups: dict[str, set[Path]] = {}
+
+    def prepare_work(self, job_id: str, work: Path, store: JobStore) -> None:
+        if work != JOBS_ROOT / job_id / "work":
+            raise ValueError("Only the owned Job work directory may be prepared")
+        store.update(job_id, sandbox_id=str(UUID(job_id)))
+        with FileLock(work.parent / "runtime.lock", timeout=0):
+            lease(job_id, "authorized")
+        disk.prepare(job_id, work)
+
+    def release_work(self, job_id: str, work: Path) -> None:
+        disk.release(job_id, work)
 
     def execute(self, job_id: str, request: JobRequest, work: Path, store: JobStore) -> tuple[str, int | None, bytes, bytes]:
         return asyncio.run(self._execute(job_id, request, work, store))
@@ -75,12 +103,13 @@ class OpenSandboxRuntime:
                 network_policy=NetworkPolicy.model_validate({"defaultAction": "deny", "egress": [{"action": "deny", "target": "*"}]}),
                 volumes=[Volume(name="work", host=Host(path=str(work)), mountPath="/workspace")],
                 connection_config=self.connection)
-            store.update(job_id, sandbox_id=box.id)
+            if box.id != store.get(job_id)[1].sandbox_id:
+                raise ValueError("Server creation identity differs from reserved identity")
             await box.check_ready(timeout=timedelta(seconds=30), polling_interval=timedelta(milliseconds=200))
             facts = docker("inspect", "sandbox-" + box.id)[0]
             if facts["Config"]["Labels"].get("yipilot.job_id") != job_id or not facts["State"]["Running"]:
                 raise ValueError("Runtime ownership differs")
-            self._groups[job_id] = writer_group(facts["State"]["Pid"])
+            self._groups[job_id] = {writer_group(facts["State"]["Pid"])}
             if store.get(job_id)[1].cancel_requested:
                 return "cancelled", None, b"", b""
             handlers = ExecutionHandlers(on_stdout=lambda msg: output("stdout", msg),
@@ -96,7 +125,7 @@ class OpenSandboxRuntime:
                 if time.monotonic() >= deadline:
                     reason = "timed_out"
                     break
-                if shutil.disk_usage(work).free < self.disk_reserve:
+                if shutil.disk_usage(work.parent).free < self.disk_reserve:
                     reason = "runtime_error"
                     break
                 await asyncio.sleep(.05)
@@ -125,6 +154,16 @@ class OpenSandboxRuntime:
             raise ValueError("Creation outcome unknown; retain budget for reconciliation")
         if re.fullmatch(r"[0-9a-f-]{36}", sandbox_id) is None:
             raise ValueError("Invalid sandbox identity")
+        with FileLock(JOBS_ROOT / job_id / "runtime.lock", timeout=45):
+            record = JOBS_ROOT / job_id / "runtime.json"
+            require_plain_path(record)
+            unsettled = record.exists() and json.loads(record.read_text())["state"] in {"consumed", "revoked_unsettled"}
+            lease(job_id, "revoked_unsettled" if unsettled else "revoked")
+            self._remove(job_id, sandbox_id)
+            if unsettled:
+                raise ValueError("Server creation lost its completion proof; retain reservation")
+
+    def _remove(self, job_id: str, sandbox_id: str) -> None:
         names = subprocess.run(["docker", "ps", "-aq", "--filter", "label=yipilot.job_id=" + job_id],
                                check=True, capture_output=True, timeout=15).stdout.decode().split()
         if names:
@@ -132,25 +171,57 @@ class OpenSandboxRuntime:
             if len(facts) != 1 or facts[0]["Name"] != "/sandbox-" + sandbox_id:
                 raise ValueError("Unexpected containers for Job")
             if facts[0]["State"]["Running"]:
-                self._groups[job_id] = writer_group(facts[0]["State"]["Pid"])
+                self._groups.setdefault(job_id, set()).add(writer_group(facts[0]["State"]["Pid"]))
+        owned = subprocess.run(["docker", "ps", "-aq", "--filter", "name=^/sandbox-" + sandbox_id + "$",
+                                "--filter", "name=^/sandbox-egress-" + sandbox_id + "$"],
+                               check=True, capture_output=True, timeout=15).stdout.decode().split()
+        facts = docker("inspect", *owned) if owned else []
+        for container in facts:
+            labels = container["Config"]["Labels"]
+            primary = (container["Name"] == "/sandbox-" + sandbox_id and labels.get("yipilot.job_id") == job_id
+                       and labels.get("yipilot.profile") == PROFILE)
+            sidecar = (container["Name"] == "/sandbox-egress-" + sandbox_id
+                       and labels.get("opensandbox.io/egress-sidecar-for") == sandbox_id)
+            if not (primary or sidecar):
+                raise ValueError("Container ownership differs")
+            if container["State"]["Running"]:
+                self._groups.setdefault(job_id, set()).add(writer_group(container["State"]["Pid"]))
+        volume_name = "opensandbox-runtime-" + sandbox_id
+        volumes = subprocess.run(["docker", "volume", "ls", "-q", "--filter", "name=^" + volume_name + "$"],
+                                 check=True, capture_output=True, timeout=15).stdout.decode().split()
+        if volumes and (volumes != [volume_name] or
+                        docker("volume", "inspect", volume_name)[0].get("Labels", {}).get("opensandbox.io/volume-managed-by") != "server"):
+            raise ValueError("Volume ownership differs")
         try:
             asyncio.run(self._kill(sandbox_id))
         except Exception:  # noqa: BLE001, S110 -- Verify host absence before accepting an earlier deletion.
             pass
+        # The API cannot delete a sidecar-only creation; verified IDs remain safe during a server outage.
+        for container in facts:
+            if subprocess.run(["docker", "ps", "-aq", "--filter", "id=" + container["Id"]],
+                              check=True, capture_output=True, timeout=15).stdout.strip():
+                subprocess.run(["docker", "rm", "-f", container["Id"]], check=True, capture_output=True, timeout=30)
+        if volumes and subprocess.run(["docker", "volume", "ls", "-q", "--filter", "name=^" + volume_name + "$"],
+                                      check=True, capture_output=True, timeout=15).stdout.strip():
+            subprocess.run(["docker", "volume", "rm", volume_name], check=True, capture_output=True, timeout=15)
         remaining = subprocess.run(["docker", "ps", "-aq", "--filter", "name=sandbox-" + sandbox_id,
                                     "--filter", "name=sandbox-egress-" + sandbox_id],
                                    check=True, capture_output=True, timeout=15).stdout.strip()
-        volumes = subprocess.run(["docker", "volume", "ls", "-q", "--filter", "name=opensandbox-runtime-" + sandbox_id],
+        volume_residue = subprocess.run(["docker", "volume", "ls", "-q", "--filter", "name=opensandbox-runtime-" + sandbox_id],
                                  check=True, capture_output=True, timeout=15).stdout.strip()
-        group = self._groups.pop(job_id, None)
-        if remaining or volumes or (group is not None and group.exists()
-                                   and "populated 1" in (group / "cgroup.events").read_text()):
+        groups = self._groups.get(job_id, set())
+        if remaining or volume_residue or any(group.exists() and "populated 1" in (group / "cgroup.events").read_text() for group in groups):
             raise ValueError("Writers or resources remain")
+        self._groups.pop(job_id, None)
 
     async def _kill(self, sandbox_id: str) -> None:
         from opensandbox import SandboxManager  # type: ignore[import-not-found]
-        manager = await SandboxManager.create(self.connection)
+        from opensandbox.transport import RetryPolicy  # type: ignore[import-not-found]
+        # A paused API must reach host cleanup before SDK retries consume the cancellation budget.
+        connection = self.connection.model_copy(update={"request_timeout": timedelta(seconds=5),
+                                                       "retry_policy": RetryPolicy.disabled()})
+        manager = await SandboxManager.create(connection)
         try:
-            await asyncio.wait_for(manager.kill_sandbox(sandbox_id), timeout=30)
+            await asyncio.wait_for(manager.kill_sandbox(sandbox_id), timeout=10)
         finally:
-            await manager.close()
+            await asyncio.wait_for(manager.close(), timeout=5)

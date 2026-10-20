@@ -25,7 +25,7 @@
 
 2026-10-20 已授权开始第一阶段；实际代码基线修复、隔离实测和 G1 剩余门槛见[第一阶段记录](research/2026-10-20-opensandbox-phase1-validation.md)。
 
-最新的 [Runner 闭环记录](research/2026-10-20-opensandbox-runner-validation.md)记录独立远程 Job 和本地结果校验；隔离依据仍见 [v2 实测](research/2026-10-20-opensandbox-control-isolation.md)，[v1 失败记录](research/2026-10-20-opensandbox-profile-validation.md)保留历史证据。业务全面替换、完整故障和四并发尚未完成，尚未放行正式不可信任务。
+最新的[第三阶段记录](research/2026-10-20-opensandbox-reliability-validation.md)包含真实 1/2/4 轻任务、选定故障恢复、磁盘上限与保留期；[Runner 闭环记录](research/2026-10-20-opensandbox-runner-validation.md)保留第二阶段范围。隔离依据见 [v2 实测](research/2026-10-20-opensandbox-control-isolation.md)，[v1 失败记录](research/2026-10-20-opensandbox-profile-validation.md)保留历史证据。业务全面替换、项目锁和重型负载尚未完成，尚未放行正式不可信任务。
 
 | 位置 | 如何使用 |
 | --- | --- |

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import sqlite3
 import stat
 import threading
 import time
@@ -10,6 +11,7 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import UUID
 
 import httpx
 import pytest
@@ -26,6 +28,7 @@ from yipilot.domain.sandbox import SourceFile
 from yipilot.runner.http import make_server
 from yipilot.runner.runtime import OpenSandboxRuntime
 from yipilot.runner.service import Runner
+from yipilot.runner.store import JobStore
 from yipilot.workspace.remote_bundle import (
     bounded_zip,
     freeze_bundle,
@@ -83,6 +86,12 @@ class Runtime:
         (work / "main.py").write_text("print('changed')\n", encoding="utf-8")
         (work / "new.txt").write_text("new\n", encoding="utf-8")
         return "exited", 0, b"ok\n", b""
+
+    def prepare_work(self, job_id, work, store):
+        work.mkdir()
+
+    def release_work(self, job_id, work):
+        pass
 
     def cleanup(self, job_id, sandbox_id):
         self.cleanups += 1
@@ -230,10 +239,177 @@ def test_restart_reconciles_without_replaying_attempt(tmp_path):
         restarted.close()
 
 
+def test_expired_results_keep_deduplication_across_restart(tmp_path):
+    _, bundle, _ = frozen(tmp_path)
+    runner = Runner(tmp_path / "runner", Runtime(), disk_reserve=0, retained_jobs=1)
+    first = runner.submit(bundle)
+    runner.start()
+    try:
+        assert terminal(runner, first.job_id).state == "succeeded"
+        _, second, _ = frozen(tmp_path, key="second")
+        runner.submit(second)
+        assert runner.store.status(first.job_id).result_expired
+        assert not (runner.jobs / first.job_id).exists()
+        with pytest.raises(DomainError, match="RESULT_EXPIRED"):
+            runner.result_path(first.job_id)
+        assert runner.submit(bundle).job_id == first.job_id
+    finally:
+        runner.close()
+    reopened = Runner(tmp_path / "runner", Runtime(), disk_reserve=0)
+    assert reopened.submit(bundle).result_expired
+    assert reopened.store.status(first.job_id).state == "succeeded"
+
+
+def test_cleanup_failed_is_reconciled_on_restart_and_never_collected(tmp_path):
+    _, bundle, _ = frozen(tmp_path)
+    runner = Runner(tmp_path / "runner", Runtime(), disk_reserve=0, retained_jobs=1)
+    first = runner.submit(bundle)
+    runner.store.update(first.job_id, state="cleanup_failed")
+    _, second, _ = frozen(tmp_path, key="second")
+    with pytest.raises(DomainError, match="RUNNER_FULL"):
+        runner.submit(second)
+    restarted = Runner(tmp_path / "runner", Runtime(), disk_reserve=0)
+    restarted.start()
+    try:
+        assert terminal(restarted, first.job_id).state == "uncertain"
+        assert not restarted.store.status(first.job_id).result_expired
+    finally:
+        restarted.close()
+
+
+def test_download_pins_result_during_retention_and_ttl_cleanup(tmp_path):
+    _, bundle, _ = frozen(tmp_path)
+    runner = Runner(tmp_path / "runner", Runtime(), disk_reserve=0, retained_jobs=1, retention_seconds=1)
+    first = runner.submit(bundle)
+    runner.start()
+    try:
+        assert terminal(runner, first.job_id).state == "succeeded"
+        _, second, _ = frozen(tmp_path, key="second")
+        with runner.open_result(first.job_id) as stream:
+            with pytest.raises(DomainError, match="RUNNER_FULL"):
+                runner.submit(second)
+            assert stream.read(2) == b"PK"
+        runner.collect_expired(now=time.time() + 2)
+        assert runner.submit(bundle).result_expired
+    finally:
+        runner.close()
+
+
+def test_pending_retention_deletion_resumes_without_replaying(tmp_path, monkeypatch):
+    _, bundle, _ = frozen(tmp_path)
+    runner = Runner(tmp_path / "runner", Runtime(), disk_reserve=0, retention_seconds=1)
+    first = runner.submit(bundle)
+    runner.store.update(first.job_id, state="cancelled")
+    import yipilot.runner.service as module
+    original = module.shutil.rmtree
+
+    def interrupted(path):
+        raise OSError("interrupted deletion")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(module.shutil, "rmtree", interrupted)
+        with pytest.raises(OSError):
+            runner.collect_expired(now=time.time() + 2)
+    assert runner.store.status(first.job_id).result_expired
+    assert runner.store.pending_deletions() == [first.job_id]
+    assert (runner.jobs / first.job_id).exists()
+    assert module.shutil.rmtree is original
+    restarted = Runner(tmp_path / "runner", Runtime(), disk_reserve=0)
+    restarted.start()
+    try:
+        assert restarted.submit(bundle).job_id == first.job_id
+        assert not (runner.jobs / first.job_id).exists()
+        assert restarted.store.pending_deletions() == []
+    finally:
+        restarted.close()
+
+
+def test_database_v1_migration_preserves_request_identity(tmp_path):
+    _, _, request = frozen(tmp_path)
+    root = tmp_path / "runner"
+    root.mkdir()
+    from yipilot.domain.remote_execution import JobStatus
+    status = JobStatus(job_id="a" * 32, request_fingerprint=request.fingerprint, state="succeeded")
+    with sqlite3.connect(root / "jobs.db") as db:
+        db.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY,request_key TEXT UNIQUE NOT NULL,fingerprint TEXT NOT NULL,request TEXT NOT NULL,status TEXT NOT NULL)")
+        db.execute("INSERT INTO jobs VALUES (?,?,?,?,?)", (status.job_id, request.request_key, request.fingerprint,
+                                                        request.model_dump_json(), status.model_dump_json()))
+        db.execute("PRAGMA user_version=1")
+    store = JobStore(root)
+    assert store.lookup(request) == status
+    assert store.get(status.job_id)[0] == request
+    assert store.finished()[0][0] == status.job_id
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
 def test_unresolved_creation_is_quarantined():
     runtime = OpenSandboxRuntime(None)
     with pytest.raises(ValueError, match="unknown"):
         runtime.cleanup("a" * 32, None)
+
+
+def test_server_death_without_creation_completion_proof_never_releases_budget(tmp_path, monkeypatch):
+    import yipilot.runner.runtime as module
+    job_id = "a" * 32
+    root = tmp_path / job_id
+    root.mkdir()
+    (root / "runtime.json").write_text(json.dumps({"state": "consumed"}))
+    monkeypatch.setattr(module, "JOBS_ROOT", tmp_path)
+    runtime = OpenSandboxRuntime(None)
+    monkeypatch.setattr(runtime, "_remove", lambda *_: None)
+    for _ in range(2):
+        with pytest.raises(ValueError, match="completion proof"):
+            runtime.cleanup(job_id, str(UUID(job_id)))
+        assert json.loads((root / "runtime.json").read_text())["state"] == "revoked_unsettled"
+
+
+@pytest.mark.parametrize("owned", [True, False])
+def test_orphan_sidecar_cleanup_during_api_outage_requires_ownership(tmp_path, monkeypatch, owned):
+    import yipilot.runner.runtime as module
+    job_id = "a" * 32
+    sandbox_id = str(UUID(job_id))
+    root = tmp_path / job_id
+    root.mkdir()
+    monkeypatch.setattr(module, "JOBS_ROOT", tmp_path)
+    present = {"sidecar": True, "volume": True}
+    removed = []
+
+    def run(arguments, **options):
+        if arguments[1] == "ps":
+            data = b"sidecar" if present["sidecar"] and not any("label=yipilot.job_id" in arg for arg in arguments) else b""
+        elif arguments[1:3] == ["volume", "ls"]:
+            data = ("opensandbox-runtime-" + sandbox_id).encode() if present["volume"] else b""
+        else:
+            assert arguments[1:3] in (["rm", "-f"], ["volume", "rm"])
+            role = "sidecar" if arguments[1] == "rm" else "volume"
+            present[role] = False
+            removed.append(role)
+            data = b""
+        return SimpleNamespace(stdout=data)
+
+    def inspect(*arguments):
+        if arguments[:2] == ("volume", "inspect"):
+            return [{"Labels": {"opensandbox.io/volume-managed-by": "server"}}]
+        return [{"Id": "sidecar", "Name": "/sandbox-egress-" + sandbox_id,
+                 "Config": {"Labels": {"opensandbox.io/egress-sidecar-for": sandbox_id if owned else "other"}},
+                 "State": {"Running": True, "Pid": 1}}]
+
+    async def unavailable(identity):
+        raise OSError("Control API unavailable")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(module, "docker", inspect)
+    monkeypatch.setattr(module, "writer_group", lambda pid: tmp_path / "gone-cgroup")
+    runtime = OpenSandboxRuntime(None)
+    monkeypatch.setattr(runtime, "_kill", unavailable)
+    if owned:
+        runtime.cleanup(job_id, sandbox_id)
+        assert removed == ["sidecar", "volume"]
+    else:
+        with pytest.raises(ValueError, match="ownership"):
+            runtime.cleanup(job_id, sandbox_id)
+        assert removed == []
 
 
 def test_admission_includes_sidecar_and_preserves_requested_memory(tmp_path):
@@ -322,10 +498,9 @@ def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_pa
     _, bundle, request = frozen(tmp_path)
     runner = Runner(tmp_path / "runner", Runtime(), disk_reserve=0)
     job = runner.submit(bundle)
-    work = tmp_path / "work"
-    work.mkdir()
+    work = runner.jobs / job.job_id / "work"
     calls = []
-    sandbox_id = "12345678-1234-1234-1234-123456789abc"
+    sandbox_id = str(UUID(job.job_id))
 
     async def check_ready(**options):
         assert runner.store.get(job.job_id)[1].sandbox_id == sandbox_id
@@ -348,6 +523,8 @@ def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_pa
                                commands=SimpleNamespace(run=command), close=close)
 
     async def manager_create(connection):
+        assert connection.request_timeout.total_seconds() == 5
+        assert connection.retry_policy.max_retries == 0
         async def kill(identity):
             assert identity == sandbox_id
             calls.append("kill")
@@ -357,15 +534,21 @@ def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_pa
     monkeypatch.setattr(sdk.SandboxManager, "create", manager_create)
     import yipilot.runner.runtime as runtime_module
     monkeypatch.setattr(runtime_module.os, "chown", lambda *_: None, raising=False)
+    monkeypatch.setattr(runtime_module, "JOBS_ROOT", runner.jobs)
+    monkeypatch.setattr(runtime_module.disk, "prepare", lambda job_id, work: work.mkdir())
     monkeypatch.setattr(runtime_module, "docker", lambda *args: [{
         "Config": {"Labels": {"yipilot.job_id": job.job_id}}, "State": {"Running": True, "Pid": 1}}])
     original_read = Path.read_text
     monkeypatch.setattr(Path, "read_text", lambda self, *a, **kw:
                         "0::/owned\n" if self.name == "cgroup" else original_read(self, *a, **kw))
-    runtime = OpenSandboxRuntime(None, disk_reserve=0)
+    from opensandbox.config import ConnectionConfig
+    runtime = OpenSandboxRuntime(ConnectionConfig(domain="127.0.0.1:8081"), disk_reserve=0)
+    runtime.prepare_work(job.job_id, work, runner.store)
+    assert json.loads((work.parent / "runtime.json").read_text())["state"] == "authorized"
     outcome = runtime.execute(job.job_id, request, work, runner.store)
     assert outcome == (("timed_out", 1, b"", b"") if sdk_timeout else ("exited", 0, b"", b""))
     assert calls[:2] == ["ready", "command"]
     monkeypatch.setattr(runtime_module.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout=b""))
     runtime.cleanup(job.job_id, sandbox_id)
     assert "kill" in calls
+    assert json.loads((work.parent / "runtime.json").read_text())["state"] == "revoked"

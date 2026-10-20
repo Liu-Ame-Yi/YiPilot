@@ -94,19 +94,19 @@ def make_server(runner: Runner, token: str, port: int) -> ThreadingHTTPServer:
                     if self.command == "POST" and suffix == "/cancel":
                         self.reply(200, runner.cancel(job_id).model_dump(mode="json"))
                     elif self.command == "GET" and suffix is None:
-                        self.reply(200, runner.store.get(job_id)[1].model_dump(mode="json"))
+                        self.reply(200, runner.store.status(job_id).model_dump(mode="json"))
                     elif self.command == "GET" and suffix == "/result":
-                        path = runner.result_path(job_id)
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/zip")
-                        self.send_header("Content-Length", str(path.stat().st_size))
-                        self.end_headers()
-                        with path.open("rb") as source:
+                        with runner.open_result(job_id) as source:
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/zip")
+                            self.send_header("Content-Length", str(os.fstat(source.fileno()).st_size))
+                            self.end_headers()
                             shutil.copyfileobj(source, self.wfile, 64 * 1024)
                     else:
                         self.reply(405, {"error": "METHOD_NOT_ALLOWED"})
             except DomainError as error:
-                self.reply(404 if error.code == "JOB_NOT_FOUND" else 409, {"error": error.code})
+                self.reply(404 if error.code == "JOB_NOT_FOUND" else
+                           (410 if error.code == "RESULT_EXPIRED" else 409), {"error": error.code})
             except (ValueError, KeyError, ValidationError, zipfile.BadZipFile, UnicodeError):
                 self.reply(400, {"error": "INVALID_INPUT"})
             except (BrokenPipeError, ConnectionResetError, TimeoutError):
