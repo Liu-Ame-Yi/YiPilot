@@ -25,6 +25,7 @@ jobs:
       - name: Type check
         run: uv run mypy src --cache-dir "$env:TEMP\\yipilot-m3-m4-mypy"
       - name: Test
-        run: uv run pytest -o addopts='' -q -p no:cacheprovider
+        # Keep Git's generated pack filenames below Windows' path limit.
+        run: uv run pytest -o addopts='' -q -p no:cacheprovider --basetemp "$env:RUNNER_TEMP/yipilot-tests"
       - name: Check diff format
         run: git diff --check
