@@ -17,6 +17,9 @@ dependencies = [
     "prompt-toolkit>=3.0,<4",
 ]
 
+[project.optional-dependencies]
+runner = ["opensandbox==1.1.1"]
+
 [project.scripts]
 yipilot = "yipilot.transport.cli.app:app"
 

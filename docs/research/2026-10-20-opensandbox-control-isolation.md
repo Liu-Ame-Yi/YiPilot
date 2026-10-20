@@ -1,5 +1,7 @@
 # OpenSandbox v2：控制通道修复与服务器验收
 
+后续实施：最小 Runner 已完成独立闭环，见 [Runner 记录](2026-10-20-opensandbox-runner-validation.md)。下文保留本批次的实现范围与服务状态。
+
 日期：2026-10-20（Asia/Shanghai）。状态：**Implemented 固定隔离 profile；Runner 和业务替换尚未实现。** 18 项真实 profile 检查全部通过，额外完成隔离安装失败、控制进程死亡及排空后的 Docker 重启验收。候选服务验收后已停止且禁用开机启动。完整证据见[结构化收据](evidence/2026-10-20-opensandbox-control.json)，部署入口见[说明](../../deploy/opensandbox/README.md)。
 
 本次继续[迁移安排](2026-10-19-opensandbox-implementation-plan.md)，修复 [v1 受信实测](2026-10-20-opensandbox-profile-validation.md)中任务调用 `/internal/init` 得到 HTTP 200 并改写 sandbox binding 的问题。新 profile 为 `yipilot-python-v2`；v1 的失败记录保留，不能作为新执行证据或新审批授权。

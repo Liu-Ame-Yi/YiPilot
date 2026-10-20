@@ -1,0 +1,18 @@
+[Unit]
+Description=YiPilot trusted-fixture remote Runner
+Requires=opensandbox-profile.service
+After=opensandbox-profile.service
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+WorkingDirectory=/srv/yipilot/source
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/yipilot-runner/venv/bin/python -m yipilot.runner.http /etc/yipilot-runner.toml
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -2,7 +2,7 @@
 
 **只允许受信 fixture 验收，尚未放行正式不可信任务。** 2026-10-20 的 v2 已通过 18 项服务器验收、控制进程死亡与隔离安装失败测试、Docker 重启恢复。此前 v1 的 init 重绑漏洞已修复；[最新记录](../../docs/research/2026-10-20-opensandbox-control-isolation.md)说明验证范围及剩余门槛。
 
-这份目录只负责 Linux Docker profile，没有 Runner、任务调度或客户端 SDK 包装。YiPilot 的 Windows 程序和旧执行链路本轮未变。当前 Python 镜像是隔离测试基底，尚非包含 pytest/Ruff/mypy/Git 的正式工具镜像。
+这份目录只负责 Linux Docker profile。后续最小 Runner 和本地 HTTP 客户端已完成独立样例闭环，见 [Runner 说明](../runner/README.md)；YiPilot 的旧业务执行调用仍未替换。当前 Python 镜像是隔离测试基底，尚非包含 pytest/Ruff/mypy/Git 的正式工具镜像。
 
 ## 制品及边界
 
@@ -58,4 +58,4 @@ sidecar 固定 64 MiB、等量 memswap、0.1 CPU、64 PID；主容器显式请�
 
 更新先排空自有任务、停止服务，在新目录构建并验证完整收据，再切换并启动。不要原地修改运行中的 Python 文件。服务器保留了失败 v1 和早期构建包，用于复现差异；它们没有 systemd 入口，也不作为备用执行后端。不同 profile 必须使用新执行合同，旧审批不能继承授权。
 
-本轮新服务验收后已停止且未启用开机启动。原回环 8080 服务及配置保留，仅供受信样例。当前还没有 Runner 的耐久接受、全局资源/日志/磁盘准入、可信产物发布和业务切换；验收收据因此保持 `ready_for_untrusted_code=false`。正式启用还需后续完整闭环验收。
+profile 独立验收后停止且未启用开机启动；后续 Runner 验收仅短时启动它。原回环 8080 服务及配置保留，仅供受信样例。当前 Runner 已有耐久接受、基本预算准入及可信产物发布，完整故障/容量验收、文件系统硬配额及业务切换尚未完成；正式启用仍保持 `ready_for_untrusted_code=false`。
