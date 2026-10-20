@@ -9,7 +9,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `server.patch`、`policy.py` | 创建前固定镜像、请求、资源与唯一 work 挂载；RO rootfs/nnp/PID/tmpfs/memswap；限制 sidecar；修正内部就绪、代理寻址及代理权限 |
-| `control.py` | root 控制进程与 UID/GID 10001 任务分权；在主容器启动前安装 UID 网络规则；固定命令和文件身份，关闭额外控制接口 |
+| `control.py` | root 控制进程与 UID/GID 10001 任务分权；在主容器启动前安装 UID 网络规则；固定命令和文件身份，关闭额外控制接口；消费宿主单次创建租约并记录完成证明 |
 | `build.py` | 校验五个受影响上游文件的 SHA-256；向新目录复制并应用无 fuzz 补丁，编译并记录五个文件及两个本地模块的摘要；不改 site-packages |
 | `network.py` | 创建/校验专用 internal bridge，关闭 ICC/IPv6；宿主 INPUT 阻止任务新建连接，DOCKER-USER 阻止到/从该桥的转发；不匹配 SSH 或其他网桥 |
 | `config.toml.example`、两个 `.service` | 回环 8081、独立管理密钥、专用 SQLite；网络检查先于服务启动；Docker 重启时重建规则 |
@@ -21,11 +21,11 @@ Server 和 SDK 均固定 1.1.1，任务/execd/egress 使用文件内固定摘要
 
 宿主 Server proxy 只开放健康、argv 命令及降权文件操作；强制命令 UID/GID、超时和任务环境，文件路由转入上游低 UID worker。init、code、PTY/session、WebSocket、任意端口与 root 文件路由均拒绝。root execd 原始 API 只供可信宿主，不提供给任务。服务管理密钥仍是独立的第一道宿主鉴权。
 
-sidecar 固定 64 MiB、等量 memswap、0.1 CPU、64 PID；主容器显式请求 128 MiB–1 GiB、0.1–1 CPU、128 PID，强制等量 memswap。这里的请求上限不代表宿主准入预算或四并发能力；未来 Runner 必须将 sidecar 一起计费，并约束实际同时执行的总量。
+sidecar 固定 64 MiB、等量 memswap、0.1 CPU、64 PID；主容器显式请求 128 MiB–1 GiB、0.1–1 CPU、128 PID，强制等量 memswap。请求上限与宿主准入预算分开；Runner 已按主容器加 sidecar 计费，当前总预算 768 MiB/1500m，并通过四个轻任务实测，见[第三阶段记录](../../docs/research/2026-10-20-opensandbox-reliability-validation.md)。
 
 ## 构建与主机前提
 
-仅适用于已验证的 Ubuntu 22.04/x86_64、Docker 29.1.3、iptables-nft 后端及系统 Python 3.10 的独立 OpenSandbox 环境。`patch`、Docker CLI、iptables、modprobe、sysctl、nsenter 和 nft 必须存在；不更换系统 Python。未来 YiPilot Runner 的 Python >=3.11 环境另行部署。
+仅适用于已验证的 Ubuntu 22.04/x86_64、Docker 29.1.3、iptables-nft 后端及系统 Python 3.10 的独立 OpenSandbox 环境。`patch`、Docker CLI、iptables、modprobe、sysctl、nsenter 和 nft 必须存在；不更换系统 Python。YiPilot Runner 已另行安装独立 Python 3.11 环境。
 
 在 Linux 主机上，`build.py SOURCE DESTINATION` 的 SOURCE 是已安装的 `opensandbox_server` 包，DESTINATION 必须不存在。安装依赖继续使用原环境的锁定清单，不能以复制包代替依赖核验。构建收据是 `DESTINATION` 同级的 `profile-build.json`。源码不符、目标已存在、补丁不适配或编译失败均不发布；构建失败留下的目录应保留排查，重新构建使用新的目录。
 
@@ -44,7 +44,7 @@ sidecar 固定 64 MiB、等量 memswap、0.1 CPU、64 PID；主容器显式请�
 /srv/yipilot-runner/jobs/<32hex>/work          10001:10001 0700
 ```
 
-所有 Job 祖先目录必须为 root 所有、无 group/other 写权限且不是链接；input/artifacts 留在任务挂载外。本目录不创建或接受任意用户宿主目录。调用方未来由 Runner 提供，必须在真实写入者停止后才能可信扫描。
+所有 Job 祖先目录必须为 root 所有、无 group/other 写权限且不是链接；input/artifacts 留在任务挂载外。本目录不创建或接受任意用户宿主目录。Runner 在创建前登记确定 UUID 和 root 私有 runtime.json/runtime.lock；实际 Docker 创建线程只消费一次租约，结束才写 settled。未登记或已消费/撤销的创建请求被拒绝，更新必须与 Runner 同步排空。自有验收 helper 也生成这份租约。必须在真实写入者停止后才能可信扫描。
 
 独立服务通过 `PYTHONPATH` 选择这份正常源码包，没有进程内 monkeypatch。配置从模板生成随机独立密钥，禁止把模板占位符直接投入使用。管理密钥、Docker 权限和 Job 目录选择权只在可信宿主。所有 SDK 访问必须 `use_server_proxy=True`：internal bridge 不提供宿主发布端口，远端客户端不能直接使用内部端点。
 
@@ -58,4 +58,4 @@ sidecar 固定 64 MiB、等量 memswap、0.1 CPU、64 PID；主容器显式请�
 
 更新先排空自有任务、停止服务，在新目录构建并验证完整收据，再切换并启动。不要原地修改运行中的 Python 文件。服务器保留了失败 v1 和早期构建包，用于复现差异；它们没有 systemd 入口，也不作为备用执行后端。不同 profile 必须使用新执行合同，旧审批不能继承授权。
 
-profile 独立验收后停止且未启用开机启动；后续 Runner 验收仅短时启动它。原回环 8080 服务及配置保留，仅供受信样例。当前 Runner 已有耐久接受、基本预算准入及可信产物发布，完整故障/容量验收、文件系统硬配额及业务切换尚未完成；正式启用仍保持 `ready_for_untrusted_code=false`。
+profile 独立验收后停止且未启用开机启动；Runner 验收仅短时启动它。原回环 8080 服务及配置保留，仅供受信样例。Runner 已补每任务 work 磁盘上限、保留期去重和选定恢复/容量验收；业务调用、审批、项目锁和完整工具镜像仍未迁移，正式启用保持 `ready_for_untrusted_code=false`。

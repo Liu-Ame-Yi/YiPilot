@@ -354,7 +354,7 @@ def test_server_death_without_creation_completion_proof_never_releases_budget(tm
     job_id = "a" * 32
     root = tmp_path / job_id
     root.mkdir()
-    (root / "runtime.json").write_text(json.dumps({"state": "consumed"}))
+    (root / "runtime.json").write_text(json.dumps({"job_id": job_id, "sandbox_id": str(UUID(job_id)), "state": "consumed"}))
     monkeypatch.setattr(module, "JOBS_ROOT", tmp_path)
     runtime = OpenSandboxRuntime(None)
     monkeypatch.setattr(runtime, "_remove", lambda *_: None)
@@ -362,6 +362,21 @@ def test_server_death_without_creation_completion_proof_never_releases_budget(tm
         with pytest.raises(ValueError, match="completion proof"):
             runtime.cleanup(job_id, str(UUID(job_id)))
         assert json.loads((root / "runtime.json").read_text())["state"] == "revoked_unsettled"
+
+
+@pytest.mark.parametrize("change", [{"state": "unknown"}, {"job_id": "b" * 32}, {"sandbox_id": str(UUID("b" * 32))}])
+def test_invalid_creation_record_is_never_treated_as_completion(tmp_path, monkeypatch, change):
+    import yipilot.runner.runtime as module
+    job_id = "a" * 32
+    root = tmp_path / job_id
+    root.mkdir()
+    record = {"job_id": job_id, "sandbox_id": str(UUID(job_id)), "state": "settled", **change}
+    (root / "runtime.json").write_text(json.dumps(record))
+    monkeypatch.setattr(module, "JOBS_ROOT", tmp_path)
+    runtime = OpenSandboxRuntime(None)
+    monkeypatch.setattr(runtime, "_remove", lambda *_: pytest.fail("Invalid record reached host operations"))
+    with pytest.raises(ValueError, match="ownership record"):
+        runtime.cleanup(job_id, str(UUID(job_id)))
 
 
 @pytest.mark.parametrize("owned", [True, False])

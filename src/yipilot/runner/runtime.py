@@ -157,7 +157,14 @@ class OpenSandboxRuntime:
         with FileLock(JOBS_ROOT / job_id / "runtime.lock", timeout=45):
             record = JOBS_ROOT / job_id / "runtime.json"
             require_plain_path(record)
-            unsettled = record.exists() and json.loads(record.read_text())["state"] in {"consumed", "revoked_unsettled"}
+            state = None
+            if record.exists():
+                value = json.loads(record.read_text())
+                state = value.get("state")
+                if (value != {"job_id": job_id, "sandbox_id": str(UUID(job_id)), "state": state}
+                        or state not in {"authorized", "consumed", "settled", "revoked", "revoked_unsettled"}):
+                    raise ValueError("Invalid creation ownership record")
+            unsettled = state in {"consumed", "revoked_unsettled"}
             lease(job_id, "revoked_unsettled" if unsettled else "revoked")
             self._remove(job_id, sandbox_id)
             if unsettled:

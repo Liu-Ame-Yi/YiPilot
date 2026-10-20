@@ -1,5 +1,5 @@
 {
-  "collected_at_utc": "2026-10-20T15:10:05.896549+00:00",
+  "collected_at_utc": "2026-10-20T15:19:45.209504+00:00",
   "reports": {
     "reliability": {
       "trusted_fixtures_only": true,
@@ -7,55 +7,55 @@
         {
           "requested": 1,
           "actual_overlap": 1,
-          "host_available_min": 832888832,
+          "host_available_min": 829075456,
           "main_memory_peak": {
-            "70a9b1e6f961": 64835584
+            "5a268fc2c08f": 64937984
           },
           "sidecar_memory_peak": {
-            "d42e29b1badc": 5840896
+            "4b6c68a670f2": 6262784
           },
           "oom_kills": 0,
-          "health_latency_max_seconds": 0.003907410005922429,
-          "controller_rss_peak": 63692800,
-          "elapsed_seconds": 17.065152388007846
+          "health_latency_max_seconds": 0.002417933996184729,
+          "controller_rss_peak": 63549440,
+          "elapsed_seconds": 17.454704645002494
         },
         {
           "requested": 2,
           "actual_overlap": 2,
-          "host_available_min": 749658112,
+          "host_available_min": 750170112,
           "main_memory_peak": {
-            "2ab695579281": 65011712,
-            "21363ef8dfc0": 64782336
+            "85fc3a2b633f": 64929792,
+            "d76bf0c77dc9": 65056768
           },
           "sidecar_memory_peak": {
-            "f45f45e6837f": 5963776,
-            "0c08f02afce3": 6041600
+            "0d2b8a49c707": 6594560,
+            "560677100a59": 6160384
           },
           "oom_kills": 0,
-          "health_latency_max_seconds": 0.014064762013731524,
-          "controller_rss_peak": 66498560,
-          "elapsed_seconds": 17.06458723799733
+          "health_latency_max_seconds": 0.013615636999020353,
+          "controller_rss_peak": 66740224,
+          "elapsed_seconds": 17.639066581992665
         },
         {
           "requested": 4,
           "actual_overlap": 4,
-          "host_available_min": 593362944,
+          "host_available_min": 592166912,
           "main_memory_peak": {
-            "0da8f4ad279f": 64954368,
-            "f59335b1dfc4": 65118208,
-            "9837b3ec6959": 64905216,
-            "c40445631a41": 64692224
+            "daff51dc3008": 64741376,
+            "ea2d271db454": 64815104,
+            "92a01654c2ab": 65933312,
+            "5989b8aaa433": 65998848
           },
           "sidecar_memory_peak": {
-            "741eb074c883": 7450624,
-            "6afb469db7d1": 4472832,
-            "e62980a9dfa4": 5971968,
-            "f3df66d4e7ad": 6635520
+            "c34eb130d036": 3936256,
+            "fe42c713acbc": 6021120,
+            "6d26746e0f63": 6651904,
+            "2cb1c49d8cd1": 6778880
           },
           "oom_kills": 0,
-          "health_latency_max_seconds": 0.007903076999355108,
-          "controller_rss_peak": 69677056,
-          "elapsed_seconds": 18.509405278993654
+          "health_latency_max_seconds": 0.006706789004965685,
+          "controller_rss_peak": 69468160,
+          "elapsed_seconds": 18.39002669400361
         }
       ],
       "checks": {
@@ -69,29 +69,29 @@
         "restart_ttl_gc_preserves_dedup_and_returns_410": true
       },
       "jobs": [
-        "8aa5ffa626b44ea9bd2e5d41c660efce",
-        "933d01f9f08c411da4593b0c807b13e6",
-        "49463b1cb8124dedb1c01b1c651a963a",
-        "3751a5797ddf482881215fc483d2af67",
-        "e24d60f95f5d414f9bd7b01ea418fa59",
-        "80f3c895593b441c993944fd15470383",
-        "f1a40f6ce6fa4c53b5e0aae5542b4de4",
-        "94ca7fc2d47d412e8fceba85e68dc14f",
-        "cfc999fa3f83438095bcad22d12ddbc1",
-        "e7f26071da6844b899ad7385e0960039",
-        "2c462d1ea33345448530aeb2ef86559b",
-        "c8fc4cd6c2d44f2eafa277f205217b1c",
-        "88d0240d2e2544bdbc2ee5f01c687913",
-        "38a4d064a86f4e3e8e0629809137e853",
-        "9732fb09966d493f801a742e08677619"
+        "5afcfd3c7c984bafa3c4e620d291bf8c",
+        "fd477edad0db4e9da6c90c7022e18e07",
+        "be27d9ba10394cc28f5e57920cf9cb51",
+        "1ed37a54bd7e4d2b818462d0a51c32c3",
+        "9298c3fa843d4f589a68daf0db5334bf",
+        "f73a3d11a3cd4ca9a03c904132db4cbd",
+        "625e81c83ebb4304817502e4406c0493",
+        "75ad6750800740cb9989d3613430877b",
+        "47838f17665744ff8373854e1e293329",
+        "a87eb5f6884746abb2ea9539dc029f50",
+        "0f0ee9f9cc3e4cda96b4d39c38232ecf",
+        "c12e30667c964051a443c520cf019e85",
+        "696f7890c7f44cbab35db3a60d333fa7",
+        "f96be0115be24737839c265240f76256",
+        "5747541d46334fe8b465b648efffe8bd"
       ],
       "passed": true
     },
     "ssh_reconnect": {
       "actual_ssh_tunnel_terminated_and_reconnected": true,
       "no_replay_verified": true,
-      "job_id": "11c24150de2247c390836eacf3980f4c",
-      "request_fingerprint": "7d28e057892d4cfa89d2345cfca9b50d931724a69f1bb6840cf550831137c189",
+      "job_id": "51d383f7a1df4871a88b4a958f9cc712",
+      "request_fingerprint": "3ea19c78a8b952925b59d0a9d629ec19bf54070787bf558c9ed94e0591e7791f",
       "exit_code": 0
     },
     "profile": {
@@ -173,11 +173,11 @@
     "roundtrip": {
       "trusted_fixtures_only": true,
       "jobs": [
-        "516d5b392883449dbcb3d5b9060ad488",
-        "46d75586095f482ba27becfbcb0e3b63",
-        "7f10e02bd78b4029a9a862a320f5dc96",
-        "add7e36fbc8048e2b1b4626c3520e260",
-        "663d1456b3644d1382469fa593ee9aa4"
+        "61ba9b32c3004b3c81765365f718a135",
+        "5a27b5ed0908470d91cd03446a28f1e9",
+        "eaab6943970247d0acb832a810e17f57",
+        "2227704973c14d5baaa53685704b29d7",
+        "128cfb89b618491a9f1eeb2dfbe1016b"
       ],
       "checks": {
         "authenticated_loopback_http": true,
@@ -195,232 +195,232 @@
   },
   "outcomes": [
     {
-      "job_id": "8aa5ffa626b44ea9bd2e5d41c660efce",
-      "request_fingerprint": "c91110fbce66d4ed256fb122a826bd80c542e5263332c1f285e9036f6d5c72e7",
+      "job_id": "5afcfd3c7c984bafa3c4e620d291bf8c",
+      "request_fingerprint": "d2c3a047537100afa751a0becc24ad3a013c413034299c53c86b21b90776d5e0",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "8aa5ffa6-26b4-4ea9-bd2e-5d41c660efce",
+      "sandbox_id": "5afcfd3c-7c98-4baf-a3c4-e620d291bf8c",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 80,
       "stderr_bytes": 0
     },
     {
-      "job_id": "933d01f9f08c411da4593b0c807b13e6",
-      "request_fingerprint": "24e949ad063fda7e45e8dd7db18b72907f0888e5094e0f092b37265c98889a78",
+      "job_id": "fd477edad0db4e9da6c90c7022e18e07",
+      "request_fingerprint": "713c673179cf69de75da73a43a1ee37c5c7199f6cfdfdfc3c2627cedf28c58fa",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "933d01f9-f08c-411d-a459-3b0c807b13e6",
+      "sandbox_id": "fd477eda-d0db-4e9d-a6c9-0c7022e18e07",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 80,
       "stderr_bytes": 0
     },
     {
-      "job_id": "49463b1cb8124dedb1c01b1c651a963a",
-      "request_fingerprint": "75b8b702df7afd08d22c2dd8b86e635e0cec0840f21c545e693627e44d851001",
+      "job_id": "be27d9ba10394cc28f5e57920cf9cb51",
+      "request_fingerprint": "db8720a2e53d85fe8daa76fb3ac5edd1b42b23e7c0fd2c27a21b318031d6bb89",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "49463b1c-b812-4ded-b1c0-1b1c651a963a",
+      "sandbox_id": "be27d9ba-1039-4cc2-8f5e-57920cf9cb51",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 80,
       "stderr_bytes": 0
     },
     {
-      "job_id": "3751a5797ddf482881215fc483d2af67",
-      "request_fingerprint": "19f44fa21fab7581134604a2037227fa809d8582fe0dbc87d461a50b828485bf",
+      "job_id": "1ed37a54bd7e4d2b818462d0a51c32c3",
+      "request_fingerprint": "fe44ae475fdd9a023e9b018ce1788ad498b10758e44f8ab509fcb05cd583b3ca",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "3751a579-7ddf-4828-8121-5fc483d2af67",
+      "sandbox_id": "1ed37a54-bd7e-4d2b-8184-62d0a51c32c3",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 80,
       "stderr_bytes": 0
     },
     {
-      "job_id": "e24d60f95f5d414f9bd7b01ea418fa59",
-      "request_fingerprint": "a15434da771ac1fd48ba0db7bf0b2f9409a2edec937df395df5dcdddc260ceb2",
+      "job_id": "9298c3fa843d4f589a68daf0db5334bf",
+      "request_fingerprint": "bef31178c02c4ce977a31531ad4545019bdec1fd388199e3a51b58b3781aa2b7",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "e24d60f9-5f5d-414f-9bd7-b01ea418fa59",
+      "sandbox_id": "9298c3fa-843d-4f58-9a68-daf0db5334bf",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 80,
       "stderr_bytes": 0
     },
     {
-      "job_id": "80f3c895593b441c993944fd15470383",
-      "request_fingerprint": "49a4306f841386e83b100a55635a93379cded15b5e6f15c5f8c5397de6445916",
+      "job_id": "f73a3d11a3cd4ca9a03c904132db4cbd",
+      "request_fingerprint": "5679207b522e1f95e43458c85c6154b418b705d3f911d8a19a2963905b038612",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "80f3c895-593b-441c-9939-44fd15470383",
+      "sandbox_id": "f73a3d11-a3cd-4ca9-a03c-904132db4cbd",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 80,
       "stderr_bytes": 0
     },
     {
-      "job_id": "f1a40f6ce6fa4c53b5e0aae5542b4de4",
-      "request_fingerprint": "3ce392f031f47ada69d12dd90945ffaa4381a95c0b67f158008cd02cc83ded03",
+      "job_id": "625e81c83ebb4304817502e4406c0493",
+      "request_fingerprint": "0281a8c7ddf0c1f44ee28695467d1e9d639811972afe453733d56d34b4037140",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "f1a40f6c-e6fa-4c53-b5e0-aae5542b4de4",
+      "sandbox_id": "625e81c8-3ebb-4304-8175-02e4406c0493",
       "reason": "exited",
       "exit_code": 0,
-      "stdout_bytes": 80,
+      "stdout_bytes": 79,
       "stderr_bytes": 0
     },
     {
-      "job_id": "94ca7fc2d47d412e8fceba85e68dc14f",
-      "request_fingerprint": "aedd1e312eb0be8e7bb28a604ab132c7214240c2cf0bdfe3bf5d3c4b65b1f71f",
+      "job_id": "75ad6750800740cb9989d3613430877b",
+      "request_fingerprint": "8df7c109d7928fe8822f137e08a82ceace491609da0753cc4cc3b4caec4b9e77",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "94ca7fc2-d47d-412e-8fce-ba85e68dc14f",
+      "sandbox_id": "75ad6750-8007-40cb-9989-d3613430877b",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 24,
       "stderr_bytes": 0
     },
     {
-      "job_id": "cfc999fa3f83438095bcad22d12ddbc1",
-      "request_fingerprint": "8aa376f383b0139a22a754b0a02c09a8686f1534cc2187c959fbc99a42403a01",
+      "job_id": "47838f17665744ff8373854e1e293329",
+      "request_fingerprint": "b9faa9e6850b6ae13347da3a1371f79a91e9841e1c01eb731816eb68762ba863",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "cfc999fa-3f83-4380-95bc-ad22d12ddbc1",
+      "sandbox_id": "47838f17-6657-44ff-8373-854e1e293329",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 0,
       "stderr_bytes": 0
     },
     {
-      "job_id": "e7f26071da6844b899ad7385e0960039",
-      "request_fingerprint": "aed7382fbccee6cc5bbcee5e884f191e3d348cf76ebe49f64fcfe89f0e415ad2",
+      "job_id": "a87eb5f6884746abb2ea9539dc029f50",
+      "request_fingerprint": "7bb896128f7587d8cf834de49856ff20776b6bd514d959c48067e2efecb855cd",
       "state": "uncertain",
       "result_expired": false,
       "gc_state": "retained"
     },
     {
-      "job_id": "2c462d1ea33345448530aeb2ef86559b",
-      "request_fingerprint": "4ca7c023a957470c7b88000b0d399d856b12220318889ed6d8221a626033479c",
+      "job_id": "0f0ee9f9cc3e4cda96b4d39c38232ecf",
+      "request_fingerprint": "3d3b70cff11347976e7fef312ede713b71e36c26915457495d49440c94ba898a",
       "state": "uncertain",
       "result_expired": false,
       "gc_state": "retained"
     },
     {
-      "job_id": "c8fc4cd6c2d44f2eafa277f205217b1c",
-      "request_fingerprint": "19667c2c7fc75e67f868a580299fde4a23302c9b0bedd7198974d6bb9e42b1a1",
+      "job_id": "c12e30667c964051a443c520cf019e85",
+      "request_fingerprint": "712070d8ef651e90dba0fca925c27bc35bbec79752cb187280861098a87ce9f3",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "c8fc4cd6-c2d4-4f2e-afa2-77f205217b1c",
+      "sandbox_id": "c12e3066-7c96-4051-a443-c520cf019e85",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 21,
       "stderr_bytes": 0
     },
     {
-      "job_id": "88d0240d2e2544bdbc2ee5f01c687913",
-      "request_fingerprint": "10b2ab4fa551306772b7aedc0434a769d3fce6a316c33aa142e807bf2d592f50",
+      "job_id": "696f7890c7f44cbab35db3a60d333fa7",
+      "request_fingerprint": "21fab852a0f685ae60a17bc23ca5fd9ae5f2a29313aba72b6375927ce043066c",
       "state": "cancelled",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "88d0240d-2e25-44bd-bc2e-e5f01c687913",
+      "sandbox_id": "696f7890-c7f4-4cba-b35d-b3a60d333fa7",
       "reason": "cancelled",
       "exit_code": null,
       "stdout_bytes": 0,
       "stderr_bytes": 0
     },
     {
-      "job_id": "38a4d064a86f4e3e8e0629809137e853",
-      "request_fingerprint": "8c447376c5fdb78f6ffa0b9dbd60e055e853093ba78847408fe6a5d1899fa12b",
+      "job_id": "f96be0115be24737839c265240f76256",
+      "request_fingerprint": "f2a592254e55d58b49515b1606c764ab5ce706c9af1970cd0b48d13924fa3195",
       "state": "uncertain",
       "result_expired": false,
       "gc_state": "retained"
     },
     {
-      "job_id": "9732fb09966d493f801a742e08677619",
-      "request_fingerprint": "f8f8a00ffe4401324b3ee0f3382338b17e48563545c6384c42bbe1b30a2b6b3b",
+      "job_id": "5747541d46334fe8b465b648efffe8bd",
+      "request_fingerprint": "8a0c8859442d19583d88b3f5694c581898907d1b6ca827d473fae9eaaaff79eb",
       "state": "succeeded",
       "result_expired": true,
       "gc_state": "removed"
     },
     {
-      "job_id": "11c24150de2247c390836eacf3980f4c",
-      "request_fingerprint": "7d28e057892d4cfa89d2345cfca9b50d931724a69f1bb6840cf550831137c189",
+      "job_id": "51d383f7a1df4871a88b4a958f9cc712",
+      "request_fingerprint": "3ea19c78a8b952925b59d0a9d629ec19bf54070787bf558c9ed94e0591e7791f",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "11c24150-de22-47c3-9083-6eacf3980f4c",
+      "sandbox_id": "51d383f7-a1df-4871-a88b-4a958f9cc712",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 12,
       "stderr_bytes": 0
     },
     {
-      "job_id": "516d5b392883449dbcb3d5b9060ad488",
-      "request_fingerprint": "da59b47297b8c4e3a34375bb0137456e79bb237aa9dfe4498d3a0a628a3390f2",
+      "job_id": "61ba9b32c3004b3c81765365f718a135",
+      "request_fingerprint": "fe9495622a85f70707bc10ce43f9e3c88021bada410f25d1f30782b976fc9f53",
       "state": "succeeded",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "516d5b39-2883-449d-bcb3-d5b9060ad488",
+      "sandbox_id": "61ba9b32-c300-4b3c-8176-5365f718a135",
       "reason": "exited",
       "exit_code": 0,
       "stdout_bytes": 11,
       "stderr_bytes": 0
     },
     {
-      "job_id": "46d75586095f482ba27becfbcb0e3b63",
-      "request_fingerprint": "47cabbf2f2ab869b5ef7faf4e50cf870da286d01556ab9cd8c904e3117c6d836",
+      "job_id": "5a27b5ed0908470d91cd03446a28f1e9",
+      "request_fingerprint": "fe43445e0ea1dfe78598f9bf15d352926250a879a316426104097dd68a9d83d5",
       "state": "failed",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "46d75586-095f-482b-a27b-ecfbcb0e3b63",
+      "sandbox_id": "5a27b5ed-0908-470d-91cd-03446a28f1e9",
       "reason": "exited",
       "exit_code": 7,
       "stdout_bytes": 0,
       "stderr_bytes": 0
     },
     {
-      "job_id": "7f10e02bd78b4029a9a862a320f5dc96",
-      "request_fingerprint": "419f7e4cbd9e937a101365d612e00cda38039832c89853044da5891614e05916",
+      "job_id": "eaab6943970247d0acb832a810e17f57",
+      "request_fingerprint": "54e1e981eaeb0dc32055c4fafc07864edeaba1bb90dd7290f84fabd5a87d831e",
       "state": "failed",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "7f10e02b-d78b-4029-a9a8-62a320f5dc96",
+      "sandbox_id": "eaab6943-9702-47d0-acb8-32a810e17f57",
       "reason": "output_limit",
       "exit_code": null,
       "stdout_bytes": 131072,
       "stderr_bytes": 0
     },
     {
-      "job_id": "add7e36fbc8048e2b1b4626c3520e260",
-      "request_fingerprint": "da9c56f1cc9b645b71b52d580572a9785e5b55eafa3199e3e0dba374059e6638",
+      "job_id": "2227704973c14d5baaa53685704b29d7",
+      "request_fingerprint": "a0c616db4308ffeaaf8cd4679641450aed647b4074900883bc1815a16f84855a",
       "state": "failed",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "add7e36f-bc80-48e2-b1b4-626c3520e260",
+      "sandbox_id": "22277049-73c1-4d5b-aaa5-3685704b29d7",
       "reason": "timed_out",
       "exit_code": null,
       "stdout_bytes": 0,
       "stderr_bytes": 0
     },
     {
-      "job_id": "663d1456b3644d1382469fa593ee9aa4",
-      "request_fingerprint": "538b687725807afeaaacf2b2a33aff95c47a8602aacd31e4714c3a4ed9b60fcf",
+      "job_id": "128cfb89b618491a9f1eeb2dfbe1016b",
+      "request_fingerprint": "17b21aa8268aed1bd9e82c26338cdaa470361bfe21c6f5ca9961456d1f43ed39",
       "state": "cancelled",
       "result_expired": false,
       "gc_state": "retained",
-      "sandbox_id": "663d1456-b364-4d13-8246-9fa593ee9aa4",
+      "sandbox_id": "128cfb89-b618-491a-9f1e-eb2dfbe1016b",
       "reason": "cancelled",
       "exit_code": null,
       "stdout_bytes": 0,
@@ -471,7 +471,7 @@
     "src/yipilot/persistence/__init__.py": "aa41830708efe995ff234223c6a399b84e2443102439f97a615f33ba88fda9f8",
     "src/yipilot/runner/disk.py": "218cc6a394f1a5f6d2c8831c70e5e0a3a41f3243cfa2a28057a18a55e50b184d",
     "src/yipilot/runner/http.py": "3ca66f4e24ea7150a12dab950dbca885d50fbc3d80690f5c4ccf943d074f0aea",
-    "src/yipilot/runner/runtime.py": "f2c6084fa207e9cd69ed5a1016ff947dc6f4d4497b36820f7b7fe103f7d5ea7b",
+    "src/yipilot/runner/runtime.py": "46f64881c4bef1e42a0002b44dad909bcbe35523357b2a66616af4600d0e75b0",
     "src/yipilot/runner/service.py": "4c3eab353a366c76deaa99fd3406b14bc0b4858f4a19195c866f38de6d191b3f",
     "src/yipilot/runner/store.py": "8c06a04f9fd2e4b4dd57cd631ffe94f914fe23cdb65406d2ca2923b15f129026",
     "src/yipilot/runner/__init__.py": "01486c33b57a3b9e053b441487d704e5067783d4f931daed08192c6dfd9b7379",
@@ -550,9 +550,9 @@
   },
   "database": {
     "schema_version": 2,
-    "ledger_jobs": 77,
+    "ledger_jobs": 98,
     "retained_payloads": 32,
-    "expired_tombstones": 45,
+    "expired_tombstones": 66,
     "integrity": "ok",
     "drained_restart_preserved_rows": true
   },
