@@ -62,7 +62,8 @@ def prepare(job_id: str, work: Path) -> None:
             os.posix_fallocate(output.fileno(), 0, size)  # type: ignore[attr-defined]
         os.fsync(output.fileno())
     image.chmod(0o600)
-    command("mkfs.ext4", "-q", "-F", "-m", "0", "-N", "32768", "-U", identity, str(image))
+    command("mkfs.ext4", "-q", "-F", "-m", "0", "-N", "131072" if work.name == "tmp" else "32768",
+            "-U", identity, str(image))
     work.mkdir(mode=0o700)
     command("mount", "-o", ",".join(["loop", "noatime", *sorted(options)]), str(image), str(work))
     if owned_mount(job_id, work) is None:

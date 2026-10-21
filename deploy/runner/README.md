@@ -67,7 +67,7 @@ Runner 在创建之前持久登记确定的 sandbox UUID 和 root 私有创建�
 
 每个 work 使用宿主独立 256 MiB ext4 loop 文件系统，挂载 nodev/nosuid，无空间预留给 root；有效数据容量约 227 MiB，另有限 inode。主容器的只读 rootfs、受限 tmpfs 仍由固定 profile 提供。宿主校验文件系统 UUID、源 loop 设备和镜像路径，停止所有写入者后扫描和发布，再正常卸载；卸载失败仍占额度，禁止 lazy umount 和全局 prune。需要宿主 mkfs.ext4/mount/umount/findmnt/losetup；当前 Ubuntu 主机已验证，K8s 不适用此存储实现。
 
-工具 profile 另有私有 /job-tmp，宿主路径只能为同一 Job 的 tmp。复用上述 ext4 所有权与卸载检查，固定 1 GiB、独立 UUID、nodev/nosuid/noexec，预分配磁盘空间；准备过程串行核对 work 加临时盘及原空盘保留量。临时数据不参与源码扫描或结果传输，停止写入者后卸载、分离 loop 并删除镜像，部分创建也按同一规则回收；失败则保持隔离。Runner 与固定 profile 必须排空后一起升级，旧的工具 profile SDK 创建请求缺少临时盘将被拒绝；不重新执行既有任务。
+工具 profile 另有私有 /job-tmp，宿主路径只能为同一 Job 的 tmp。复用上述 ext4 所有权与卸载检查，固定 1 GiB、131072 个 inode、独立 UUID、nodev/nosuid/noexec，预分配磁盘空间；准备过程串行核对 work 加临时盘及原空盘保留量。临时数据不参与源码扫描或结果传输，停止写入者后卸载、分离 loop 并删除镜像，部分创建也按同一规则回收；失败则保持隔离。Runner 与固定 profile 必须排空后一起升级，旧的工具 profile SDK 创建请求缺少临时盘将被拒绝；不重新执行既有任务。不能沿用 work 的 32768 inode：真实完整套件在仍有约 810 MiB 空盘时耗至仅剩 3 个 inode，导致 SQLite 和目录创建失败。
 
 默认保留 24 小时、最多 32 份 Job 负载。达到数量上限时先释放最老的已完成任务；running、cleanup_failed 和正在下载的结果不清理。过期先持久记录 result_expired，再删除本 Runner 已登记的目录，重启继续未完成删除。状态和原 request key/摘要保留，重复提交仍返回原 Job，结果下载返回 410；去重记录随总请求数增长。未登记目录不自动删除。下载完整性或结果过期不能作为重跑授权。
 
