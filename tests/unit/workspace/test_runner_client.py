@@ -1,10 +1,17 @@
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 
 from yipilot.domain.errors import DomainError
-from yipilot.domain.remote_execution import IMAGES, JobRequest, RunnerSettings
+from yipilot.domain.remote_execution import (
+    IMAGES,
+    MAX_DIAGNOSTIC_BYTES,
+    MAX_LOG_BYTES,
+    JobRequest,
+    RunnerSettings,
+)
 from yipilot.domain.sandbox import SourceFile
 from yipilot.workspace import runner_client as module
 from yipilot.workspace.runner_client import RunnerClient
@@ -53,3 +60,26 @@ def test_failed_result_transfer_removes_only_its_partial_file(tmp_path, monkeypa
         with pytest.raises(FileExistsError):
             RunnerClient(http).download("a" * 32, destination)
         assert destination.read_bytes() == b"owned"
+
+
+@pytest.mark.parametrize("problem", ["job", "log_budget", "body_budget", "encoding", "unknown_field"])
+def test_diagnostic_transport_validates_identity_budget_and_contract(problem):
+    now = datetime.now(UTC).isoformat()
+    document = {"job_id": "a" * 32, "request_fingerprint": "0" * 64, "sandbox_id": None,
+        "reason": "exited", "exit_code": 0, "started_at": now, "ended_at": now, "stdout": "", "stderr": ""}
+    if problem == "job":
+        document["job_id"] = "b" * 32
+    elif problem == "log_budget":
+        document["stdout"] = "\u4e2d" * (MAX_LOG_BYTES // 3 + 1)
+    elif problem == "unknown_field":
+        document["resources_removed"] = True
+    content = b"x" * (MAX_DIAGNOSTIC_BYTES + 1) if problem == "body_budget" else json.dumps(document).encode()
+    calls = []
+    def handle(request):
+        calls.append(request.method)
+        assert request.headers["Accept-Encoding"] == "identity"
+        return httpx.Response(200, headers={"Content-Encoding": "gzip"} if problem == "encoding" else {},
+                              stream=httpx.ByteStream(content))
+    with httpx.Client(base_url="http://127.0.0.1", transport=httpx.MockTransport(handle)) as http, pytest.raises(ValueError):
+        RunnerClient(http).diagnostics("a" * 32)
+    assert calls == ["GET"]

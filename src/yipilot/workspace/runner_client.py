@@ -12,6 +12,8 @@ from yipilot.domain.errors import DomainError
 from yipilot.domain.remote_execution import (
     IMAGES,
     MAX_BUNDLE_BYTES,
+    MAX_DIAGNOSTIC_BYTES,
+    JobDiagnostics,
     JobRequest,
     JobResult,
     JobStatus,
@@ -116,6 +118,25 @@ class RunnerClient:
 
     def cancel(self, job_id: str) -> JobStatus:
         return self._status_request("POST", job_id, "/cancel")
+
+    def diagnostics(self, job_id: str) -> JobDiagnostics | None:
+        self._validate_id(job_id)
+        with self._connection() as client, client.stream("GET", "/v1/jobs/" + job_id + "/diagnostics",
+                headers={"Accept-Encoding": "identity"}) as response:
+            if response.status_code in {404, 409, 410}:
+                return None
+            response.raise_for_status()
+            if response.headers.get("Content-Encoding", "identity").strip().casefold() != "identity":
+                raise ValueError("Compressed diagnostic transport is unavailable")
+            content = bytearray()
+            for chunk in bounded_transfer(response.iter_bytes()):
+                if len(content) + len(chunk) > MAX_DIAGNOSTIC_BYTES:
+                    raise ValueError("Diagnostic document exceeds budget")
+                content.extend(chunk)
+        diagnostic = JobDiagnostics.model_validate_json(bytes(content))
+        if diagnostic.job_id != job_id:
+            raise ValueError("Runner returned diagnostics for a different Job")
+        return diagnostic
 
     def _status_request(self, method: str, job_id: str, suffix: str) -> JobStatus:
         self._validate_id(job_id)

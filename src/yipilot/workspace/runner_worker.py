@@ -214,8 +214,8 @@ class RunnerSandboxWorker:
             try:
                 return self._execute(request, cancel_event)
             except httpx.HTTPStatusError as error:
-                if self._phase in {"submit", "collect"} and error.response.status_code in {400, 401, 403, 404, 409, 410}:
-                    raise DomainError("RUNNER_REQUEST_REJECTED", "Runner rejected this request or result; no new Job was created") from error
+                if self._phase == "submit" and error.response.status_code in {400, 401, 403, 404, 409, 410}:
+                    raise DomainError("RUNNER_REQUEST_REJECTED", "Runner rejected submission; no new Job was created") from error
                 raise DomainError("REMOTE_RESULT_PENDING", "Query the original remote Job before taking further action") from error
             except httpx.HTTPError as error:
                 raise DomainError("REMOTE_RESULT_PENDING", "Runner connection lost; original Job was not replayed") from error
@@ -281,6 +281,22 @@ class RunnerSandboxWorker:
             raise DomainError("REMOTE_RESULT_PENDING", "Remote result is uncertain, expired or awaiting cleanup")
         if status.state == "cancelled" or cancelling:
             raise DomainError("SANDBOX_CANCELLED", "Remote execution stopped")
+        if status.state == "failed" and status.error_code == "OUTPUT_INVALID":
+            try:
+                diagnostic = self._runner.diagnostics(status.job_id)
+            except httpx.HTTPError:
+                diagnostic = None
+            if diagnostic is not None:
+                if (diagnostic.request_fingerprint != frozen.fingerprint
+                        or diagnostic.sandbox_id != status.sandbox_id
+                        or len(diagnostic.stdout.encode()) > request.budgets.stdout_bytes
+                        or len(diagnostic.stderr.encode()) > request.budgets.stderr_bytes):
+                    raise ValueError("Diagnostic request or sandbox differs")
+                FileArtifactStore(self._store).write_bytes(request.task_id, request.run_id,
+                    producer="runner_diagnostics", relative_path="remote-job/diagnostics.json",
+                    content=diagnostic.model_dump_json().encode(), input_fingerprint=request.fingerprint)
+            raise DomainError("REMOTE_OUTPUT_INVALID", "Original Job executed; output collection failed; "
+                + ("diagnostics retained" if diagnostic is not None else "diagnostics unavailable"))
         self._phase = "collect"
         with TemporaryDirectory(dir=root, prefix=".collect-job-") as temporary:
             staging = Path(temporary)

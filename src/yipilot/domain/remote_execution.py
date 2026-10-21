@@ -21,6 +21,7 @@ IMAGES = {PROFILE: IMAGE, TOOLS_PROFILE: TOOLS_IMAGE}
 ScriptPolicy = Literal["python-script-v1", "python-isolated-script-v2"]
 MAX_BUNDLE_BYTES = 132 * 1024**2
 MAX_LOG_BYTES = 128 * 1024
+MAX_DIAGNOSTIC_BYTES = 12 * MAX_LOG_BYTES + 16384
 SandboxId = Annotated[str, Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")]
 
 
@@ -114,6 +115,36 @@ class JobStatus(RemoteModel):
     sandbox_id: SandboxId | None = None
     error_code: str | None = None
     result_expired: bool = False
+
+
+class JobDiagnostics(RemoteModel):
+    """Bounded execution observations; never a verified source/result receipt."""
+
+    schema_version: Literal[1] = 1
+    job_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    request_fingerprint: Sha256
+    sandbox_id: SandboxId | None
+    error_code: Literal["OUTPUT_INVALID"] = "OUTPUT_INVALID"
+    failure_stage: Literal["output_collection"] = "output_collection"
+    reason: Literal["exited", "cancelled", "timed_out", "output_limit", "runtime_error"]
+    exit_code: int | None
+    started_at: datetime
+    ended_at: datetime
+    stdout: str = Field(max_length=MAX_LOG_BYTES)
+    stderr: str = Field(max_length=MAX_LOG_BYTES)
+
+    @field_validator("stdout", "stderr")
+    @classmethod
+    def validate_log(cls, value: str) -> str:
+        if len(value.encode("utf-8")) > MAX_LOG_BYTES:
+            raise ValueError("Diagnostic log exceeds byte budget")
+        return value
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> Self:
+        if self.started_at.tzinfo is None or self.ended_at.tzinfo is None or self.ended_at < self.started_at:
+            raise ValueError("Invalid diagnostic interval")
+        return self
 
 
 class JobResult(RemoteModel):

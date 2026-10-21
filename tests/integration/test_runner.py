@@ -137,6 +137,51 @@ def test_complete_job_reuses_frozen_input_and_durable_deduplication(tmp_path):
     assert reopened.store.get(status.job_id)[1].state == "succeeded"
 
 
+def test_invalid_output_retains_bounded_redacted_diagnostics_without_a_result(tmp_path):
+    class InvalidOutput(Runtime):
+        def execute(self, job_id, request, work, store):
+            super().execute(job_id, request, work, store)
+            (work / "cache.gz").write_bytes(b"\x1f\x8b\x00")
+            return "exited", 7, b"Bearer fixture-task-token\n", ("error \u4e2d\u6587\n" * 30000).encode()
+
+    _, bundle, request = frozen(tmp_path)
+    runner = Runner(tmp_path / "runner", InvalidOutput(), disk_reserve=0)
+    job = runner.submit(bundle)
+    runner.start()
+    try:
+        status = terminal(runner, job.job_id)
+        assert status.state == "failed" and status.error_code == "OUTPUT_INVALID"
+        diagnostic = runner.diagnostics(job.job_id)
+        assert diagnostic.job_id == job.job_id and diagnostic.request_fingerprint == request.fingerprint
+        assert diagnostic.error_code == "OUTPUT_INVALID" and diagnostic.exit_code == 7
+        assert "fixture-task-token" not in diagnostic.stdout and "REDACTED" in diagnostic.stdout
+        assert len(diagnostic.stderr.encode()) <= request.stderr_bytes
+        assert "files" not in diagnostic.model_dump() and "resources_removed" not in diagnostic.model_dump()
+        with pytest.raises(DomainError, match="RESULT_UNAVAILABLE"):
+            runner.result_path(job.job_id)
+    finally:
+        runner.close()
+    reopened = Runner(tmp_path / "runner", Runtime(), disk_reserve=0)
+    assert reopened.diagnostics(job.job_id) == diagnostic
+    assert reopened.submit(bundle).job_id == job.job_id and reopened.runtime.calls == 0
+    server = make_server(reopened, "diagnostic-key-" + "x" * 32, 0)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        with httpx.Client(base_url="http://127.0.0.1:" + str(server.server_address[1]), trust_env=False) as http:
+            assert http.get("/v1/jobs/" + job.job_id + "/diagnostics").status_code == 401
+            http.headers["Authorization"] = "Bearer diagnostic-key-" + "x" * 32
+            assert RunnerClient(http).diagnostics(job.job_id) == diagnostic
+            assert http.get("/v1/jobs/" + job.job_id + "/result").status_code == 409
+            reopened.collect_expired(now=time.time() + 86401)
+            assert RunnerClient(http).diagnostics(job.job_id) is None
+            assert reopened.submit(bundle).job_id == job.job_id
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
 @pytest.mark.parametrize("changes", [
     {"schema_version": 1}, {"script": "../main.py"}, {"script": "-c"}, {"image": "python:latest"},
     {"profile": "yipilot-python-v1"}, {"argv": ["sh"]}, {"host": "/root"}, {"timeout_seconds": 601},
@@ -564,6 +609,7 @@ def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_pa
     async def command(argv, **options):
         assert argv == ["python", *(["-I"] if isolated else []), "-B", "./main.py"]
         assert options["opts"].uid == options["opts"].gid == 10001
+        assert options["opts"].envs == ({"HYPOTHESIS_STORAGE_DIRECTORY": "/tmp/yipilot-hypothesis"} if isolated else None)
         assert options["handlers"].skip_accumulation
         calls.append("command")
         return SimpleNamespace(exit_code=1 if sdk_timeout else 0,

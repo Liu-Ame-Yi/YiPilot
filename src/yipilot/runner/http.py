@@ -98,7 +98,7 @@ def make_server(runner: Runner, token: str, port: int) -> ThreadingHTTPServer:
                             path.unlink(missing_ok=True)
                     self.reply(202, status.model_dump(mode="json"))
                 else:
-                    match = re.fullmatch(r"/v1/jobs/([0-9a-f]{32})(/cancel|/result)?", self.path)
+                    match = re.fullmatch(r"/v1/jobs/([0-9a-f]{32})(/cancel|/result|/diagnostics)?", self.path)
                     if match is None:
                         self.reply(404, {"error": "NOT_FOUND"})
                         return
@@ -107,6 +107,8 @@ def make_server(runner: Runner, token: str, port: int) -> ThreadingHTTPServer:
                         self.reply(200, runner.cancel(job_id).model_dump(mode="json"))
                     elif self.command == "GET" and suffix is None:
                         self.reply(200, runner.store.status(job_id).model_dump(mode="json"))
+                    elif self.command == "GET" and suffix == "/diagnostics":
+                        self.reply(200, runner.diagnostics(job_id).model_dump(mode="json"))
                     elif self.command == "GET" and suffix == "/result":
                         with runner.open_result(job_id) as source:
                             self.send_response(200)

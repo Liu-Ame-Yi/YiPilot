@@ -2,6 +2,8 @@
 
 状态：**完整 CI 与六 Job 的真实服务器业务主链路已通过；候选安装后停止且 disabled，常驻与用户项目切换尚未完成。** 本地通过 SSH 隧道访问服务器回环 8090，Runner 再通过官方 SDK 1.1.1 调用回环 8081 的固定 OpenSandbox profile。管理端口不公开。
 
+后续[真实项目实测](../../docs/research/2026-10-21-opensandbox-real-project-validation.md)在输出收集阶段失败。本次代码补充独立失败诊断，并隔离 Hypothesis 缓存；具体服务器部署与复测结论应另查对应验收记录，不能沿用样例成功放行真实项目。
+
 Runner 使用独立 Python 3.11 环境和 `yipilot[runner]` 可选依赖。普通本地安装不需要 OpenSandbox SDK；本地 HTTP 客户端复用已有 httpx，凭据由 SecretStore 提供。源码、依赖和配置均由可信宿主部署，任务只看到自己的 work。
 
 ## 调用与数据
@@ -15,6 +17,7 @@ Runner 使用独立 Python 3.11 环境和 `yipilot[runner]` 可选依赖。普�
 | `GET /v1/jobs/{id}` | 查询 durable Job 状态及关联 sandbox ID |
 | `POST /v1/jobs/{id}/cancel` | 取消排队任务，或向执行中的 Job 登记取消意图；仍需查询停止结果 |
 | `GET /v1/jobs/{id}/result` | 只下载已可信发布的结果 ZIP，内含完整清单、增改字节、删除项及日志 |
+| `GET /v1/jobs/{id}/diagnostics` | 只读取得已完成且输出无效 Job 的有界、脱敏诊断；不是成功结果或源码清单 |
 
 所有接口要求 `Authorization: Bearer <独立 Runner key>`，与 OpenSandbox key 分开。请求只接受版本 2 合同、固定 profile/镜像、已登记的 `python-script-v1` 或 `python-isolated-script-v2` 入口及其输入脚本；不接收 shell、宿主路径、额外 Docker 参数或模型配置。
 
@@ -27,6 +30,10 @@ Runner 使用独立 Python 3.11 环境和 `yipilot[runner]` 可选依赖。普�
 Runner 在创建之前持久登记确定的 sandbox UUID 和 root 私有创建租约。Server 在实际 Docker 创建线程中持有同一文件锁，租约仅消费一次，并在所有创建操作返回后登记 settled。回收先撤销租约，阻止迟到请求；API 不可用或只留下 sidecar 时，宿主仅按名称、UUID 和标签均核验过的 ID 回收。缺少身份或创建完成证明时保留 cleanup_failed 和准入额度；Server 在创建中崩溃不能凭一次“未看到容器”判断安全释放。
 
 执行结束先销毁，再从宿主核查容器/sidecar/runtime volume 和 cgroup 写入者停止，最后扫描完整 work。结果在任务不可访问的 artifacts 中原子发布。客户端用原始冻结输入重建结果，校验完整清单、增改删除、Git mode 和日志摘要，验证后才发布到新的本地目录。用户的当前工作区不会作为未修改文件的补充来源，也不会被这个样例自动应用。
+
+若源码扫描或结果发布失败，Job 保持 failed / OUTPUT_INVALID；已有执行原因、退出码和 stdout/stderr 单独原子保存为 diagnostics.json。每个日志遵守原请求预算且不超过 128 KiB，整个诊断文档另有约 1.52 MiB 传输上限，绑定 Job、请求指纹和 sandbox 身份，并随原 Job 负载过期。诊断中不包含源码或成功/清理回执。结果接口仍拒绝该 Job；客户端将其记录为 REMOTE_OUTPUT_INVALID，日志不可用时仍保留已执行失败的事实，不称为提交前拒绝，也不自动重放。旧任务没有保存过的日志无法补回。
+
+隔离入口 python-isolated-script-v2 的执行环境将 HYPOTHESIS_STORAGE_DIRECTORY 固定到容器私有 /tmp/yipilot-hypothesis；与现有 Ruff、mypy 临时缓存一起避免污染受控源码。旧 python-script-v1 环境语义、冻结脚本字节、镜像与数据库版本保持不变。
 
 ## 运行与验收
 
@@ -41,6 +48,7 @@ Runner 在创建之前持久登记确定的 sandbox UUID 和 root 私有创建�
 /srv/yipilot-runner/jobs/<id>/
   input/                              root 私有，文件只读
   runtime.json / runtime.lock          root 私有单次创建租约
+  diagnostics.json                    输出收集失败时的独立执行诊断
   work.fs                             root 私有 256 MiB 稀疏 ext4 镜像
   work/                               执行时挂载，任务 UID/GID 10001
   artifacts/result.zip                任务不可访问

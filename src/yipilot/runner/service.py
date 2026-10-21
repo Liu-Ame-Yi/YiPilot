@@ -17,13 +17,17 @@ from uuid import uuid4
 
 from yipilot.domain.errors import DomainError
 from yipilot.domain.remote_execution import (
+    MAX_DIAGNOSTIC_BYTES,
+    JobDiagnostics,
     JobRequest,
     JobResult,
     JobStatus,
     manifest_hash,
 )
+from yipilot.persistence.filesystem import atomic_write_bytes
 from yipilot.runner.store import JobStore
 from yipilot.security.paths import require_plain_path
+from yipilot.security.redaction import SecretRedactor
 from yipilot.workspace.remote_bundle import publish_result, unpack_input
 from yipilot.workspace.sandbox_sources import scan_source_tree
 
@@ -110,12 +114,31 @@ class Runner:
 
     def result_path(self, job_id: str) -> Path:
         _, status = self.store.get(job_id)
-        if status.state not in {"succeeded", "failed", "cancelled"}:
+        if status.state not in {"succeeded", "failed", "cancelled"} or status.error_code == "OUTPUT_INVALID":
             raise DomainError("RESULT_UNAVAILABLE", "No complete trusted result")
         path = self.jobs / job_id / "artifacts" / "result.zip"
         if not path.is_file():
             raise DomainError("RESULT_UNAVAILABLE", "No complete trusted result")
         return path
+
+    def diagnostics(self, job_id: str) -> JobDiagnostics:
+        with self._lock:
+            request, status = self.store.get(job_id)
+            path = self.jobs / job_id / "diagnostics.json"
+            require_plain_path(path)
+            if status.state != "failed" or status.error_code != "OUTPUT_INVALID" or not path.is_file():
+                raise DomainError("DIAGNOSTICS_UNAVAILABLE", "No retained output-failure diagnostics")
+            with path.open("rb") as source:
+                raw = source.read(MAX_DIAGNOSTIC_BYTES + 1)
+            if len(raw) > MAX_DIAGNOSTIC_BYTES:
+                raise ValueError("Diagnostic document exceeds budget")
+            diagnostic = JobDiagnostics.model_validate_json(raw)
+            if (diagnostic.job_id != job_id or diagnostic.request_fingerprint != request.fingerprint
+                    or diagnostic.sandbox_id != status.sandbox_id
+                    or len(diagnostic.stdout.encode()) > request.stdout_bytes
+                    or len(diagnostic.stderr.encode()) > request.stderr_bytes):
+                raise ValueError("Diagnostic Job binding differs")
+            return diagnostic
 
     @contextmanager
     def open_result(self, job_id: str) -> Iterator[BinaryIO]:
@@ -257,6 +280,11 @@ class Runner:
         except Exception:  # noqa: BLE001 -- Never publish partial or unverifiable output.
             state = "failed"
             self.store.update(job_id, error_code="OUTPUT_INVALID")
+            if outcome is not None:
+                try:
+                    self._save_diagnostics(job_id, request, started, outcome)
+                except (OSError, ValueError, DomainError):
+                    pass  # Diagnostic persistence must not bypass cleanup or kill dispatch.
         finally:
             try:
                 self.runtime.release_work(job_id, work)
@@ -265,6 +293,19 @@ class Runner:
             else:
                 self.store.update(job_id, state=state)  # type: ignore[arg-type]
             self._wake.set()
+
+    def _save_diagnostics(self, job_id: str, request: JobRequest, started: datetime,
+                          outcome: tuple[str, int | None, bytes, bytes]) -> None:
+        reason, exit_code, stdout, stderr = outcome
+        logs = []
+        for name, data in (("stdout", stdout), ("stderr", stderr)):
+            limit = getattr(request, name + "_bytes")
+            text = SecretRedactor().redact_text(data[:limit].decode("utf-8", errors="replace"))
+            logs.append(text.encode("utf-8")[:limit].decode("utf-8", errors="ignore"))
+        diagnostic = JobDiagnostics(job_id=job_id, request_fingerprint=request.fingerprint,
+            sandbox_id=self.store.status(job_id).sandbox_id, reason=reason, exit_code=exit_code,  # type: ignore[arg-type]
+            started_at=started, ended_at=datetime.now(UTC), stdout=logs[0], stderr=logs[1])
+        atomic_write_bytes(self.jobs / job_id / "diagnostics.json", diagnostic.model_dump_json().encode())
 
     def _publish(self, job_id: str, request: JobRequest, work: Path, started: datetime,
                  outcome: tuple[str, int | None, bytes, bytes]) -> None:

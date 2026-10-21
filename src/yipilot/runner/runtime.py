@@ -130,6 +130,8 @@ class OpenSandboxRuntime:
             argv = ["python", *(["-I"] if request.policy_revision == "python-isolated-script-v2" else []), "-B", "./" + request.script]
             task = asyncio.create_task(box.commands.run(argv,
                 opts=RunCommandOpts(working_directory="/workspace", uid=10001, gid=10001,
+                    envs={"HYPOTHESIS_STORAGE_DIRECTORY": "/tmp/yipilot-hypothesis"}
+                    if request.policy_revision == "python-isolated-script-v2" else None,
                     timeout=timedelta(seconds=request.timeout_seconds)), handlers=handlers))
             deadline = time.monotonic() + request.timeout_seconds
             while not task.done():
