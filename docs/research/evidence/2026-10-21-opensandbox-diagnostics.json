@@ -1,0 +1,466 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-10-21T09:51:40.708650+00:00",
+  "verdict": "diagnostics_and_cache_fixes_passed_full_project_not_passed",
+  "production_ready": false,
+  "business_cutover": false,
+  "new_model_calls": 0,
+  "control_commit": "96ea1ecf7a7e2785e5d31b98b8047bd020684c55",
+  "source_audit_root": "C:\\Users\\liuyi\\AppData\\Local\\Temp\\ydiag-35039ae5",
+  "tested_project_commit": "0d59554eabcb1e943dd7443e0e6eb924622ef63d",
+  "tested_project_scope": "Prior frozen source-only YiPilot snapshot; excludes the same 12 documentation PNGs; includes the previously applied pytest pythonpath change. The three complete checks keep their original source and launcher bytes; only execution identities change. The first-failure probe additionally changes its diagnostic launcher and is not a complete test acceptance.",
+  "targeted_fixes": {
+    "diagnostics": true,
+    "hypothesis_cache": true
+  },
+  "runtime_checks": {
+    "pytest": false,
+    "ruff": true,
+    "mypy": true
+  },
+  "jobs": [
+    {
+      "name": "invalid_output",
+      "job_id": "71796241896a4009b1c68e765c745312",
+      "request_key": "diagnostic-02e68ec3f750ad236c0a9e85",
+      "request_fingerprint": "b50ecf3bb7a9d3fa82fb8ba0c143c626019ee7704815ab879b454c6cfe2fc2a6",
+      "status": {
+        "schema_version": 2,
+        "job_id": "71796241896a4009b1c68e765c745312",
+        "request_fingerprint": "b50ecf3bb7a9d3fa82fb8ba0c143c626019ee7704815ab879b454c6cfe2fc2a6",
+        "state": "failed",
+        "cancel_requested": false,
+        "sandbox_id": "71796241-896a-4009-b1c6-8e765c745312",
+        "error_code": "OUTPUT_INVALID",
+        "result_expired": false
+      },
+      "diagnostic": {
+        "schema_version": 1,
+        "job_id": "71796241896a4009b1c68e765c745312",
+        "request_fingerprint": "b50ecf3bb7a9d3fa82fb8ba0c143c626019ee7704815ab879b454c6cfe2fc2a6",
+        "sandbox_id": "71796241-896a-4009-b1c6-8e765c745312",
+        "error_code": "OUTPUT_INVALID",
+        "failure_stage": "output_collection",
+        "reason": "exited",
+        "exit_code": 7,
+        "started_at": "2026-10-21T09:39:09.866550Z",
+        "ended_at": "2026-10-21T09:39:15.031309Z",
+        "stdout": "diagnostic fixture reached\nBearer [REDACTED]\n",
+        "stderr": "bounded stderr retained\n"
+      }
+    },
+    {
+      "name": "hypothesis_cache",
+      "job_id": "0a24ac53a8d549dbb47ccd1e08a0c784",
+      "request_key": "cache-3f83945a05e2fca3e0dbed36",
+      "request_fingerprint": "71522fb03a610f3d766ba950aceca011cdd93ea994e6b6ec4426afddd33eab7b",
+      "status": {
+        "schema_version": 2,
+        "job_id": "0a24ac53a8d549dbb47ccd1e08a0c784",
+        "request_fingerprint": "71522fb03a610f3d766ba950aceca011cdd93ea994e6b6ec4426afddd33eab7b",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "sandbox_id": "0a24ac53-a8d5-49db-b47c-cd1e08a0c784",
+        "error_code": null,
+        "result_expired": false
+      },
+      "result": {
+        "schema_version": 2,
+        "job_id": "0a24ac53a8d549dbb47ccd1e08a0c784",
+        "request_fingerprint": "71522fb03a610f3d766ba950aceca011cdd93ea994e6b6ec4426afddd33eab7b",
+        "input_manifest_hash": "3aaea3741ddc40f3de5ed6fcf56a237fe3d0a13a83d1f681dd305d65dcda2381",
+        "output_manifest_hash": "8847a2b9f88b72808a0beccb8722a8b75777267ba41c045e637710a7d85467ea",
+        "sandbox_id": "0a24ac53-a8d5-49db-b47c-cd1e08a0c784",
+        "profile": "yipilot-tools-v3",
+        "image": "sha256:caac41fa96e695ef735b8583eb975b74a21567c234ddb7d789e58df13389b755",
+        "task_uid": 10001,
+        "task_gid": 10001,
+        "reason": "exited",
+        "exit_code": 0,
+        "started_at": "2026-10-21T09:39:17.281743Z",
+        "ended_at": "2026-10-21T09:39:25.036453Z",
+        "writers_stopped": true,
+        "resources_removed": true,
+        "stdout_sha256": "1d6c3167169db3573eb9f3bc35bbead03f7ae838d8b6355aa2d12c0fa317d60a",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_bytes": 98,
+        "stderr_bytes": 0
+      },
+      "files": 1,
+      "changed": [],
+      "deleted": [
+        "main.py"
+      ],
+      "stdout_sha256": "1d6c3167169db3573eb9f3bc35bbead03f7ae838d8b6355aa2d12c0fa317d60a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": ".                                                                        [100%]\n1 passed in 2.69s\n",
+      "stderr": ""
+    },
+    {
+      "name": "real_project_pytest",
+      "job_id": "8fe44d37d3ea4dc0b1fb50792baf89b2",
+      "request_key": "pytest-ae3e2ae681b1fc0237ca2caa",
+      "request_fingerprint": "a384d3387dcf388e5afac9dd17cd8b2040c08e2b8c837e77ea2359fafa005f24",
+      "status": {
+        "schema_version": 2,
+        "job_id": "8fe44d37d3ea4dc0b1fb50792baf89b2",
+        "request_fingerprint": "a384d3387dcf388e5afac9dd17cd8b2040c08e2b8c837e77ea2359fafa005f24",
+        "state": "failed",
+        "cancel_requested": false,
+        "sandbox_id": "8fe44d37-d3ea-4dc0-b1fb-50792baf89b2",
+        "error_code": null,
+        "result_expired": false
+      },
+      "result": {
+        "schema_version": 2,
+        "job_id": "8fe44d37d3ea4dc0b1fb50792baf89b2",
+        "request_fingerprint": "a384d3387dcf388e5afac9dd17cd8b2040c08e2b8c837e77ea2359fafa005f24",
+        "input_manifest_hash": "b42e187ef8802163791c6795f78eea5c5e64b74c73ccce290f4b5aec9567f70f",
+        "output_manifest_hash": "bc762a1de1d89d2258585284758d07994d2e9359c77a6d5056d94333035ffa11",
+        "sandbox_id": "8fe44d37-d3ea-4dc0-b1fb-50792baf89b2",
+        "profile": "yipilot-tools-v3",
+        "image": "sha256:caac41fa96e695ef735b8583eb975b74a21567c234ddb7d789e58df13389b755",
+        "task_uid": 10001,
+        "task_gid": 10001,
+        "reason": "exited",
+        "exit_code": 1,
+        "started_at": "2026-10-21T09:39:27.781992Z",
+        "ended_at": "2026-10-21T09:41:51.521183Z",
+        "writers_stopped": true,
+        "resources_removed": true,
+        "stdout_sha256": "c2622bcdb1967cb5259c9c5aa0b252e92ccbeeed461d670b5940212a5c6fd2d6",
+        "stderr_sha256": "5b5219954d38b8245d6083467c9471169a66e4dd94a1a76bacdbdf21758a9ee6",
+        "stdout_bytes": 4096,
+        "stderr_bytes": 35
+      },
+      "files": 261,
+      "changed": [],
+      "deleted": [
+        "yipilot-runner-main.py"
+      ],
+      "stdout_sha256": "c2622bcdb1967cb5259c9c5aa0b252e92ccbeeed461d670b5940212a5c6fd2d6",
+      "stderr_sha256": "5b5219954d38b8245d6083467c9471169a66e4dd94a1a76bacdbdf21758a9ee6",
+      "stdout": "...........................................................FF.FFFF..FFFF [  8%]\nFFFF................................................F............F....FF [ 16%]\nFFFFF.........F..F...ssss............................................... [ 25%]\n........................................................................ [ 33%]\n..................FEEEEEEEE....FFFFFFFFFFFFFFFFFFFFFFFFssEEEEEEEEEss.... [ 41%]\n........................................................................ [ 50%]\n........................................................................ [ 58%]\n....................EE...EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE [ 66%]\nEEEEEEEE.FFFFFFFFFFFFFFFF...FFFFFFFF...................F................ [ 75%]\n.......FFF.FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEEEEEEEF....F.FFFFFFFF..FFFFFF [ 83%]\n..F..F.FF..FFFFFFF....FFFFsF............................................ [ 91%]\n...............................................F.FFFFFFFFFFFFFFFFFFF.FFF [100%]\n==================================== ERRORS ====================================\n_ ERROR at setup of test_format_repair_is_bounded_and_restartable[srs_review] __\n\ntmp_path = PosixPath('/tmp/pytest-of-unknown/pytest-0/test_format_repair_is_bounded_1')\n\n    @pytest.fixture\n    def setup(tmp_path):\n        root = tmp_path / \"project\"\n        root.mkdir()\n        model = ScriptedModel()\n        reference = SecretStore.keyring_reference(\"spec-fixture\")\n        models = ModelSelectionService(tmp_path / \"settings\",\n            secrets=SecretStore(FakeSecretBackend({(\"yipilot\", \"spec-fixture\"): \"offline-test-key\"})),\n            port_factory=lambda *_: model)\n        models.add(ProviderConnection(connection_id=\"test\", base_url=\"https://example.invalid\", timeout_seconds=10, revision=1,\n            credential_ref=reference), ModelEntry(connection_id=\"test\", model_id=\"spec\",\n            display_name=\"Offline fixture\", output_limit=16000))\n        models.set_default(\"test/spec\")\n        application = ProjectApplication(root, models=models)\n>       application.tasks.initialize_project()\n\ntests/integration/test_specification_workflow.py:71: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \nsrc/yipilot/workflow/project_service.py:23: in initialize_project\n    return self._store.initialize_project()\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsrc/yipilot/persistence/task_store.py:90: in initialize_project\n    self.db.initialize()\nsrc/yipilot/persistence/database.py:42: in initialize\n    with self.transaction(create=True) as connection:\n         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n/usr/local/lib/python3.12/contextlib.py:144: in __exit__\n    next(self.gen)\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <yipilot.persistence.database.Database object at 0x7fb3d8c9e930>\n\n    @contextmanager\n    def transaction(self, *, create: bool = False) -> Iterator[sqlite3.Connection]:\n        key = str(self.path.resolve())\n        connections = getattr(_active, \"connections\", None)\n        if connections is None:\n            connections = _active.connections = {}\n        if key in connections:\n            connection = connections[key]\n            savepoint = \"nested_\" + uuid4().hex\n            connection.execute(f\"SAVEPOINT {savepoint}\")\n            try:\n                yield connection\n                connection.execute(f\"RELEASE {savepoint}\")\n            except BaseException:\n                connection.execute(f\"ROLLBACK TO {savepoint}\")\n                connection.execute(f\"RELEASE {savepoint}\")\n                raise\n            return\n        if not create and not self.path.is_file():\n            code = \"MIGRATION_REQUIRED\" if project_path(self.project, \".yipilot\", \"config.yaml\").exists() else \"PROJECT_NOT_INITIALIZED\"\n            raise DomainError(code, \"initialize a new project or explicitly migrate legacy storage\")\n        with project_lock(self.project, \"maintenance\", timeout=5), closing(\n            sqlite3.connect(self.path, timeout=5, isolation_level=None)\n        ) as connection:\n            try:\n                connection.execute(\"PRA",
+      "stderr": "Traceback (most recent call last):\n"
+    },
+    {
+      "name": "real_project_ruff",
+      "job_id": "808766d45f8c45f7996b780bb82920b3",
+      "request_key": "ruff-ebbbea90878378e40f9bb3c7",
+      "request_fingerprint": "9550148d910725bac5b59724d81afe620b855269a7cf86005ecc7a387179ef02",
+      "status": {
+        "schema_version": 2,
+        "job_id": "808766d45f8c45f7996b780bb82920b3",
+        "request_fingerprint": "9550148d910725bac5b59724d81afe620b855269a7cf86005ecc7a387179ef02",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "sandbox_id": "808766d4-5f8c-45f7-996b-780bb82920b3",
+        "error_code": null,
+        "result_expired": false
+      },
+      "result": {
+        "schema_version": 2,
+        "job_id": "808766d45f8c45f7996b780bb82920b3",
+        "request_fingerprint": "9550148d910725bac5b59724d81afe620b855269a7cf86005ecc7a387179ef02",
+        "input_manifest_hash": "08a7587c2924434a343a2217e4c5173eb082d8fe03d102ddaafed01b31b21483",
+        "output_manifest_hash": "bc762a1de1d89d2258585284758d07994d2e9359c77a6d5056d94333035ffa11",
+        "sandbox_id": "808766d4-5f8c-45f7-996b-780bb82920b3",
+        "profile": "yipilot-tools-v3",
+        "image": "sha256:caac41fa96e695ef735b8583eb975b74a21567c234ddb7d789e58df13389b755",
+        "task_uid": 10001,
+        "task_gid": 10001,
+        "reason": "exited",
+        "exit_code": 0,
+        "started_at": "2026-10-21T09:42:04.898204Z",
+        "ended_at": "2026-10-21T09:42:09.404627Z",
+        "writers_stopped": true,
+        "resources_removed": true,
+        "stdout_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_bytes": 19,
+        "stderr_bytes": 0
+      },
+      "files": 261,
+      "changed": [],
+      "deleted": [
+        "yipilot-runner-main.py"
+      ],
+      "stdout_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "All checks passed!\n",
+      "stderr": ""
+    },
+    {
+      "name": "real_project_mypy",
+      "job_id": "4d5431dd97aa4fadb825ae7f6e61f242",
+      "request_key": "mypy-6211b9a7be216e42eda84cf1",
+      "request_fingerprint": "bc423ebe8d9e33bcb5818e7af5c5ba690ffde97e9654e3448caf0e97c2be530d",
+      "status": {
+        "schema_version": 2,
+        "job_id": "4d5431dd97aa4fadb825ae7f6e61f242",
+        "request_fingerprint": "bc423ebe8d9e33bcb5818e7af5c5ba690ffde97e9654e3448caf0e97c2be530d",
+        "state": "succeeded",
+        "cancel_requested": false,
+        "sandbox_id": "4d5431dd-97aa-4fad-b825-ae7f6e61f242",
+        "error_code": null,
+        "result_expired": false
+      },
+      "result": {
+        "schema_version": 2,
+        "job_id": "4d5431dd97aa4fadb825ae7f6e61f242",
+        "request_fingerprint": "bc423ebe8d9e33bcb5818e7af5c5ba690ffde97e9654e3448caf0e97c2be530d",
+        "input_manifest_hash": "e452ec536c2b377cce0b60a75b54f5aadbe0038132a4721976dbcece05b93cc8",
+        "output_manifest_hash": "bc762a1de1d89d2258585284758d07994d2e9359c77a6d5056d94333035ffa11",
+        "sandbox_id": "4d5431dd-97aa-4fad-b825-ae7f6e61f242",
+        "profile": "yipilot-tools-v3",
+        "image": "sha256:caac41fa96e695ef735b8583eb975b74a21567c234ddb7d789e58df13389b755",
+        "task_uid": 10001,
+        "task_gid": 10001,
+        "reason": "exited",
+        "exit_code": 0,
+        "started_at": "2026-10-21T09:42:21.961397Z",
+        "ended_at": "2026-10-21T09:42:35.030362Z",
+        "writers_stopped": true,
+        "resources_removed": true,
+        "stdout_sha256": "3bce484934e38822ff7a68a9eb1d47d2dd53c92386f38d0dd24152acfb6fab7c",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_bytes": 44,
+        "stderr_bytes": 0
+      },
+      "files": 261,
+      "changed": [],
+      "deleted": [
+        "yipilot-runner-main.py"
+      ],
+      "stdout_sha256": "3bce484934e38822ff7a68a9eb1d47d2dd53c92386f38d0dd24152acfb6fab7c",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "Success: no issues found in 81 source files\n",
+      "stderr": ""
+    },
+    {
+      "name": "first_failure_probe",
+      "job_id": "2518892b6d5d4f2b93835954d2781c0c",
+      "request_key": "first-failure-58b105352e7159b97667",
+      "request_fingerprint": "7b983714d8e122b6f3dc8d91266e8f6c91b8cdcfe2bb70fb7ed17729e4c0e126",
+      "status": {
+        "schema_version": 2,
+        "job_id": "2518892b6d5d4f2b93835954d2781c0c",
+        "request_fingerprint": "7b983714d8e122b6f3dc8d91266e8f6c91b8cdcfe2bb70fb7ed17729e4c0e126",
+        "state": "failed",
+        "cancel_requested": false,
+        "sandbox_id": "2518892b-6d5d-4f2b-9383-5954d2781c0c",
+        "error_code": null,
+        "result_expired": false
+      },
+      "result": {
+        "schema_version": 2,
+        "job_id": "2518892b6d5d4f2b93835954d2781c0c",
+        "request_fingerprint": "7b983714d8e122b6f3dc8d91266e8f6c91b8cdcfe2bb70fb7ed17729e4c0e126",
+        "input_manifest_hash": "69b992508a72b5a03151d59b165cd9d12c286bdb036a75708c363f44be49533a",
+        "output_manifest_hash": "bc762a1de1d89d2258585284758d07994d2e9359c77a6d5056d94333035ffa11",
+        "sandbox_id": "2518892b-6d5d-4f2b-9383-5954d2781c0c",
+        "profile": "yipilot-tools-v3",
+        "image": "sha256:caac41fa96e695ef735b8583eb975b74a21567c234ddb7d789e58df13389b755",
+        "task_uid": 10001,
+        "task_gid": 10001,
+        "reason": "exited",
+        "exit_code": 1,
+        "started_at": "2026-10-21T09:46:42.854456Z",
+        "ended_at": "2026-10-21T09:47:18.960321Z",
+        "writers_stopped": true,
+        "resources_removed": true,
+        "stdout_sha256": "604f9317bd19b76d4c21f633e532f93575c7911025234d342cdc2f9f6e5f441c",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_bytes": 2331,
+        "stderr_bytes": 0
+      },
+      "files": 261,
+      "changed": [],
+      "deleted": [
+        "yipilot-runner-main.py"
+      ],
+      "stdout_sha256": "604f9317bd19b76d4c21f633e532f93575c7911025234d342cdc2f9f6e5f441c",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stdout": "TMP_BEFORE usage(total=67108864, used=0, free=67108864)\n...........................................................F\n=================================== FAILURES ===================================\n______ test_explicit_requests_replay_without_new_model_docker_or_approval ______\nsrc/yipilot/workspace/runner_worker.py:215: in execute\n    return self._execute(request, cancel_event)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsrc/yipilot/workspace/runner_worker.py:257: in _execute\n    status = self._runner.submit(root / \"remote-job/input.zip\")\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsrc/yipilot/workspace/runner_client.py:108: in submit\n    response.raise_for_status()\n/usr/local/lib/python3.12/site-packages/httpx/_models.py:829: in raise_for_status\n    raise HTTPStatusError(message, request=request, response=self)\nE   httpx.HTTPStatusError: Client error '409 Conflict' for url 'http://127.0.0.1:43437/v1/jobs'\nE   For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/409\n\nThe above exception was the direct cause of the following exception:\ntests/integration/test_project_application.py:155: in test_explicit_requests_replay_without_new_model_docker_or_approval\n    run_id = application.apply(\"1\", first.run_id, confirm=lambda _: True, **arguments)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsrc/yipilot/app.py:152: in apply\n    result = self.sandbox.execute(request, approval)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nsrc/yipilot/workflow/sandbox_application.py:262: in execute\n    ).execute(request)\n      ^^^^^^^^^^^^^^^^\nsrc/yipilot/workspace/runner_worker.py:218: in execute\n    raise DomainError(\"RUNNER_REQUEST_REJECTED\", \"Runner rejected this request or result; no new Job was created\") from error\nE   yipilot.domain.errors.DomainError: RUNNER_REQUEST_REJECTED: Runner rejected this request or result; no new Job was created\n=========================== short test summary info ============================\nFAILED tests/integration/test_project_application.py::test_explicit_requests_replay_without_new_model_docker_or_approval\n!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!\n1 failed, 59 passed in 29.90s\nTMP_AFTER usage(total=67108864, used=11190272, free=55918592)\n",
+      "stderr": "",
+      "diagnostic_only": true
+    }
+  ],
+  "original_fingerprints": {
+    "pytest": "c7dc4d03609b45ffd5a734d20395fcbdf149935491a79cb6c59d0594a939d058",
+    "ruff": "eb74cd57a67ff5d802dec9ef583c61b22be7d2978ee0578082293b095d44d98c",
+    "mypy": "40121021f4a0f02114ecb8a8e32b4827f54a9ad8e3753fba40cd9b8f4ab67c0c"
+  },
+  "ci": {
+    "head": "96ea1ecf7a7e2785e5d31b98b8047bd020684c55",
+    "run_id": 39576976358,
+    "url": "https://github.com/Liu-Ame-Yi/YiPilot/actions/runs/39576976358",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "offline",
+        "id": 119144800483,
+        "conclusion": "success",
+        "summary": "862 passed, 12 skipped, 1 warning in 440.95s (0:07:20)"
+      },
+      {
+        "name": "runner-linux",
+        "id": 119144800597,
+        "conclusion": "success",
+        "summary": "66 passed, 1 warning in 48.09s"
+      },
+      {
+        "name": "opensandbox-profile-build",
+        "id": 119144800023,
+        "conclusion": "success",
+        "summary": "95 passed in 0.41s"
+      }
+    ]
+  },
+  "old_input_compatibility": {
+    "validated_old_frozen_inputs": [
+      {
+        "run_id": "5c5b7e2d-f026-4d4a-a2f9-32c61c1d2861",
+        "fingerprint": "124c5a30bd843ec47f440166a30f418bfdd43c3d69b05e8c39f924f09a196557"
+      },
+      {
+        "run_id": "836cfd8b-a040-4894-baa8-276385148cb9",
+        "fingerprint": "f7f44c7230d0136802a03cec2eaeaa72076e29bae62fddf5fa333a4c63e8d672"
+      },
+      {
+        "run_id": "a85ddff2-acfb-479c-8b47-f33c95fbfb08",
+        "fingerprint": "aa9b6d2d3aa7e5545c151bce21550f0a5b9a68234fecfc536bdf5d5291a29e8e"
+      },
+      {
+        "run_id": "b7bfece1-36d6-492a-aaf4-8bbc7538cdee",
+        "fingerprint": "db7913934248842af312c18404b8954b3183072ebdddef0ca0ca03d8d2022d88"
+      },
+      {
+        "run_id": "b942becb-4a9e-4594-a18c-54f4872d9d14",
+        "fingerprint": "b22cd468e4ac138c7a14f0160703a5851db893144a2e6eab57d9a7cf399b4872"
+      },
+      {
+        "run_id": "db67f04a-cd48-43c7-86f1-7758b5284cad",
+        "fingerprint": "695f0083aef596457630fb321e7b223db348b9a8b61179c9e5f473b53dce6eb2"
+      },
+      {
+        "run_id": "f58529c1-99a6-4e2c-9cdf-c7b063d32ce1",
+        "fingerprint": "527da424790d044daa99c302d9ce198c003c1f0d0179f3b3cd45f6deb85ec443"
+      },
+      {
+        "run_id": "f7b0cef9-60eb-4622-b10f-34bb13d65af4",
+        "fingerprint": "cb91a116050eefdcd1e7d18db1f47ae26e232306a2136084927b2ba0321564f0"
+      },
+      {
+        "run_id": "06259010-cfa1-4c39-a153-f47aced21a3b",
+        "fingerprint": "40121021f4a0f02114ecb8a8e32b4827f54a9ad8e3753fba40cd9b8f4ab67c0c"
+      },
+      {
+        "run_id": "57680851-626b-45e8-8b2a-dd1148fcbc83",
+        "fingerprint": "eb74cd57a67ff5d802dec9ef583c61b22be7d2978ee0578082293b095d44d98c"
+      },
+      {
+        "run_id": "9531100e-581f-4ebc-a7ae-e4cb0f767239",
+        "fingerprint": "c7dc4d03609b45ffd5a734d20395fcbdf149935491a79cb6c59d0594a939d058"
+      },
+      {
+        "run_id": "c1003857-9eaf-4d54-b3d4-2dfd038528fa",
+        "fingerprint": "a9b55df32efe5b3725db195d0adaa8dbe0fa5fc3c87924326b1cd765f61db5fa"
+      }
+    ]
+  },
+  "fault_checks": {
+    "diagnostic_write_failure_keeps_dispatch_alive": true,
+    "partial_result_rejected": true,
+    "tampered_diagnostic_rejected": true
+  },
+  "server_audit": {
+    "passed": true,
+    "source_commit": "96ea1ecf7a7e2785e5d31b98b8047bd020684c55",
+    "release": "/opt/yipilot-runner/releases/diagnostics-96ea1ecf7a7e-8d6bcc",
+    "python": "/opt/yipilot-runner/releases/diagnostics-96ea1ecf7a7e-8d6bcc/venv/bin/python",
+    "wheel_sha256": "5df4b19d869552620fd415bb9d4545951e48483891f8b532fa23832533af2c88",
+    "historical_jobs_preserved": 119,
+    "ledger_jobs": 125,
+    "new_jobs": 6,
+    "database_integrity": "ok",
+    "schema": 2,
+    "after_restart_lookups": [
+      {
+        "job_id": "71796241896a4009b1c68e765c745312",
+        "state": "failed",
+        "same_job": true
+      },
+      {
+        "job_id": "0a24ac53a8d549dbb47ccd1e08a0c784",
+        "state": "succeeded",
+        "same_job": true
+      },
+      {
+        "job_id": "8fe44d37d3ea4dc0b1fb50792baf89b2",
+        "state": "failed",
+        "same_job": true
+      },
+      {
+        "job_id": "808766d45f8c45f7996b780bb82920b3",
+        "state": "succeeded",
+        "same_job": true
+      },
+      {
+        "job_id": "4d5431dd97aa4fadb825ae7f6e61f242",
+        "state": "succeeded",
+        "same_job": true
+      },
+      {
+        "job_id": "2518892b6d5d4f2b93835954d2781c0c",
+        "state": "failed",
+        "same_job": true
+      }
+    ],
+    "diagnostics_survived_restart": true,
+    "new_jobs_after_restart_lookup": 0,
+    "backup": "/srv/yipilot-runner/backups/diagnostics-20261021T093749Z-85e045",
+    "containers": 0,
+    "volumes": 0,
+    "work_mounts": 0,
+    "work_loops": 0,
+    "host_oom_kill_counter": 0,
+    "memory_kib": {
+      "MemAvailable": 1078748
+    },
+    "runner": "stopped, disabled",
+    "profile": "stopped, disabled",
+    "original_server": "healthy",
+    "original_config_sha256": "b4500d04c25253827034395f5af281823cd87172df1f652ae8a0e398c4a6718f",
+    "production_ready": false,
+    "business_cutover": false
+  },
+  "deployment": {
+    "source_commit": "96ea1ecf7a7e2785e5d31b98b8047bd020684c55",
+    "release": "/opt/yipilot-runner/releases/diagnostics-96ea1ecf7a7e-8d6bcc",
+    "python": "/opt/yipilot-runner/releases/diagnostics-96ea1ecf7a7e-8d6bcc/venv/bin/python",
+    "wheel_sha256": "5df4b19d869552620fd415bb9d4545951e48483891f8b532fa23832533af2c88",
+    "requirements_sha256": "3f23e82ac8244ef43642dc12fcefc41baa5e4e01f8e8d877f61cb6aa739649ee",
+    "backup": "/srv/yipilot-runner/backups/diagnostics-20261021T093749Z-85e045",
+    "historical_jobs": 119,
+    "installed_source_bytes_matched": true,
+    "old_ledger_preserved": true
+  },
+  "limits": {
+    "binary_source_supported": false,
+    "new_business_handoff_created": false,
+    "full_pytest_counts_available": false,
+    "full_pytest_stdout_bytes": 4096,
+    "full_pytest_stderr_bytes": 35,
+    "heavy_concurrency_validated": false,
+    "first_failure_is_only_one_failure": true
+  },
+  "next_blocker": {
+    "first_failed_test": "tests/integration/test_project_application.py::test_explicit_requests_replay_without_new_model_docker_or_approval",
+    "observed_inner_http_status": 409,
+    "tmp_capacity_bytes": 67108864,
+    "tmp_free_after_first_failure_bytes": 55918592,
+    "inner_runner_minimum_free_bytes": 536870912,
+    "interpretation": "The first failing test runs its own fixture Runner under the container tmp directory. Even with disk_reserve=0 the submit guard requires 512 MiB free, exceeding the 64 MiB tmpfs capacity. This code-and-capacity analysis explains the first admission refusal; it does not identify every failure in the full suite."
+  }
+}

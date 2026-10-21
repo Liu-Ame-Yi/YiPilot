@@ -2,6 +2,8 @@
 
 日期：2026-10-21。接续[六 Job 受信样例验收](2026-10-21-opensandbox-business-validation.md)，本次使用已有 DeepSeek 连接、真实 YiPilot 源码和华为云 OpenSandbox。结论是**真实模型生成与远程应用成功，真实项目完整验证未通过**。没有生成 Change Handoff，不放行正式切换。
 
+后续[失败诊断与缓存修复](2026-10-21-opensandbox-diagnostics-validation.md)已通过针对性服务器复测，Ruff/mypy 通过，完整 pytest 仍失败；首个新阻塞为容器临时空间与测试内部 Runner 准入冲突。下文保留修复前的失败范围，当前安排以后续记录为准。
+
 ## 实际执行范围
 
 控制端修复提交为 `0d59554eabcb1e943dd7443e0e6eb924622ef63d`；服务器仍运行已验收的独立环境 `g4-bc1e83844ba6-99ac0a`，profile 和工具镜像未改。控制端使用真实 `ProjectApplication`、`ModelSelectionService` 和默认 `RunnerClient`，没有替换模型端口或远程执行器。

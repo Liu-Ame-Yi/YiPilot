@@ -4,6 +4,8 @@ Yipilot 是本地运行、面向单个 Python 仓库的自动研发交付项目�
 
 当前已接入真实模型提案；应用和验证代码已切换为远程 OpenSandbox Runner，完整 CI 与服务器受信样例业务验收已通过。后续[真实项目实测](docs/research/2026-10-21-opensandbox-real-project-validation.md)完成模型生成和远程应用，但完整验证被二进制资源/测试缓存兼容问题挡住；常驻与正式项目切换未放行。完整自动流程尚未实现。准确边界见 [当前状态](docs/product/status.md)。
 
+[失败诊断和缓存隔离](docs/research/2026-10-21-opensandbox-diagnostics-validation.md)现已修复并通过针对性实测；Ruff/mypy通过，完整pytest仍有临时空间兼容问题，尚未完成整仓交付。
+
 ## 开始阅读
 
 - [文档入口](docs/README.md)：当前文档与历史资料的区别。

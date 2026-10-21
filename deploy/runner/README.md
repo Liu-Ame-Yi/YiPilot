@@ -2,7 +2,7 @@
 
 状态：**完整 CI 与六 Job 的真实服务器业务主链路已通过；候选安装后停止且 disabled，常驻与用户项目切换尚未完成。** 本地通过 SSH 隧道访问服务器回环 8090，Runner 再通过官方 SDK 1.1.1 调用回环 8081 的固定 OpenSandbox profile。管理端口不公开。
 
-后续[真实项目实测](../../docs/research/2026-10-21-opensandbox-real-project-validation.md)在输出收集阶段失败。本次代码补充独立失败诊断，并隔离 Hypothesis 缓存；具体服务器部署与复测结论应另查对应验收记录，不能沿用样例成功放行真实项目。
+后续[真实项目实测](../../docs/research/2026-10-21-opensandbox-real-project-validation.md)在输出收集阶段失败。[独立失败诊断与缓存隔离修复](../../docs/research/2026-10-21-opensandbox-diagnostics-validation.md)现已部署并通过针对性复测，Ruff/mypy通过，完整pytest仍未通过；不能沿用样例成功放行真实项目。
 
 Runner 使用独立 Python 3.11 环境和 `yipilot[runner]` 可选依赖。普通本地安装不需要 OpenSandbox SDK；本地 HTTP 客户端复用已有 httpx，凭据由 SecretStore 提供。源码、依赖和配置均由可信宿主部署，任务只看到自己的 work。
 
