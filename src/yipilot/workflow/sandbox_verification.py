@@ -1,4 +1,4 @@
-"""Approved, fixed Docker verification and a revalidated Change Handoff gate."""
+"""Approved, fixed OpenSandbox verification and a revalidated Change Handoff gate."""
 
 import hashlib
 import json
@@ -8,7 +8,6 @@ from pathlib import Path
 from threading import Event
 from uuid import uuid4
 
-from filelock import FileLock
 from pydantic import JsonValue
 
 from yipilot.domain.errors import DomainError
@@ -33,11 +32,18 @@ from yipilot.harness.report_store import HarnessReportStore
 from yipilot.persistence.approval_store import FileApprovalStore
 from yipilot.persistence.artifact_store import ArtifactRecord, FileArtifactStore
 from yipilot.persistence.filesystem import atomic_write_bytes, project_path
-from yipilot.persistence.ownership import exclusive_execution
+from yipilot.persistence.ownership import project_lock
 from yipilot.persistence.task_store import FileTaskStore
 from yipilot.security.paths import read_evidence, require_plain_path
-from yipilot.workspace.docker_worker import DockerSandboxWorker
 from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.runner_client import RunnerClient
+from yipilot.workspace.runner_worker import (
+    RESULT_ARTIFACTS,
+    RunnerSandboxWorker,
+    cancel_remote_job,
+    read_remote_request,
+    verify_remote_result,
+)
 from yipilot.workspace.sandbox_apply import SandboxApplyService
 from yipilot.workspace.sandbox_output import SandboxOutputService
 from yipilot.workspace.sandbox_sources import (
@@ -46,7 +52,7 @@ from yipilot.workspace.sandbox_sources import (
     scan_source_tree,
 )
 
-REVISION = "sandbox-verification-v1"
+REVISION = "sandbox-runner-verification-v2"
 _COMMANDS = (
     (
         "verification-pytest",
@@ -58,7 +64,7 @@ _COMMANDS = (
 _BUDGETS = SandboxBudgets(
     wall_clock_seconds=600,
     cpu_count=1,
-    memory_bytes=1024**3,
+    memory_bytes=512 * 1024**2,
     pid_limit=128,
     stdout_bytes=128 * 1024,
     stderr_bytes=128 * 1024,
@@ -100,14 +106,14 @@ class SandboxVerificationPreparation:
 
 class SandboxVerificationService:
     def __init__(self, project_root: Path, *, store: FileTaskStore | None = None,
-                 git: GitRunner | None = None) -> None:
+                 git: GitRunner | None = None, runner: RunnerClient | None = None) -> None:
         self._root = project_root.resolve(strict=True)
         self._store = store or FileTaskStore(self._root)
         self._git = git or GitRunner()
+        self._runner = runner or RunnerClient()
         self._apply = SandboxApplyService(self._root, self._git)
         self._output = SandboxOutputService(self._root, self._git)
 
-    @exclusive_execution
     def prepare(
         self,
         prepared: PreparedSources,
@@ -117,110 +123,113 @@ class SandboxVerificationService:
         *, request_id: str | None = None,
     ) -> SandboxVerificationPreparation:
         """Freeze three independent inputs; the caller must obtain a human approval."""
-        self._apply.verify(prepared, request, policy, evidence)
-        output = self._output.inspect(prepared, request, policy)
-        files, contents = scan_source_tree(prepared.execution, prepared.manifest.files)
-        if files != output.manifest.files:
-            raise DomainError("SANDBOX_OUTPUT_DRIFT", "verification seed changed")
-        operation = self._store.create_operation(
-            request.task_id,
-            "sandbox_verification",
-            f"sandbox-verify:{request.task_id}:{request_id or uuid4()}",
-            {"apply_run_id": request.run_id, "patch_sha256": evidence.patch_sha256},
-        )
-        run, created = self._store.get_or_create_run(
-            request.task_id, operation.operation_id, "sandbox_verification"
-        )
-        if not created:
-            context, previous_requests = self._inputs(prepared, request, policy, evidence, run.run_id)
-            return SandboxVerificationPreparation(request.task_id, operation.operation_id,
-                run.run_id, hashlib.sha256(_json(context)).hexdigest(), previous_requests)
-        root = self._store.event_journal_path(run.run_id).parent
-        requests = []
-        try:
-            for tool, argv in _COMMANDS:
-                child = self._store.create_run(request.task_id, run.operation_id, tool)
-                copies = SandboxSourceService(self._root, self._git).prepare(
-                    self._store.get_task(request.task_id),
-                    prepared.manifest.repository_alias,
-                    child,
-                    prepared.manifest.base_sha,
-                )
-                # Fresh controller-owned copies only. Each tool receives identical bytes.
-                for old in copies.manifest.files:
-                    path = copies.execution / old.path
-                    require_plain_path(path)
-                    path.unlink()
-                for directory in sorted(
-                    copies.execution.rglob("*"),
-                    key=lambda p: len(p.parts),
-                    reverse=True,
-                ):
-                    require_plain_path(directory)
-                    if directory.is_dir():
-                        directory.rmdir()
-                for file in files:
-                    path = project_path(copies.execution, file.path)
-                    require_plain_path(path)
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    atomic_write_bytes(path, contents[file.path])
-                    path.chmod(0o755 if file.git_mode == "100755" else 0o644)
-                seed = SourceManifest.model_validate_json(
-                    copies.manifest.model_copy(
-                        update={"files": files}
-                    ).model_dump_json()
-                )
-                atomic_write_bytes(
-                    copies.execution.parent / "input-manifest.json",
-                    seed.model_dump_json().encode(),
-                )
-                item = SandboxRequest.model_validate(
-                    {
-                        "task_id": request.task_id,
-                        "operation_id": run.operation_id,
-                        "run_id": child.run_id,
-                        "policy_revision": REVISION,
-                        "mode": SandboxMode.OFFLINE_WORKSPACE_WRITE,
-                        "execution_directory": str(copies.execution),
-                        "baseline_manifest_hash": copies.manifest_hash,
-                        "input_manifest_hash": fingerprint_model(seed),
-                        "image_digest": request.image_digest,
-                        "tool_id": tool,
-                        "argv": argv,
-                        "budgets": _BUDGETS,
-                    },
-                    context={"policy": verification_policy()},
-                )
-                requests.append(item)
+        with project_lock(self._root, "executor", timeout=30):
             self._apply.verify(prepared, request, policy, evidence)
-            context = {
-                "schema_version": 1,
-                "task_id": request.task_id,
-                "operation_id": run.operation_id,
-                "run_id": run.run_id,
-                "apply_run_id": request.run_id,
-                "parent_request_fingerprint": request.fingerprint,
-                "evidence_fingerprint": fingerprint_model(evidence),
-                "requests": [item.model_dump(mode="json") for item in requests],
-            }
-            data = _json(context)
-            atomic_write_bytes(root / "sandbox-verification.json", data)
-            return SandboxVerificationPreparation(
+            output = self._output.inspect(prepared, request, policy)
+            files, contents = scan_source_tree(prepared.execution, prepared.manifest.files)
+            if files != output.manifest.files:
+                raise DomainError("SANDBOX_OUTPUT_DRIFT", "verification seed changed")
+            operation = self._store.create_operation(
                 request.task_id,
-                run.operation_id,
-                run.run_id,
-                hashlib.sha256(data).hexdigest(),
-                tuple(requests),
+                "sandbox_verification",
+                f"sandbox-verify:{request.task_id}:{request_id or uuid4()}",
+                {"apply_run_id": request.run_id, "patch_sha256": evidence.patch_sha256},
             )
-        except BaseException as error:
-            self._abort(request.task_id, run.operation_id, "SANDBOX_EVIDENCE_FAILED")
-            if isinstance(error, (OSError, ValueError)):
-                raise DomainError(
-                    "SANDBOX_EVIDENCE_FAILED", "verification preparation failed"
-                ) from error
-            raise
+            run, created = self._store.get_or_create_run(
+                request.task_id, operation.operation_id, "sandbox_verification"
+            )
+            if not created:
+                context, previous_requests = self._inputs(prepared, request, policy, evidence, run.run_id)
+                return SandboxVerificationPreparation(request.task_id, operation.operation_id,
+                    run.run_id, hashlib.sha256(_json(context)).hexdigest(), previous_requests)
+            root = self._store.event_journal_path(run.run_id).parent
+            requests = []
+            try:
+                for tool, argv in _COMMANDS:
+                    child = self._store.create_run(request.task_id, run.operation_id, tool)
+                    copies = SandboxSourceService(self._root, self._git).prepare(
+                        self._store.get_task(request.task_id),
+                        prepared.manifest.repository_alias,
+                        child,
+                        prepared.manifest.base_sha,
+                    )
+                    # Fresh controller-owned copies only. Each tool receives identical bytes.
+                    for old in copies.manifest.files:
+                        path = copies.execution / old.path
+                        require_plain_path(path)
+                        path.unlink()
+                    for directory in sorted(
+                        copies.execution.rglob("*"),
+                        key=lambda p: len(p.parts),
+                        reverse=True,
+                    ):
+                        require_plain_path(directory)
+                        if directory.is_dir():
+                            directory.rmdir()
+                    for file in files:
+                        path = project_path(copies.execution, file.path)
+                        require_plain_path(path)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        atomic_write_bytes(path, contents[file.path])
+                        path.chmod(0o755 if file.git_mode == "100755" else 0o644)
+                    seed = SourceManifest.model_validate_json(
+                        copies.manifest.model_copy(
+                            update={"files": files}
+                        ).model_dump_json()
+                    )
+                    atomic_write_bytes(
+                        copies.execution.parent / "input-manifest.json",
+                        seed.model_dump_json().encode(),
+                    )
+                    item = SandboxRequest.model_validate(
+                        {
+                            "task_id": request.task_id,
+                            "operation_id": run.operation_id,
+                            "run_id": child.run_id,
+                            "policy_revision": REVISION,
+                            "mode": SandboxMode.OFFLINE_WORKSPACE_WRITE,
+                            "execution_directory": str(copies.execution),
+                            "baseline_manifest_hash": copies.manifest_hash,
+                            "input_manifest_hash": fingerprint_model(seed),
+                            "image_digest": request.image_digest,
+                            "runner_endpoint": request.runner_endpoint,
+                            "tool_id": tool,
+                            "argv": argv,
+                            "budgets": _BUDGETS,
+                        },
+                        context={"policy": verification_policy()},
+                    )
+                    atomic_write_bytes(copies.execution.parent / "sandbox-cli-request.json", item.model_dump_json().encode())
+                    RunnerSandboxWorker(self._root, verification_policy(), copies, input_manifest=seed, runner=self._runner).freeze(item)
+                    requests.append(item)
+                self._apply.verify(prepared, request, policy, evidence)
+                context = {
+                    "schema_version": 1,
+                    "task_id": request.task_id,
+                    "operation_id": run.operation_id,
+                    "run_id": run.run_id,
+                    "apply_run_id": request.run_id,
+                    "parent_request_fingerprint": request.fingerprint,
+                    "evidence_fingerprint": fingerprint_model(evidence),
+                    "requests": [item.model_dump(mode="json") for item in requests],
+                }
+                data = _json(context)
+                atomic_write_bytes(root / "sandbox-verification.json", data)
+                return SandboxVerificationPreparation(
+                    request.task_id,
+                    run.operation_id,
+                    run.run_id,
+                    hashlib.sha256(data).hexdigest(),
+                    tuple(requests),
+                )
+            except BaseException as error:
+                self._abort(request.task_id, run.operation_id, "SANDBOX_EVIDENCE_FAILED")
+                if isinstance(error, (OSError, ValueError)):
+                    raise DomainError(
+                        "SANDBOX_EVIDENCE_FAILED", "verification preparation failed"
+                    ) from error
+                raise
 
-    @exclusive_execution
     def run(
         self,
         prepared: PreparedSources,
@@ -235,7 +244,7 @@ class SandboxVerificationService:
         root = self._store.event_journal_path(run_id).parent
         lock = project_path(root, ".sandbox-verification.lock")
         require_plain_path(lock)
-        with FileLock(str(lock)):
+        with project_lock(self._root, "run-" + run_id):
             run = self._store.get_run(request.task_id, run_id)
             if run.stage != "sandbox_verification" or run.status.value != "pending":
                 raise DomainError(
@@ -260,11 +269,11 @@ class SandboxVerificationService:
                         raise DomainError("SANDBOX_CANCELLED", "verification cancelled")
                     copies, seed = self._copies(item)
                     self._store.set_run_status(item.run_id, "running")
-                    result = DockerSandboxWorker(
-                        self._root, verification_policy(), copies, input_manifest=seed
+                    result = RunnerSandboxWorker(
+                        self._root, verification_policy(), copies, input_manifest=seed, runner=self._runner
                     ).execute(item, cancel_event=cancel_event)
                     self._verify_tool(item, result, seed)
-                    for relative in ("docker-worker/result.json", "docker-worker/container-after.json", "docker-worker/cleanup.json"):
+                    for relative in RESULT_ARTIFACTS:
                         FileArtifactStore(self._store).register(item.task_id, item.run_id,
                             producer="sandbox_verification", relative_path=relative, input_fingerprint=item.fingerprint)
                     self._store.set_run_status(item.run_id, "succeeded")
@@ -298,7 +307,7 @@ class SandboxVerificationService:
                         HarnessCheck(
                             id=tool,
                             status=HarnessStatus.PASSED,
-                            description="fixed Docker tool passed; output and cleanup verified",
+                            description="fixed OpenSandbox tool passed; output and cleanup verified",
                         )
                         for tool, _ in _COMMANDS
                     ]
@@ -309,7 +318,7 @@ class SandboxVerificationService:
                             description="approved worktree, HEAD and index remain unchanged",
                         )
                     ],
-                    summary="All fixed Docker checks and trusted output checks passed",
+                    summary="All fixed OpenSandbox checks and trusted output checks passed",
                 )
                 HarnessReportStore(self._store).save(
                     report, "sandbox-verification-report.json"
@@ -398,7 +407,7 @@ class SandboxVerificationService:
         evidence: SandboxDiffEvidence,
         run_id: str,
     ) -> str:
-        """Return bounded output only for an evidenced failing Docker check."""
+        """Return bounded output only for an evidenced failing OpenSandbox check."""
         run = self._store.get_run(request.task_id, run_id)
         if run.stage != "sandbox_verification" or run.status.value != "failed":
             raise DomainError("REPAIR_VERIFICATION_INVALID", "verification Run is not a failed repair candidate")
@@ -410,6 +419,7 @@ class SandboxVerificationService:
             if child.status.value != "failed":
                 continue
             result = self._result(item)
+            verify_remote_result(self._store.event_journal_path(item.run_id).parent, item, result)
             if (
                 (result.task_id, result.operation_id, result.run_id)
                 != (item.task_id, item.operation_id, item.run_id)
@@ -435,7 +445,7 @@ class SandboxVerificationService:
             values.append(f"## {item.tool_id}\n" + "\n".join(output))
         diagnostics = "\n\n".join(values)[:8192]
         if not diagnostics.strip():
-            raise DomainError("REPAIR_DIAGNOSTICS_MISSING", "no evidenced failing Docker check output")
+            raise DomainError("REPAIR_DIAGNOSTICS_MISSING", "no evidenced failing OpenSandbox check output")
         return diagnostics
 
     def _handoff(
@@ -500,16 +510,22 @@ class SandboxVerificationService:
         return artifacts.verify(request.task_id, run_id, records[0].artifact_id)
 
     def _abort(self, task_id: str, operation_id: str, code: str) -> None:
-        for child in self._store.list_runs(task_id):
-            if child.operation_id == operation_id and child.status.value in {
-                "pending",
-                "running",
-            }:
-                status = (
-                    "cancelled"
-                    if child.status.value == "pending" or code == "SANDBOX_CANCELLED"
-                    else "failed"
-                )
+        runs = [r for r in self._store.list_runs(task_id) if r.operation_id == operation_id]
+        uncertain = code == "REMOTE_RESULT_PENDING"
+        for child in runs:
+            root = self._store.event_journal_path(child.run_id).parent
+            if child.status.value == "running" and (root / "remote-job/submission.json").exists():
+                try:
+                    cancel_remote_job(root, read_remote_request(root), self._runner)
+                except (DomainError, OSError, ValueError):
+                    uncertain = True
+        for child in runs:
+            if child.status.value not in {"pending", "running"}:
+                continue
+            if uncertain and child.status.value == "running":
+                self._store.set_run_status(child.run_id, "paused", error_code="REMOTE_RESULT_PENDING")
+            else:
+                status = "cancelled" if child.status.value == "pending" or code == "SANDBOX_CANCELLED" else "failed"
                 self._store.set_run_status(child.run_id, status, error_code=code)
 
     def _inputs(
@@ -634,7 +650,7 @@ class SandboxVerificationService:
         return SandboxResult.model_validate_json(
             read_evidence(
                 self._store.event_journal_path(request.run_id).parent
-                / "docker-worker/result.json"
+                / "remote-job/result.json"
             )
         )
 
@@ -643,23 +659,7 @@ class SandboxVerificationService:
     ) -> None:
         root = self._store.event_journal_path(request.run_id).parent
         self._output.validate_result(root, request, result)
-        facts = json.loads(read_evidence(root / "docker-worker/container-after.json"))
-        if (
-            json.loads(read_evidence(root / "docker-worker/cleanup.json"))
-            != {"container_removed": True}
-            or facts["State"]["Running"]
-            or facts["State"]["ExitCode"] != 0
-            or facts["State"].get("Status") != "exited"
-            or facts["State"].get("OOMKilled")
-            or facts["State"].get("Error")
-            or facts["Id"] != result.container_id
-        ):
-            raise DomainError(
-                "SANDBOX_EVIDENCE_FAILED", "verification container cleanup differs"
-            )
-        DockerSandboxWorker.check_container(
-            facts, request, Path(request.execution_directory), request.argv
-        )
+        verify_remote_result(root, request, result)
         copies, _ = self._copies(request)
         output = self._output.inspect(copies, request, verification_policy())
         if (

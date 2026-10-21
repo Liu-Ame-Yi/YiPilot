@@ -29,6 +29,7 @@ from yipilot.persistence.filesystem import atomic_write_bytes, project_path
 from yipilot.persistence.task_store import FileTaskStore
 from yipilot.security.paths import require_plain_path
 from yipilot.workspace.git_runner import GitRunner
+from yipilot.workspace.runner_worker import verify_remote_result
 from yipilot.workspace.sandbox_sources import (
     PreparedSources,
     SandboxSourceService,
@@ -374,6 +375,7 @@ class SandboxOutputService:
             raise DomainError(
                 Code.OUTPUT_INVALID, "failed result or execution policy drift"
             )
+        verify_remote_result(root, request, result)
         run = self._store.get_run(request.task_id, request.run_id)
         if run.status.value in {"failed", "cancelled"}:
             raise DomainError(Code.OUTPUT_INVALID, "Run cannot produce accepted output")

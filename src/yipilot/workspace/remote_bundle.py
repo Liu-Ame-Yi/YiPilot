@@ -14,10 +14,12 @@ from tempfile import TemporaryDirectory
 from yipilot.domain.remote_execution import (
     IMAGE,
     MAX_BUNDLE_BYTES,
+    MAX_LOG_BYTES,
     PROFILE,
     JobRequest,
     JobResult,
     Profile,
+    ScriptPolicy,
     canonical,
     manifest_hash,
 )
@@ -80,12 +82,16 @@ def read_entry(bundle: zipfile.ZipFile, name: str, maximum: int) -> bytes:
     return data
 
 
-def write_source(root: Path, file: SourceFile, data: bytes) -> None:
+def validate_source_bytes(file: SourceFile, data: bytes) -> None:
     if len(data) != file.size_bytes or hashlib.sha256(data).hexdigest() != file.sha256:
         raise ValueError("File size or digest differs")
     data.decode("utf-8")
     if b"\0" in data:
         raise ValueError("Only UTF-8 patchable source is permitted")
+
+
+def write_source(root: Path, file: SourceFile, data: bytes) -> None:
+    validate_source_bytes(file, data)
     path = root / file.path
     require_plain_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,11 +106,14 @@ def freeze_bundle(source: Path, destination: Path, *, request_key: str, task_id:
                   operation_id: str, run_id: str, script: str,
                   frozen_files: tuple[SourceFile, ...] = (), timeout_seconds: int = 60,
                   memory_bytes: int = 128 * 1024**2, cpu_millis: int = 250,
-                  profile: Profile = PROFILE, image: str = IMAGE) -> JobRequest:
+                  profile: Profile = PROFILE, image: str = IMAGE,
+                  stdout_bytes: int = MAX_LOG_BYTES, stderr_bytes: int = MAX_LOG_BYTES,
+                  policy_revision: ScriptPolicy = "python-script-v1") -> JobRequest:
     files, contents = scan_source_tree(source, frozen_files)
     request = JobRequest(request_key=request_key, task_id=task_id, operation_id=operation_id,
                          run_id=run_id, script=script, files=files, timeout_seconds=timeout_seconds,
-                         memory_bytes=memory_bytes, cpu_millis=cpu_millis, profile=profile, image=image)
+                         memory_bytes=memory_bytes, cpu_millis=cpu_millis, profile=profile, image=image,
+                         stdout_bytes=stdout_bytes, stderr_bytes=stderr_bytes, policy_revision=policy_revision)
     require_plain_path(destination)
     with destination.open("xb") as output, zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
         bundle.writestr("request.json", canonical(request))
@@ -152,6 +161,42 @@ def publish_result(path: Path, result: JobResult, contents: dict[str, bytes],
     os.replace(temporary, path)
 
 
+
+def result_metadata(bundle: zipfile.ZipFile, request: JobRequest, job_id: str) -> JobResult:
+    result = JobResult.model_validate_json(read_entry(bundle, "result.json", 4 * 1024**2))
+    if (result.job_id != job_id or result.request_fingerprint != request.fingerprint
+            or result.profile != request.profile or result.image != request.image
+            or result.input_manifest_hash != manifest_hash(request.files)):
+        raise ValueError("Result belongs to a different input or Job")
+    old, new = {f.path: f for f in request.files}, {f.path: f for f in result.files}
+    changed = tuple(sorted(p for p in new if new[p] != old.get(p)))
+    deleted = tuple(sorted(old.keys() - new.keys()))
+    if result.changed != changed or result.deleted != deleted:
+        raise ValueError("Result delta differs from complete manifest")
+    aliases = {p.casefold(): p for p in old}
+    if any(aliases.get(p.casefold(), p) != p for p in new):
+        raise ValueError("Cross-tree case alias denied")
+    bundle_entries(bundle, {"result.json", "stdout.log", "stderr.log",
+                            *("source/" + p for p in changed)})
+    for stream in ("stdout", "stderr"):
+        data = read_entry(bundle, stream + ".log", getattr(request, stream + "_bytes"))
+        if (len(data) != getattr(result, stream + "_bytes")
+                or hashlib.sha256(data).hexdigest() != getattr(result, stream + "_sha256")):
+            raise ValueError("Log digest differs")
+    return result
+
+
+def verify_input_bytes(path: Path, expected: JobRequest) -> None:
+    """Recheck an approved manifest and payload without writing another source tree."""
+    with bounded_zip(path) as bundle:
+        actual = JobRequest.model_validate_json(read_entry(bundle, "request.json", 4 * 1024**2))
+        if actual != expected:
+            raise ValueError("Frozen input contract differs")
+        bundle_entries(bundle, {"request.json", *("source/" + f.path for f in expected.files)})
+        for file in expected.files:
+            validate_source_bytes(file, read_entry(bundle, "source/" + file.path, file.size_bytes))
+
+
 def reconstruct_result(input_bundle: Path, output_bundle: Path, destination: Path,
                        *, job_id: str) -> JobResult:
     require_plain_path(destination)
@@ -162,26 +207,9 @@ def reconstruct_result(input_bundle: Path, output_bundle: Path, destination: Pat
         tree = Path(temporary) / "tree"
         request = unpack_input(input_bundle, tree)
         with bounded_zip(output_bundle) as bundle:
-            result = JobResult.model_validate_json(read_entry(bundle, "result.json", 4 * 1024**2))
-            if (result.job_id != job_id or result.request_fingerprint != request.fingerprint
-                    or result.profile != request.profile or result.image != request.image
-                    or result.input_manifest_hash != manifest_hash(request.files)):
-                raise ValueError("Result belongs to a different input or Job")
-            old, new = {f.path: f for f in request.files}, {f.path: f for f in result.files}
-            changed = tuple(sorted(p for p in new if new[p] != old.get(p)))
-            deleted = tuple(sorted(old.keys() - new.keys()))
-            if result.changed != changed or result.deleted != deleted:
-                raise ValueError("Result delta differs from complete manifest")
-            aliases = {p.casefold(): p for p in old}
-            if any(aliases.get(p.casefold(), p) != p for p in new):
-                raise ValueError("Cross-tree case alias denied")
-            bundle_entries(bundle, {"result.json", "stdout.log", "stderr.log",
-                                    *("source/" + p for p in changed)})
-            for stream in ("stdout", "stderr"):
-                data = read_entry(bundle, stream + ".log", getattr(request, stream + "_bytes"))
-                if (len(data) != getattr(result, stream + "_bytes")
-                        or hashlib.sha256(data).hexdigest() != getattr(result, stream + "_sha256")):
-                    raise ValueError("Log digest differs")
+            result = result_metadata(bundle, request, job_id)
+            new = {f.path: f for f in result.files}
+            changed, deleted = result.changed, result.deleted
             for name in (*deleted, *changed):
                 path = tree / name
                 if not path.is_dir():

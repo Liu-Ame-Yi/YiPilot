@@ -41,14 +41,14 @@ from yipilot.workspace.remote_bundle import (
 from yipilot.workspace.runner_client import RunnerClient
 
 
-def frozen(tmp_path, *, key="example", timeout=60, profile=PROFILE, image=IMAGE):
+def frozen(tmp_path, *, key="example", timeout=60, profile=PROFILE, image=IMAGE, policy="python-script-v1"):
     source = tmp_path / key
     source.mkdir()
     (source / "main.py").write_text("print('fixture')\n", encoding="utf-8")
     (source / "unchanged.txt").write_text("frozen\n", encoding="utf-8")
     bundle = tmp_path / (key + ".zip")
     request = freeze_bundle(source, bundle, request_key=key, task_id="1", operation_id="operation",
-                            run_id=key, script="main.py", timeout_seconds=timeout, profile=profile, image=image)
+                            run_id=key, script="main.py", timeout_seconds=timeout, profile=profile, image=image, policy_revision=policy)
     return source, bundle, request
 
 
@@ -74,6 +74,9 @@ class Runtime:
         self.calls = 0
         self.cleanups = 0
         self.entered = threading.Event()
+
+    def doctor(self):
+        pass
 
     def execute(self, job_id, request, work, store):
         self.calls += 1
@@ -544,9 +547,10 @@ def test_manifest_rejects_oversized_path_components(tmp_path):
 
 
 @pytest.mark.parametrize("sdk_timeout", [False, True])
-def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_path, monkeypatch, sdk_timeout):
+@pytest.mark.parametrize("isolated", [False, True])
+def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_path, monkeypatch, sdk_timeout, isolated):
     sdk = pytest.importorskip("opensandbox")
-    _, bundle, request = frozen(tmp_path)
+    _, bundle, request = frozen(tmp_path, policy="python-isolated-script-v2" if isolated else "python-script-v1")
     runner = Runner(tmp_path / "runner", Runtime(), disk_reserve=0)
     job = runner.submit(bundle)
     work = runner.jobs / job.job_id / "work"
@@ -558,7 +562,7 @@ def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_pa
         calls.append("ready")
 
     async def command(argv, **options):
-        assert argv == ["python", "-B", "./main.py"]
+        assert argv == ["python", *(["-I"] if isolated else []), "-B", "./main.py"]
         assert options["opts"].uid == options["opts"].gid == 10001
         assert options["handlers"].skip_accumulation
         calls.append("command")

@@ -19,7 +19,8 @@ def require_plain_path(path: Path) -> None:
             or getattr(metadata, "st_file_attributes", 0)
             & stat.FILE_ATTRIBUTE_REPARSE_POINT
             or not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode))
-            or (stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1)
+            # A delete-pending Windows lock file can briefly have zero links.
+            or (stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1)
         ):
             raise DomainError(
                 Code.PATH_DENIED, "links, reparse points and special files denied"

@@ -44,11 +44,14 @@ class JobStore:
             yield db
 
     def lookup(self, request: JobRequest) -> JobStatus | None:
+        return self.lookup_key(request.request_key, request.fingerprint)
+
+    def lookup_key(self, key: str, fingerprint: str) -> JobStatus | None:
         with self.transaction() as db:
-            row = db.execute("SELECT fingerprint,status FROM jobs WHERE request_key=?", (request.request_key,)).fetchone()
+            row = db.execute("SELECT fingerprint,status FROM jobs WHERE request_key=?", (key,)).fetchone()
         if row is None:
             return None
-        if row[0] != request.fingerprint:
+        if row[0] != fingerprint:
             raise DomainError("REQUEST_CONFLICT", "Request key already binds different content")
         return JobStatus.model_validate_json(row[1])
 

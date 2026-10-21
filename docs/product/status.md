@@ -1,6 +1,6 @@
 # 当前实现状态
 
-2026-10-21 OpenSandbox 专项已完成独立 Runner、创建租约、每任务磁盘上限、保留期去重及选定故障验收；[第三阶段记录](../research/2026-10-20-opensandbox-reliability-validation.md)保留原轻任务测试。新增固定工具镜像已通过 18 项隔离探针、一个 512 MiB 小工具任务与一个轻任务并行，以及四轻任务实测，见[第四阶段前置记录](../research/2026-10-21-opensandbox-toolchain-validation.md)。正式业务执行调用仍使用下述旧 Docker 路径；项目锁、审批与全部调用迁移尚未完成，未放行正式不可信任务。
+2026-10-21 OpenSandbox 专项：前三阶段及固定工具镜像的真实证据见[第四阶段前置记录](../research/2026-10-21-opensandbox-toolchain-validation.md)。应用、验证、修复、恢复和 doctor 已接到 Runner，旧 Docker 实时执行实现已删除。本地首轮全套为 846 passed、8 skipped、1 failed；唯一失败已定位到 Windows 锁文件删除竞态，修复后 81 项持久化/迁移回归及 3,000 次真实并发锁获取通过。完整 CI 按对应 GitHub 提交记录判定；服务器业务实测与部署尚未完成，G4 未通过。详见[业务迁移记录](../research/2026-10-21-opensandbox-business-migration.md)。
 
 核对日期：2026-09-15。依据当前工作树源码、离线组合测试和 CLI help 检查，**不是发布版本或完整端到端验收声明**。产品目标见 [产品定义](vision.md)，技术目标见 [V2 架构](../superpowers/specs/2026-09-07-yipilot-v2-architecture.md)。
 
@@ -33,9 +33,9 @@
 | 任务与证据 | SQLite Task/Operation/Run、事件和结构化索引；文件工件与任务 worktree | [TaskStore](../../src/yipilot/persistence/task_store.py)、[Git workspace](../../src/yipilot/harness/git_workspace.py) |
 | 模型选择 | 用户设置、连接/模型、冻结选择和密钥引用 | [CLI](../../src/yipilot/transport/cli/app.py)、[交互入口](../../src/yipilot/transport/cli/interactive.py) |
 | 真实提案 | /run 与 code generate 共用 ProjectApplication → CodeService → RunExecutor → runtime.ModelPlanner/AgentRuntime，返回 PatchProposal | [CodeService](../../src/yipilot/workflow/code_service.py) |
-| 受控应用 | /apply 经用户确认，在离线 Docker 副本应用，再检查输出并确认写入任务 worktree | [ProjectApplication](../../src/yipilot/app.py)、[SandboxCliService](../../src/yipilot/workflow/sandbox_application.py) |
-| 验证与修复提案 | /verify 调 Docker 验证；符合失败条件时触发有限修复提案，仍需后续应用和验证 | [验证](../../src/yipilot/workflow/sandbox_verification.py)、[修复](../../src/yipilot/workflow/repair_service.py) |
-| 沙箱配置 | sandbox doctor/register 检查并登记本地固定镜像 | [CLI](../../src/yipilot/transport/cli/app.py) |
+| 受控应用 | /apply 经用户确认，在远程 OpenSandbox 副本应用，再检查输出并确认写入任务 worktree | [ProjectApplication](../../src/yipilot/app.py)、[SandboxCliService](../../src/yipilot/workflow/sandbox_application.py) |
+| 验证与修复提案 | /verify 调 Runner 验证；符合失败条件时触发有限修复提案，仍需后续应用和验证 | [验证](../../src/yipilot/workflow/sandbox_verification.py)、[修复](../../src/yipilot/workflow/repair_service.py) |
+| 沙箱配置 | sandbox configure/doctor 配置端点及凭据引用并检查远程运行时 | [CLI](../../src/yipilot/transport/cli/app.py) |
 | 质量工件 | quality generate 保留 fake/replay 的确定性文档演练及结构检查 | [CLI](../../src/yipilot/transport/cli/app.py) |
 | 真实需求与设计 | specification 经公共入口独立生成/评审 SRS 和 SDD，支持有界返工、澄清、输入失效和阶段恢复 | [SpecificationService](../../src/yipilot/workflow/specification_service.py)、[入口说明](../guides/specification-workflow.md) |
 
@@ -49,7 +49,7 @@
 - 自动 commit/push、PR/MR 创建和目标仓库 GitHub Actions CI 接入尚未完成。Yipilot 自身的 CI 不等于目标仓库交付集成。
 - SQLite 已接入现有业务状态，提供显式旧数据迁移；通用上下文管理及完整需求追踪仍未实现。
 - 已有幂等、恢复、流式与测试判定仍有已知缺口，见 [代码缺口分析](../research/2026-09-07-yipilot-code-gaps.md)。已有记录/类不等于所有恢复情景均可靠。
-- Docker 路径已经接入，但镜像、依赖和本机环境仍须单独检查；不能宣称任意 Python 仓库都已可验证。
+- 远程业务调用已替换，完整 CI、服务器业务实测与正式部署尚未完成；任意 Python 项目的额外依赖及重构建未验证。
 
 ## 已失效的旧描述
 
@@ -57,7 +57,7 @@
 
 自动合并是明确排除的功能，不计入待补缺口。历史测试数量、已提交矩阵和真实 Docker 试验只证明其对应版本/范围，不作为 V2 完成证据。
 
-## 本轮职责边界重构
+## 历史：2026-09 职责边界重构
 
 - 公共入口负责现有生成、候选查询、应用、验证及失败修复衔接；终端只提交选择/批准意图并展示结果。可通过 Python 调用，无需 stdin。
 - RunExecutor 管理模型阶段的开始/结束与中断；runtime 保留单次提案协议，不新增多轮 Agent。

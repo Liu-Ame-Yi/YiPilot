@@ -1,4 +1,4 @@
-"""Apply verified Docker output to a fresh, controller-owned Git worktree."""
+"""Apply verified remote output to a fresh, controller-owned Git worktree."""
 
 import hashlib
 import json
@@ -12,10 +12,10 @@ from yipilot.domain.execution import ExecutionPolicy
 from yipilot.domain.sandbox import SandboxDiffEvidence, SandboxRequest, SandboxResult
 from yipilot.persistence.filesystem import atomic_write_bytes, project_path
 from yipilot.persistence.task_store import FileTaskStore
-from yipilot.security.paths import require_plain_path
-from yipilot.workspace.docker_worker import DockerSandboxWorker
+from yipilot.security.paths import read_evidence, require_plain_path
 from yipilot.workspace.git_runner import GitRunner
 from yipilot.workspace.repo_service import RepoService
+from yipilot.workspace.runner_worker import verify_remote_result
 from yipilot.workspace.sandbox_output import SandboxOutputService
 from yipilot.workspace.sandbox_sources import (
     PreparedSources,
@@ -345,36 +345,7 @@ class SandboxApplyService:
 
     @staticmethod
     def _require_stopped_worker(root: Path, request: SandboxRequest) -> None:
-        try:
-            records = {}
-            for name in ("result.json", "cleanup.json", "container-after.json"):
-                path = root / "docker-worker" / name
-                require_plain_path(path)
-                if path.stat().st_size > 1024 * 1024:
-                    raise ValueError("oversized Worker record")
-                records[name] = json.loads(path.read_bytes())
-            result = SandboxResult.model_validate_json(
-                json.dumps(records["result.json"])
-            )
-            accepted = SandboxResult.model_validate_json(
-                (root / "sandbox-output/result.json").read_bytes()
-            )
-            facts = records["container-after.json"]
-            if (
-                result != accepted
-                or records["cleanup.json"] != {"container_removed": True}
-                or facts["State"]["Running"]
-                or facts["State"]["Status"] != "exited"
-                or facts["State"]["ExitCode"] != 0
-                or facts["State"].get("OOMKilled")
-                or facts["State"].get("Error")
-                or facts["Id"] != result.container_id
-            ):
-                raise ValueError("Worker exit evidence differs")
-            DockerSandboxWorker.check_container(
-                facts, request, Path(request.execution_directory), request.argv
-            )
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            raise DomainError(
-                "SANDBOX_EVIDENCE_FAILED", "confirmed Docker cleanup evidence required"
-            ) from error
+        result = verify_remote_result(root, request)
+        accepted = SandboxResult.model_validate_json(read_evidence(root / "sandbox-output/result.json"))
+        if result != accepted or result.reason != "exited" or result.exit_code != 0:
+            raise DomainError("SANDBOX_EVIDENCE_FAILED", "Confirmed remote execution cleanup required")

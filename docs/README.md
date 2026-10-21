@@ -19,6 +19,8 @@
 
 目录职责迁移记录见 [职责边界重构实施记录](architecture/responsibility-refactor.md)。当前 SQLite 数据映射与事务边界见 [持久化实施记录](architecture/sqlite-persistence.md)，实际操作见 [迁移指南](guides/sqlite-migration.md)。
 
+本地业务替换、检查范围及尚未部署的阻塞见[第四阶段业务迁移记录](research/2026-10-21-opensandbox-business-migration.md)。当前服务器未升级；G4 未通过。
+
 ## 历史与依据
 
 本轮 OpenSandbox 专项的 **Proposed 实施安排**见[远程迁移计划](research/2026-10-19-opensandbox-implementation-plan.md)：包含四阶段、验收条件、代码整合范围与用户下一步。它不是当前可用能力或对产品 roadmap 的更新；服务器现状与源码分发分别见[安装记录](research/2026-10-19-opensandbox-server-installation.md)、[GitHub 同步记录](research/2026-10-19-yipilot-github-sync.md)。

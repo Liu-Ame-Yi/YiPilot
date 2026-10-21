@@ -4,10 +4,12 @@ import hashlib
 import json
 from datetime import datetime
 from typing import Annotated, Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from yipilot.domain.execution import Sha256, TaskId
+from yipilot.domain.provider import parse_api_key_ref
 from yipilot.domain.sandbox import Identifier, SourceFile, source_path
 
 PROFILE: Literal["yipilot-python-v2"] = "yipilot-python-v2"
@@ -16,6 +18,7 @@ TOOLS_PROFILE: Literal["yipilot-tools-v3"] = "yipilot-tools-v3"
 TOOLS_IMAGE = "sha256:caac41fa96e695ef735b8583eb975b74a21567c234ddb7d789e58df13389b755"
 Profile = Literal["yipilot-python-v2", "yipilot-tools-v3"]
 IMAGES = {PROFILE: IMAGE, TOOLS_PROFILE: TOOLS_IMAGE}
+ScriptPolicy = Literal["python-script-v1", "python-isolated-script-v2"]
 MAX_BUNDLE_BYTES = 132 * 1024**2
 MAX_LOG_BYTES = 128 * 1024
 SandboxId = Annotated[str, Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")]
@@ -35,13 +38,33 @@ class RemoteModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
+class RunnerSettings(RemoteModel):
+    schema_version: Literal[1] = 1
+    endpoint: str = Field(min_length=1, max_length=2048)
+    credential_ref: str
+
+    @model_validator(mode="after")
+    def validate_connection(self) -> Self:
+        url = urlsplit(self.endpoint)
+        if (url.scheme not in {"http", "https"} or not url.hostname
+                or url.username is not None or url.password is not None
+                or url.path or url.query or url.fragment or self.endpoint.endswith("/")
+                or url.geturl() != self.endpoint or any(ord(c) < 32 or ord(c) == 127 for c in self.endpoint)
+                or (url.scheme == "http" and url.hostname != "127.0.0.1")):
+            raise ValueError("Use HTTPS or a loopback SSH tunnel without URL credentials or path")
+        if url.port is not None and not 1 <= url.port <= 65535:
+            raise ValueError("Invalid Runner port")
+        parse_api_key_ref(self.credential_ref)
+        return self
+
+
 class JobRequest(RemoteModel):
     schema_version: Literal[2] = 2
     request_key: Identifier
     task_id: TaskId
     operation_id: Identifier
     run_id: Identifier
-    policy_revision: Literal["python-script-v1"] = "python-script-v1"
+    policy_revision: ScriptPolicy = "python-script-v1"
     profile: Profile = PROFILE
     image: str = IMAGE
     script: str

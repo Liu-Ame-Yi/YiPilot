@@ -1,6 +1,8 @@
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import pytest
 from hypothesis import given
@@ -12,6 +14,7 @@ from yipilot.persistence.filesystem import (
     atomic_write_yaml,
     project_path,
 )
+from yipilot.persistence.ownership import project_lock
 
 
 def test_project_path_rejects_parent_escape(tmp_path: Path) -> None:
@@ -34,6 +37,40 @@ def test_project_path_rejects_existing_symlink_escape(tmp_path: Path) -> None:
         pytest.skip("symlink creation is unavailable")
     with pytest.raises(DomainError, match="PATH_DENIED"):
         project_path(tmp_path, "link", "evidence.json")
+
+
+def test_lock_accepts_a_delete_pending_file_observed_during_validation(tmp_path, monkeypatch):
+    directory = tmp_path / ".yipilot/locks"
+    directory.mkdir(parents=True)
+    path = directory / "maintenance.lock"
+    path.touch()
+    metadata = path.lstat()
+    path.unlink()
+    original = Path.lstat
+    observed = False
+
+    def pending(candidate, *args, **kwargs):
+        nonlocal observed
+        if candidate == path and not observed:
+            observed = True
+            return SimpleNamespace(st_mode=metadata.st_mode, st_nlink=0,
+                                   st_file_attributes=getattr(metadata, "st_file_attributes", 0))
+        return original(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", pending)
+    with project_lock(tmp_path, "maintenance"):
+        assert observed
+
+
+def test_lock_rejects_a_hard_link_without_changing_its_target(tmp_path):
+    directory = tmp_path / ".yipilot/locks"
+    directory.mkdir(parents=True)
+    target = tmp_path / "original.txt"
+    target.write_bytes(b"preserve")
+    os.link(target, directory / "maintenance.lock")
+    with pytest.raises(DomainError, match="PATH_DENIED"), project_lock(tmp_path, "maintenance"):
+        pytest.fail("hard-linked lock was acquired")
+    assert target.read_bytes() == b"preserve"
 
 
 @given(st.lists(st.sampled_from([".", "..", "safe", "nested"]), min_size=1, max_size=6))

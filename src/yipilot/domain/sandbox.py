@@ -1,4 +1,4 @@
-"""Run-bound inputs and evidence contracts for offline Docker execution."""
+"""Business execution contracts and read-only historical Docker evidence."""
 
 import hashlib
 import json
@@ -82,8 +82,18 @@ class SandboxAssociation(BaseModel):
         return source_path(value)
 
 
-class SandboxRequest(SandboxAssociation):
-    """Validate with context={'policy': trusted_execution_policy} before use."""
+class SandboxRequestData(BaseModel):
+    """Shared registered-command validation; source manifests retain schema 1."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    task_id: TaskId
+    operation_id: Identifier
+    run_id: Identifier
+
+    @field_validator("operation_id", "run_id")
+    @classmethod
+    def validate_identifiers(cls, value: str) -> str:
+        return source_path(value)
 
     policy_revision: Identifier
     mode: SandboxMode
@@ -149,7 +159,34 @@ class SandboxRequest(SandboxAssociation):
         return self
 
 
-class SandboxResult(SandboxAssociation):
+class LegacySandboxRequest(SandboxRequestData):
+    """Schema 1 can be read with its saved policy, never sent to the Runner."""
+
+    schema_version: Literal[1] = 1
+
+
+class SandboxRequest(SandboxRequestData):
+    schema_version: Literal[2] = 2
+    profile: Literal["yipilot-tools-v3"] = "yipilot-tools-v3"
+    runner_endpoint: str
+
+    @model_validator(mode="after")
+    def validate_remote(self) -> Self:
+        from yipilot.domain.remote_execution import TOOLS_IMAGE, RunnerSettings
+        RunnerSettings(endpoint=self.runner_endpoint, credential_ref="env:YIPILOT_RUNNER_KEY")
+        limits = self.budgets
+        if (self.image_digest != TOOLS_IMAGE or self.input_manifest_hash is None
+                or not 128 * 1024**2 <= limits.memory_bytes <= 1024**3
+                or limits.pid_limit != 128 or not 100 <= limits.cpu_count * 1000 <= 1000
+                or limits.cpu_count * 1000 != int(limits.cpu_count * 1000)
+                or limits.wall_clock_seconds != int(limits.wall_clock_seconds)
+                or limits.wall_clock_seconds > 600
+                or max(limits.stdout_bytes, limits.stderr_bytes) > 128 * 1024):
+            raise ValueError("Request does not match the fixed remote profile")
+        return self
+
+
+class LegacySandboxResult(SandboxAssociation):
     """Required Worker facts; never substitutes for trusted output validation."""
 
     request_fingerprint: Sha256
@@ -199,6 +236,51 @@ class SandboxResult(SandboxAssociation):
                 raise ValueError(
                     "artifact must belong to the same Task, Operation and Run"
                 )
+            source_path(ref.relative_path)
+        return self
+
+
+class SandboxResult(BaseModel):
+    """Verified remote Job facts plus controller-owned business artifact references."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    schema_version: Literal[2] = 2
+    task_id: TaskId
+    operation_id: Identifier
+    run_id: Identifier
+    request_fingerprint: Sha256
+    remote_request_fingerprint: Sha256
+    job_id: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$")]
+    sandbox_id: Annotated[str, Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")]
+    profile: Literal["yipilot-tools-v3"]
+    image_digest: ImageDigest
+    effective_uid: Literal[10001]
+    effective_gid: Literal[10001]
+    resource_limits: SandboxBudgets
+    reason: Literal["exited", "cancelled", "timed_out", "output_limit", "runtime_error"]
+    exit_code: int | None
+    started_at: datetime
+    ended_at: datetime
+    stdout_artifact_ref: ArtifactRef
+    stderr_artifact_ref: ArtifactRef
+    stdout_bytes: int = Field(ge=0)
+    stderr_bytes: int = Field(ge=0)
+    output_manifest_hash: Sha256
+    writers_stopped: Literal[True]
+    resources_removed: Literal[True]
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> Self:
+        from yipilot.domain.remote_execution import TOOLS_IMAGE
+        if (self.image_digest != TOOLS_IMAGE or self.started_at.tzinfo is None
+                or self.ended_at.tzinfo is None or self.ended_at < self.started_at
+                or (self.reason == "exited" and self.exit_code is None)
+                or self.stdout_bytes > self.resource_limits.stdout_bytes
+                or self.stderr_bytes > self.resource_limits.stderr_bytes):
+            raise ValueError("Invalid remote result or stream limits")
+        for ref in (self.stdout_artifact_ref, self.stderr_artifact_ref):
+            if (ref.task_id, ref.operation_id, ref.run_id) != (self.task_id, self.operation_id, self.run_id):
+                raise ValueError("Stream belongs to a different Run")
             source_path(ref.relative_path)
         return self
 

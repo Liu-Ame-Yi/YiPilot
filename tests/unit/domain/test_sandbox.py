@@ -12,12 +12,16 @@ from yipilot.domain.execution import (
     ToolPolicy,
 )
 from yipilot.domain.sandbox import (
+    LegacySandboxRequest as SandboxRequest,
+)
+from yipilot.domain.sandbox import (
+    LegacySandboxResult as SandboxResult,
+)
+from yipilot.domain.sandbox import (
     SandboxBudgets,
     SandboxDiffEvidence,
     SandboxMode,
     SandboxOutputManifest,
-    SandboxRequest,
-    SandboxResult,
     SourceFile,
 )
 

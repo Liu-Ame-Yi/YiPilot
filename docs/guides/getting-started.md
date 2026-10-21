@@ -30,17 +30,28 @@ yipilot code generate --project C:\work\yipilot-demo --taskid 1001 --alias sampl
 
 替换模型和文件占位值。当前仅发送显式选择的受限文件及可用的已通过任务文档；不会自动遍历仓库理解全部上下文。生成失败应查 Run 证据，不能将失败提案视为可应用结果。
 
-## Docker 应用与验证
+## OpenSandbox 应用与验证
 
-应用前需要本机 Docker Desktop Linux 模式及本地已准备的兼容镜像；doctor/register 不负责自动 build/pull。将占位值替换为实际完整镜像 ID：
+本地业务代码已改为 Runner；当前版本的 CI 与服务器 G4 验收尚未完成。本节新命令用于部署该版本之后，不能视为服务器已经升级。
+
+本机不再安装 Docker。服务器运行固定 OpenSandbox profile 和 Runner，本机通过 SSH 隧道连接回环服务；在独立终端持续运行：
 
 ```powershell
-yipilot sandbox doctor --image-digest <sha256:image-id>
-yipilot sandbox register --project C:\work\yipilot-demo --image-digest <sha256:image-id>
+ssh -N -L 127.0.0.1:18090:127.0.0.1:8090 huawei-opensandbox
 ```
 
-回到同一项目会话：/apply 选择提案，确认 Docker 执行及可信输出后写入任务工作区；/verify 选择成功应用记录并确认验证。镜像或策略检查失败时不会回退到宿主机执行。
+使用独立 Runner key，不能用 OpenSandbox 管理 key；不要把密钥放到项目、聊天或命令参数。可使用隐藏输入写入当前用户的 SecretStore keyring：
+
+```powershell
+python -c "from getpass import getpass; from yipilot.models.secrets import SecretStore; SecretStore().set_keyring('runner', getpass('Runner key: '))"
+yipilot sandbox configure --endpoint http://127.0.0.1:18090 --credential-ref keyring:runner --settings-dir C:\work\yipilot-settings
+yipilot sandbox doctor --settings-dir C:\work\yipilot-settings --output json
+```
+
+配置和交互会话使用同一 settings-dir。配置只保存 endpoint 和密钥引用，也支持已有 env:/file: 引用；公网端点必须使用 HTTPS。doctor 是只读检查，核验认证、调度、OpenSandbox 健康和缓存镜像，不创建沙箱。
+
+/apply 选择提案，审批展示 Runner、固定 profile/镜像和 512 MiB 任务预算；可信输出 diff 再次批准后写入新的任务工作区。/verify 审批三个独立验证请求，按全局预算排队执行。任务不临时联网安装依赖，不会缩小预算或回退到宿主机；额外依赖需要固定新镜像并验收。
 
 验证失败可能生成新的有限修复提案；需要继续 /apply 和 /verify，并非已经自动完成修复闭环。通过时保存 Change Handoff；当前不会自动 commit/push 或创建 PR/MR。
 
-查询记录使用 run list、run show、run watch，参数以各命令 --help 为准。交互 /logs、/cancel 尚未实现。不要照搬历史 --planner 或 code apply --prepare-only 命令。
+查询记录使用 run list、run show、run watch。连接丢失后，本地 Run 保留 paused；`run recover --project <path> --run-id <id> --settings-dir <settings>` 只查询/停止原 Job，确认后把中断 Run 记为失败，不重新执行或自动应用结果。停止未知或清理未完成时仍保持 paused；这不是恢复原业务工作流的命令。旧 v1 执行只读，旧审批不能授权 v2。参数以各命令 --help 为准。交互 /logs、/cancel 尚未实现。不要照搬历史 --planner 或 code apply --prepare-only 命令。

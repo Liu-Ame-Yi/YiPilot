@@ -65,7 +65,7 @@ class InteractiveSession:
         self.input = self.input or sys.stdin
         self.output = self.output or sys.stdout
         self.models = ModelSelectionService(self.settings_dir)
-        self.application = ProjectApplication(self.project or Path("."), models=self.models)
+        self.application = ProjectApplication(self.project or Path("."), models=self.models, settings_dir=self.settings_dir)
         self.tasks = self.application.tasks
         self.repos = self.application.repos
         self.session_selector: str | None = None
@@ -306,7 +306,7 @@ class InteractiveSession:
             self._write(f"\n--- {patch.path}\n{patch.unified_diff}", end="")
         self._write(f"Proposal hash: {selected['proposal_hash']}")
         self._write(f"Repository: {selected['repository_alias']}  Base SHA: {selected['base_sha']}")
-        self._write("权限：在离线 Docker 副本应用；输出 diff 再次审批后写入新的任务 worktree。")
+        self._write("权限：在远程 OpenSandbox 副本应用；输出 diff 再次审批后写入新的任务 worktree。")
         self._write("Approve this exact proposal? [y/N] ", end="")
         if self._readline().strip() not in {"y", "Y"}:
             self._write("未创建 apply Run，未写入任何文件。")
@@ -315,15 +315,15 @@ class InteractiveSession:
             run_id = self.application.apply(task.task_id, str(selected["proposal_run_id"]),
                 proposal_hash=str(selected["proposal_hash"]), confirm=self._sandbox_approval)
             if run_id is not None:
-                self._write(f"apply succeeded — Run {run_id}；使用 /verify 进行 Docker 验证")
+                self._write(f"apply succeeded — Run {run_id}；使用 /verify 进行 OpenSandbox 验证")
         except (DomainError, ValueError, OSError) as error:
             self._error(error if isinstance(error, DomainError) else DomainError("SANDBOX_UNAVAILABLE", str(error)))
 
     def _sandbox_approval(self, prompt: ApprovalPrompt) -> bool:
         if prompt.action == "sandbox_execution":
             request = prompt.requests[0]
-            self._write(f"Run: {request.run_id}\nImage: {request.image_digest}")
-            self._write(f"network=none · UID 10001 · /workspace={request.execution_directory}")
+            self._write(f"Run: {request.run_id}\nRunner: {request.runner_endpoint}\nProfile: {request.profile}\nImage: {request.image_digest}")
+            self._write(f"network=deny-all · UID 10001 · /workspace={request.execution_directory}")
             self._write(f"预算：{request.budgets.model_dump_json()}")
         elif prompt.action == "sandbox_output":
             self._write(prompt.patch or "")
@@ -331,8 +331,8 @@ class InteractiveSession:
         else:
             self._write(f"Apply Run: {prompt.apply_run_id} · diff: {prompt.patch_sha256}")
             for item in prompt.requests:
-                self._write(f"{item.tool_id}: {' '.join(item.argv)} · image={item.image_digest}")
-                self._write(f"network=none · UID 10001 · 预算：{item.budgets.model_dump_json()}")
+                self._write(f"{item.tool_id}: {' '.join(item.argv)} · profile={item.profile} · image={item.image_digest} · runner={item.runner_endpoint} · budgets={item.budgets.model_dump_json()}")
+                self._write(f"network=deny-all · UID 10001 · 预算：{item.budgets.model_dump_json()}")
         self._write(f"批准 {prompt.action} · {prompt.fingerprint}？[y/N] ", end="")
         approved = self._readline().strip() in {"y", "Y"}
         if not approved:
@@ -371,7 +371,7 @@ class InteractiveSession:
         if outcome.repair is not None:
             result = outcome.repair
             if result.status == "succeeded":
-                self._write(f"Harness 已根据失败 Docker 证据自动生成 Repair Proposal {result.run_id}；使用 /apply 审阅并执行。")
+                self._write(f"Harness 已根据失败 OpenSandbox 证据自动生成 Repair Proposal {result.run_id}；使用 /apply 审阅并执行。")
             else:
                 self._write(f"Harness 自动修复 Proposal 未完成：{result.error_code or 'REPAIR_FAILED'}")
 

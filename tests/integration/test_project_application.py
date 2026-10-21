@@ -1,33 +1,34 @@
-"""Offline composition checks: only model and Docker execution are replaced.
+"""Offline composition checks: only model and host runtime execution are replaced.
 
-The receipt fixture is not a claim that Docker or the target checks actually ran.
+The receipt fixture is not a claim that OpenSandbox or the target checks actually ran.
 Source export, approvals, Git worktrees, output validation, stores and repair
 services execute their production code.
 """
 
 import json
 import subprocess
-from datetime import UTC, datetime
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
-from pathlib import Path
+from uuid import UUID
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
 from yipilot.app import ProjectApplication
 from yipilot.domain.errors import DomainError
-from yipilot.domain.execution import ArtifactRef
 from yipilot.domain.model import ModelChunk
 from yipilot.domain.provider import ModelEntry, ProviderConnection
-from yipilot.domain.sandbox import SandboxResult
 from yipilot.models.selection import ModelSelectionService
 from yipilot.persistence.artifact_store import FileArtifactStore
 from yipilot.persistence.event_journal import JsonlEventJournal
-from yipilot.persistence.filesystem import atomic_write_json
+from yipilot.persistence.task_store import FileTaskStore
+from yipilot.runner.http import make_server
+from yipilot.runner.service import Runner
 from yipilot.transport.cli.app import app
 from yipilot.transport.cli.interactive import InteractiveSession
-from yipilot.workspace.docker_worker import DockerSandboxWorker
-from yipilot.workspace.sandbox_output import SandboxOutputService
+from yipilot.workspace.runner_client import RunnerClient
 
 
 class Model:
@@ -37,7 +38,7 @@ class Model:
 
     def stream(self, request):
         self.requests.append(request)
-        value = 3 if "Bounded Docker repair" in request.user_instruction else 2
+        value = 3 if "Bounded OpenSandbox repair" in request.user_instruction else 2
         return (ModelChunk(content=json.dumps({"summary": "Update value", "patches": [{
             "path": "value.py", "unified_diff":
             f"--- a/value.py\n+++ b/value.py\n@@ -1 +1 @@\n-value = 1\n+value = {value}\n",
@@ -47,64 +48,44 @@ class Model:
         self.closed += 1
 
 
-class DockerReceipts:
-    def __init__(self):
+class FixtureRuntime:
+    """Only host runtime effects are faked; HTTP, bundles and evidence are real."""
+    def __init__(self, project):
+        self.project = project
         self.calls = []
         self.fail_tool = None
+        self.entered = threading.Event()
+        self.barrier = None
 
-    def execute(self, worker, request, *, cancel_event=None):
+    def doctor(self):
+        pass
+
+    def prepare_work(self, job_id, work, store):
+        work.mkdir()
+
+    def release_work(self, job_id, work):
+        pass
+
+    def cleanup(self, job_id, sandbox_id):
+        pass
+
+    def execute(self, job_id, request, work, store):
         self.calls.append(request)
-        root = Path(request.execution_directory).parent
-        failed = request.tool_id == self.fail_tool
-        if request.tool_id == "sandbox-apply-patch":
-            payload = Path(request.execution_directory) / "yipilot-approved-patch.diff"
-            # Fixture-only edit, never execute a model-supplied command on the host.
-            added = next(line[1:] for line in payload.read_text().splitlines()
-                         if line.startswith("+value = "))
-            (payload.parent / "value.py").write_text(added + "\n", encoding="utf-8")
+        stage = FileTaskStore(self.project).find_run(request.run_id).stage
+        tool = "sandbox-apply-patch" if stage == "sandbox_apply" else stage
+        failed = tool == self.fail_tool
+        store.update(job_id, sandbox_id=str(UUID(job_id)))
+        self.entered.set()
+        if self.barrier is not None and tool == "sandbox-apply-patch":
+            self.barrier.wait(timeout=10)
+        (work / request.script).unlink()
+        if tool == "sandbox-apply-patch":
+            payload = work / "yipilot-approved-patch.diff"
+            added = next(line[1:] for line in payload.read_text().splitlines() if line.startswith("+value = "))
+            (work / "value.py").write_text(added + "\n", encoding="utf-8")
             payload.unlink()
-        artifacts = FileArtifactStore(worker._store)
-        refs = []
-        for stream in ("stdout", "stderr"):
-            record = artifacts.write_bytes(request.task_id, request.run_id,
-                producer="offline-docker-fixture", relative_path=f"artifacts/{stream}.txt",
-                content=b"failed check\n" if failed else b"fixture check\n",
-                input_fingerprint=request.fingerprint, operation_id=request.operation_id)
-            refs.append(ArtifactRef.model_validate(record.model_dump(include={
-                "artifact_id", "task_id", "operation_id", "run_id", "relative_path", "sha256"})))
-        output = SandboxOutputService(worker._root, worker._sources._git).inspect(
-            worker._prepared, request, worker._policy)
-        now = datetime.now(UTC)
-        result = SandboxResult(task_id=request.task_id, operation_id=request.operation_id,
-            run_id=request.run_id, request_fingerprint=request.fingerprint,
-            container_id="c" * 64, image_digest=request.image_digest,
-            docker_version="offline-fixture", backend="unknown",
-            enhanced_container_isolation=None, network="none", effective_uid=10001,
-            effective_gid=10001, resource_limits=request.budgets, reason="exited",
-            exit_code=1 if failed else 0, started_at=now, ended_at=now,
-            stdout_artifact_ref=refs[0], stderr_artifact_ref=refs[1],
-            stdout_bytes=13 if failed else 14, stderr_bytes=13 if failed else 14,
-            output_manifest_hash=output.manifest.fingerprint, fallback_occurred=False)
-        facts = {
-            "Id": result.container_id, "Image": request.image_digest,
-            "State": {"Running": False, "Status": "exited", "ExitCode": result.exit_code},
-            "Config": {"User": "10001:10001", "WorkingDir": "/workspace",
-                "Entrypoint": [request.argv[0]], "Cmd": list(request.argv[1:]),
-                "Labels": {"yipilot.request": request.fingerprint, "yipilot.run": request.run_id},
-                "Healthcheck": {"Test": ["NONE"]}},
-            "Mounts": [{"Type": "bind", "Destination": "/workspace", "RW": True}],
-            "HostConfig": {"NetworkMode": "none", "ReadonlyRootfs": True,
-                "Privileged": False, "PidMode": "", "IpcMode": "private", "CapDrop": ["ALL"],
-                "SecurityOpt": ["no-new-privileges=true"], "PidsLimit": request.budgets.pid_limit,
-                "Memory": request.budgets.memory_bytes, "MemorySwap": request.budgets.memory_bytes,
-                "NanoCpus": int(request.budgets.cpu_count * 10**9), "LogConfig": {"Type": "none"},
-                "Tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=67108864,mode=1777"},
-                "Mounts": [{"Source": request.execution_directory, "Target": "/workspace"}]},
-        }
-        atomic_write_json(root / "docker-worker/result.json", result.model_dump(mode="json"))
-        atomic_write_json(root / "docker-worker/container-after.json", facts)
-        atomic_write_json(root / "docker-worker/cleanup.json", {"container_removed": True})
-        return result
+        output = b"failed check\n" if failed else b"fixture check\n"
+        return "exited", 1 if failed else 0, output, output
 
 
 @pytest.fixture
@@ -127,15 +108,28 @@ def project(tmp_path, monkeypatch):
     models.set_default("local/coder")
     model = Model()
     monkeypatch.setattr(ModelSelectionService, "model_port", lambda *_: model)
-    application = ProjectApplication(root, models=models)
+    runtime = FixtureRuntime(root)
+    runner = Runner(tmp_path / "runner", runtime, disk_reserve=0)
+    runtime.backend = runner
+    runner.start()
+    server = make_server(runner, "t" * 32, 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    http = httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}", trust_env=False,
+                        headers={"Authorization": "Bearer " + "t" * 32})
+    application = ProjectApplication(root, models=models, runner=RunnerClient(http))
     application.tasks.initialize_project()
     application.tasks.create_interactive_task("change", "Update value")
     application.repos.add_and_sync("1", str(source), "repo")
-    application.sandbox.store.set_sandbox_image_digest("sha256:" + "b" * 64)
-    docker = DockerReceipts()
-    monkeypatch.setattr(DockerSandboxWorker, "execute",
-        lambda worker, request, **kw: docker.execute(worker, request, **kw))
-    return application, model, docker, source
+    try:
+        yield application, model, runtime, source
+    finally:
+        http.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        runner.close()
+
 
 
 def generate(application):
@@ -197,7 +191,7 @@ def test_generate_apply_verify_failure_repair_apply_verify(project):
     assert (worktree / "value.py").read_text() == "value = 3\n"
     assert not any(r.status.value in {"pending", "running"} for r in application.sandbox.store.list_runs("1"))
     # Existing schema/IDs and hash verification remain readable through fresh stores.
-    fresh = ProjectApplication(application.sandbox.root, models=application.models)
+    fresh = ProjectApplication(application.sandbox.root, models=application.models, runner=application.runner)
     fresh.sandbox.accepted("1", repaired_run)
     FileArtifactStore(fresh.sandbox.store).verify("1", verified.handoff.run_id, verified.handoff.artifact_id)
     root = fresh.sandbox.store.event_journal_path(proposal["proposal_run_id"]).parent
@@ -279,3 +273,55 @@ def test_cli_and_interactive_generate_use_the_same_application_path(project):
     session._run_live_proposal()
     assert "PatchProposal evidence is ready" in output.getvalue()
     assert len(application.proposals("1")) == 2 and len(model.requests) == 2
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+def test_lost_submit_response_is_reconciled_without_resubmitting(project, monkeypatch, accepted):
+    application, _, runtime, source = project
+    proposal = generate(application)
+    original = application.runner.submit
+    submissions = []
+
+    def lost(bundle):
+        submissions.append(bundle)
+        if accepted:
+            original(bundle)
+            assert runtime.entered.wait(timeout=5)
+        raise httpx.ReadTimeout("fixture lost response")
+
+    monkeypatch.setattr(application.runner, "submit", lost)
+    with pytest.raises(DomainError, match="REMOTE_RESULT_PENDING"):
+        apply(application, proposal)
+    run = next(r for r in application.sandbox.store.list_runs("1") if r.stage == "sandbox_apply")
+    assert run.status.value == "paused"
+    recovered = application.recover(run.run_id)
+    assert recovered.status.value == ("failed" if accepted else "paused")
+    assert len(submissions) == 1 and len(runtime.calls) == int(accepted)
+    assert not application.applied_runs("1") and source.joinpath("value.py").read_text() == "value = 1\n"
+
+
+def test_two_runs_wait_remotely_without_holding_the_project_lock(project):
+    application, _, runtime, _ = project
+    proposal = generate(application)
+    # No host workloads run: this fixture tests local ownership with two admitted Jobs.
+    runtime.backend.memory_budget, runtime.backend.cpu_budget = 2 * 1024**3, 3000
+    runtime.barrier = threading.Barrier(2)
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(apply, application, proposal)
+        assert runtime.entered.wait(timeout=10)
+        second = pool.submit(apply, application, proposal)
+        runs = (first.result(timeout=40), second.result(timeout=40))
+    assert len(set(runs)) == 2 and len(runtime.calls) == 2
+
+
+@pytest.mark.parametrize("relative", ["remote-job/result.json", "remote-job/status.json", "remote-job/input.zip",
+                                     "remote-job/result.zip", "sandbox-output/patch.diff", "execution/value.py"])
+def test_tampered_remote_evidence_cannot_be_verified_or_handed_off(project, relative):
+    application, _, _, source = project
+    run_id = apply(application, generate(application))
+    root = application.sandbox.store.event_journal_path(run_id).parent
+    path = root / relative
+    path.write_bytes(path.read_bytes() + b"tampered")
+    outcome = application.verify("1", run_id, confirm=lambda _: True)
+    assert outcome.error is not None and outcome.handoff is None
+    assert source.joinpath("value.py").read_text() == "value = 1\n"

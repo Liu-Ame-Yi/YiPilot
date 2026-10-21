@@ -18,7 +18,7 @@ from filelock import FileLock
 from pydantic import ValidationError
 
 from yipilot.domain.errors import DomainError
-from yipilot.domain.remote_execution import MAX_BUNDLE_BYTES
+from yipilot.domain.remote_execution import IMAGES, MAX_BUNDLE_BYTES
 from yipilot.runner.service import Runner
 from yipilot.security.paths import require_plain_path
 
@@ -60,6 +60,18 @@ def make_server(runner: Runner, token: str, port: int) -> ThreadingHTTPServer:
                 if self.command == "GET" and self.path == "/health":
                     self.reply(200 if runner.healthy else 503,
                                {"status": "healthy" if runner.healthy else "unavailable", "schema_version": 2})
+                elif self.command == "GET" and self.path == "/v1/doctor":
+                    if not runner.healthy:
+                        raise DomainError("RUNNER_UNAVAILABLE", "Dispatcher unavailable")
+                    runner.runtime.doctor()
+                    self.reply(200, {"schema_version": 2, "status": "healthy", "profiles": IMAGES,
+                                     "max_slots": runner.max_slots, "memory_budget": runner.memory_budget,
+                                     "cpu_budget": runner.cpu_budget})
+                elif self.command == "GET" and (lookup := re.fullmatch(
+                        r"/v1/requests/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/([0-9a-f]{64})", self.path)):
+                    status = runner.store.lookup_key(*lookup.groups())
+                    self.reply(200 if status is not None else 404,
+                               status.model_dump(mode="json") if status is not None else {"error": "JOB_NOT_FOUND"})
                 elif self.command == "POST" and self.path == "/v1/jobs":
                     if not runner.healthy:
                         self.reply(503, {"error": "RUNNER_UNAVAILABLE"})

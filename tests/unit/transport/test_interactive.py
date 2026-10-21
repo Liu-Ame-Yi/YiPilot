@@ -203,7 +203,7 @@ def test_run_confirms_and_creates_a_live_patch_proposal_without_source_write(
     assert (project / ".yipilot/tasks/1/runs" / runs[0].run_id / "artifacts/patch-proposal.json").is_file()
 
 
-def test_apply_without_valid_image_fails_closed(tmp_path, monkeypatch) -> None:
+def test_apply_without_runner_configuration_fails_closed(tmp_path, monkeypatch) -> None:
     project = _interactive_project(tmp_path)
     from yipilot.domain.patch_proposal import PatchProposal
     from yipilot.workflow.code_service import CodeService
@@ -215,11 +215,11 @@ def test_apply_without_valid_image_fails_closed(tmp_path, monkeypatch) -> None:
         "repository_alias": "sample", "base_sha": "0" * 40}])
     monkeypatch.setattr(CodeService, "apply", lambda *_a, **_k: pytest.fail("host apply invoked"))
     output = StringIO()
-    session = InteractiveSession(project=project, input=StringIO("1\ny\n"), output=output)
+    session = InteractiveSession(project=project, settings_dir=tmp_path / "unconfigured", input=StringIO("1\ny\n"), output=output)
     session.session_task_id = "1"
     session._apply_proposal()
     assert "succeeded" not in output.getvalue()
-    assert "SANDBOX_IMAGE_NOT_REGISTERED" in output.getvalue()
+    assert "RUNNER_NOT_CONFIGURED" in output.getvalue()
     assert all(r.status.value != "running" for r in FileTaskStore(project).list_runs("1"))
 
 

@@ -1,4 +1,4 @@
-"""Bounded, proposal-only repairs driven by failed Docker verification."""
+"""Bounded, proposal-only repairs driven by failed OpenSandbox verification."""
 
 import hashlib
 import json
@@ -40,7 +40,7 @@ class RepairResult:
 
 
 class RepairService:
-    """Create one repair proposal from a failed, evidenced Docker check."""
+    """Create one repair proposal from a failed, evidenced OpenSandbox check."""
 
     def __init__(
         self,
@@ -195,11 +195,11 @@ class RepairService:
         payload = json.loads(self._store.get_operation(task_id, verification.operation_id).request_json)["payload"]
         apply_run_id = payload.get("apply_run_id")
         if not isinstance(apply_run_id, str) or not apply_run_id:
-            raise DomainError("REPAIR_EVIDENCE_DRIFT", "verification has no applied Docker input")
+            raise DomainError("REPAIR_EVIDENCE_DRIFT", "verification has no applied OpenSandbox input")
         copies, request, evidence = self._sandbox.accepted(task_id, apply_run_id)
         output = self._output.inspect(copies, request, apply_policy())
         if output.patch_sha256 != evidence.patch_sha256:
-            raise DomainError("REPAIR_EVIDENCE_DRIFT", "applied Docker diff changed")
+            raise DomainError("REPAIR_EVIDENCE_DRIFT", "applied OpenSandbox diff changed")
         diagnostics = self._verification.failed_diagnostics(
             copies, request, apply_policy(), evidence, verification.run_id
         )
@@ -227,10 +227,10 @@ class RepairService:
             if raw is not None:
                 files.append(f"### {path}\n{raw[:4096].decode('utf-8', errors='replace')}")
         value = (
-            "# Bounded Docker repair proposal\n\n"
+            "# Bounded OpenSandbox repair proposal\n\n"
             "Generate only a JSON PatchProposal relative to the base source. Preserve the approved change while fixing the failed check. Do not use shell commands.\n\n"
-            f"## Development goal\n{goal}\n\n## Approved Docker patch\n{patch}\n\n"
-            f"## Failed fixed Docker verification diagnostics\n{diagnostics}\n\n"
+            f"## Development goal\n{goal}\n\n## Approved OpenSandbox patch\n{patch}\n\n"
+            f"## Failed fixed OpenSandbox verification diagnostics\n{diagnostics}\n\n"
             "## Current changed source\n" + "\n\n".join(files)
         )
         if len(value.encode()) > MAX_REPAIR_CONTEXT_BYTES:

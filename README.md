@@ -2,7 +2,7 @@
 
 Yipilot 是本地运行、面向单个 Python 仓库的自动研发交付项目。目标流程是需求/PRD → SRS 与评审 → SDD 与评审 → 实现 → 验证/修复/代码评审 → 分支与 PR/MR → 可选 CI → 交接，**不自动合并**。
 
-当前已经接入真实模型提案、交互式 Docker 应用与验证，但完整自动流程尚未实现。准确边界见 [当前状态](docs/product/status.md)。
+当前已接入真实模型提案；应用和验证代码已切换为远程 OpenSandbox Runner，正式放行需要完整 CI 与服务器业务验收；服务器尚未部署本次业务版本。完整自动流程尚未实现。准确边界见 [当前状态](docs/product/status.md)。
 
 ## 开始阅读
 
@@ -13,7 +13,7 @@ Yipilot 是本地运行、面向单个 Python 仓库的自动研发交付项目�
 
 ## 安装与启动
 
-需要 Python 3.11+ 和 Git；执行应用/验证还需要 Docker Desktop Linux containers 及已准备的固定镜像。
+本地需要 Python 3.11+ 和 Git；执行应用/验证需要配置远程 Runner、SecretStore 凭据引用和可用的 SSH 隧道或 HTTPS。SDK、Docker 和工具镜像只在服务器安装。新版本部署前不要按历史本机 Docker 命令执行业务。
 
 ```powershell
 py -3.11 -m venv .venv

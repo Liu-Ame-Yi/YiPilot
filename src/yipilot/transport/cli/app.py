@@ -13,6 +13,7 @@ from yipilot import __version__
 from yipilot.app import ProjectApplication
 from yipilot.domain.errors import DomainError
 from yipilot.domain.provider import ProviderProfile
+from yipilot.domain.remote_execution import RunnerSettings
 from yipilot.harness.models import HarnessReport
 from yipilot.harness.quality import SddHarness, SrsHarness
 from yipilot.models.secrets import SecretStore
@@ -31,9 +32,10 @@ from yipilot.transport.cli.interactive import InteractiveSession
 from yipilot.transport.cli.specification import app as specification_app
 from yipilot.workflow.project_service import ProjectService
 from yipilot.workflow.quality_artifacts import QualityArtifactService
-from yipilot.workflow.sandbox_application import inspect_sandbox, register_sandbox_image
+from yipilot.workflow.sandbox_application import inspect_sandbox
 from yipilot.workspace.git_runner import GitRunner
 from yipilot.workspace.repo_service import RepoMetadata, RepoService
+from yipilot.workspace.runner_client import RunnerClient
 from yipilot.workspace.workspace_service import PreparedWorkspace, WorkspaceService
 
 app = typer.Typer(no_args_is_help=False, add_completion=False, invoke_without_command=True)
@@ -143,29 +145,36 @@ def model_test(
 
 @sandbox_app.command("doctor")
 def sandbox_doctor(
-    image_digest: Annotated[str | None, typer.Option("--image-digest")] = None,
-    project: Annotated[Path | None, typer.Option("--project")] = None,
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
-    """Check Docker Desktop and a prepared image without pulling or building."""
+    """Check authenticated Runner, OpenSandbox health and cached pinned images."""
     result = _settings_invoke(
         output,
-        lambda: inspect_sandbox(project, image_digest),
+        lambda: inspect_sandbox(settings_dir),
     )
     if result is not None:
-        _render_value(output, result, f"Sandbox preflight passed for {result['image_digest']}.")
+        _render_value(output, result, "Runner and pinned sandbox runtime are healthy.")
 
 
-@sandbox_app.command("register")
-def sandbox_register(
-    project: Annotated[Path, typer.Option("--project")],
-    image_digest: Annotated[str, typer.Option("--image-digest")],
+@sandbox_app.command("configure")
+def sandbox_configure(
+    endpoint: Annotated[str, typer.Option("--endpoint")],
+    credential_ref: Annotated[str, typer.Option("--credential-ref")],
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
     output: Annotated[str, typer.Option("--output")] = "human",
 ) -> None:
-    """Register the immutable local image used by interactive sandbox Runs."""
-    result = _settings_invoke(output, lambda: register_sandbox_image(project, image_digest))
+    """Save a Runner endpoint and a SecretStore reference; never a plaintext key."""
+    def configure() -> dict[str, object]:
+        try:
+            settings = RunnerSettings(endpoint=endpoint, credential_ref=credential_ref)
+        except ValueError as error:
+            raise DomainError("RUNNER_CONFIG_INVALID", "Use HTTPS or loopback HTTP, and a valid SecretStore reference") from error
+        RunnerClient.configure(settings, settings_dir)
+        return settings.model_dump(mode="json")
+    result = _settings_invoke(output, configure)
     if result is not None:
-        _render_value(output, result, f"Registered sandbox image for {project}.")
+        _render_value(output, result, "Runner configured.")
 
 
 @model_app.command("configure")
@@ -674,6 +683,19 @@ def run_show(
     record = _invoke(
         output, lambda: _project_service(project).show_run(task_id, run_id)
     )
+    if record is not None:
+        _render(output, record, f"Run {record.run_id} is {record.status}.")
+
+
+@run_app.command("recover")
+def run_recover(
+    run_id: Annotated[str, typer.Option("--run-id")],
+    project: Annotated[Path, typer.Option("--project")] = _DEFAULT_PROJECT,
+    settings_dir: Annotated[Path | None, typer.Option("--settings-dir")] = None,
+    output: Annotated[str, typer.Option("--output")] = "human",
+) -> None:
+    """Query/stop the original remote Job; never restart interrupted commands."""
+    record = _invoke(output, lambda: ProjectApplication(project, settings_dir=settings_dir).recover(run_id))
     if record is not None:
         _render(output, record, f"Run {record.run_id} is {record.status}.")
 

@@ -1,6 +1,6 @@
 # Runner 最小远程 Job 闭环
 
-状态：**已实现并完成自有样例验收，尚未接入 YiPilot 正式业务。** 本地通过 SSH 隧道访问服务器回环 8090，Runner 再通过官方 SDK 1.1.1 调用回环 8081 的固定 OpenSandbox profile。管理端口不公开。
+状态：**早期 Job 与工具镜像样例已验收；当前工作树已接入业务，但新版本 CI/服务器 G4 实测与部署尚未完成。** 本地通过 SSH 隧道访问服务器回环 8090，Runner 再通过官方 SDK 1.1.1 调用回环 8081 的固定 OpenSandbox profile。管理端口不公开。
 
 Runner 使用独立 Python 3.11 环境和 `yipilot[runner]` 可选依赖。普通本地安装不需要 OpenSandbox SDK；本地 HTTP 客户端复用已有 httpx，凭据由 SecretStore 提供。源码、依赖和配置均由可信宿主部署，任务只看到自己的 work。
 
@@ -9,14 +9,16 @@ Runner 使用独立 Python 3.11 环境和 `yipilot[runner]` 可选依赖。普�
 | 接口 | 行为 |
 | --- | --- |
 | `GET /health` | 认证并检查调度线程；线程不可用返回 503 |
+| `GET /v1/doctor` | 只读核对调度、OpenSandbox 健康与固定镜像缓存，不创建沙箱 |
+| `GET /v1/requests/{key}/{fingerprint}` | 只读对账提交结果；缺失不视为重新提交授权 |
 | `POST /v1/jobs` | 有界 ZIP 输入包；完整校验、发布不可变 input 并提交 SQLite 后返回 202 |
 | `GET /v1/jobs/{id}` | 查询 durable Job 状态及关联 sandbox ID |
 | `POST /v1/jobs/{id}/cancel` | 取消排队任务，或向执行中的 Job 登记取消意图；仍需查询停止结果 |
 | `GET /v1/jobs/{id}/result` | 只下载已可信发布的结果 ZIP，内含完整清单、增改字节、删除项及日志 |
 
-所有接口要求 `Authorization: Bearer <独立 Runner key>`，与 OpenSandbox key 分开。请求只接受版本 2 合同、固定 profile/镜像、已登记的 `python-script-v1` 工具及其输入脚本；不接收 shell、宿主路径、额外 Docker 参数或模型配置。
+所有接口要求 `Authorization: Bearer <独立 Runner key>`，与 OpenSandbox key 分开。请求只接受版本 2 合同、固定 profile/镜像、已登记的 `python-script-v1` 或 `python-isolated-script-v2` 入口及其输入脚本；不接收 shell、宿主路径、额外 Docker 参数或模型配置。
 
-已登记的对应关系包括原 `yipilot-python-v2` 基础镜像和新增 `yipilot-tools-v3` [工具镜像](../toolchain/README.md)。冻结输入时显式传入对应的 profile 和 image；结果也必须与原输入对应，客户端拒绝跨 profile 替换。默认值仍是原 profile，不改变历史指纹或现有业务预算。
+已登记的对应关系包括原 `yipilot-python-v2` 基础镜像和新增 `yipilot-tools-v3` [工具镜像](../toolchain/README.md)。冻结输入时显式传入对应的 profile 和 image；结果也必须与原输入对应，客户端拒绝跨 profile 替换。通用 Job 的默认值仍是原 profile，不改变历史指纹。新业务请求使用 v2 合同、工具 profile、512 MiB 预算和隔离 Python 入口，必须重新审批；不解释或缩减旧 1 GiB 请求。
 
 输入包为 `request.json` 加 `source/<路径>`。校验 ZIP 中央目录数量/长度、普通文件类型、完整条目集合、便携路径、UTF-8、摘要、文件数和展开大小，不使用 `extractall`。复用现有源码扫描，拒绝链接、特殊文件、凭据目录和 `.env` 等排除项。单文件最多 16 MiB、全树最多 128 MiB、10000 文件，传输包最多 132 MiB。
 
@@ -69,3 +71,13 @@ Runner 在创建之前持久登记确定的 sandbox UUID 和 root 私有创建�
 `reliability.py` 仅供已排空的专用验收环境，以 Linux root 运行；它会创建自有任务、暂停候选 API、重启/强制终止 Runner 并注入卸载失败。通过断言后保存无凭据 JSON 收据，不在用户项目中运行。
 
 本轮不调用真实模型，不应用到用户工作树。正式业务调用、审批、项目锁和工具镜像的全面迁移仍属于第四阶段；下一步统一替换这些调用并删除旧 Docker 执行实现。[迁移安排](../../docs/research/2026-10-19-opensandbox-implementation-plan.md)。
+
+## 业务接入（当前工作树，待服务器验收）
+
+ProjectApplication 共享一个惰性 RunnerClient；配置保存到用户 settings-dir/runner.json，密钥通过 SecretStore 引用解析，不传给任务。审批前只读取公共端点并冻结输入，不读取 key 或调用网络。新业务使用独立 v2 请求/结果，历史 v1 DTO 保留只读，旧 DockerWorker 已删除。
+
+远程等待持有 Run 锁；准备与最终本地 Git 应用只在短项目临界区执行，并重新核对快照、HEAD/index 与批准 diff。模型阶段仍保留既有项目所有权，不承诺所有模型请求都并行。输入/结果 ZIP 验证复用同一字节、manifest、delta 和日志规则；首次结果重建到新 staging 后才发布执行快照，后续消费重新验证包和当前文件摘要。原执行快照保留用于审计，不合并到用户源仓库。
+
+提交意图在 HTTP 前持久化。丢失响应时通过 key/fingerprint 查询，绝不自动 POST 重放；无法确认停止或清理时本地保留 paused。run recover 对原 Job 查询/取消，确认终态后保守结束中断 Run，不继续审批或应用。新业务脚本使用 python -I，禁止仓库同名模块污染可信入口；普通历史脚本策略保持原义。上传和下载的包体传输有 20 分钟期限及单次 I/O 超时，结果传输只接受 identity 编码。
+
+业务实测脚本 business_acceptance.py 已准备：仅模型是受信 fixture，真实 Runner 完成应用、一次实际 pytest 失败、有限修复和新的 pytest/Ruff/mypy 交付。尚未运行，不能把本地 FakeRuntime 测试当成此验收通过。[当前业务迁移记录](../../docs/research/2026-10-21-opensandbox-business-migration.md)。

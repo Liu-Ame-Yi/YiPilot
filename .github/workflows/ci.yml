@@ -42,7 +42,7 @@ jobs:
       - name: Install locked Runner and test dependencies
         run: uv sync --extra runner --group dev --frozen
       - name: Test durable Jobs and real HTTP transport
-        run: uv run --extra runner pytest tests/integration/test_runner.py tests/unit/architecture/test_module_boundaries.py -o addopts='' -q -p no:cacheprovider
+        run: uv run --extra runner pytest tests/integration/test_runner.py tests/integration/test_project_application.py tests/unit/architecture/test_module_boundaries.py -o addopts='' -q -p no:cacheprovider
   opensandbox-profile-build:
     runs-on: ubuntu-22.04
     steps:

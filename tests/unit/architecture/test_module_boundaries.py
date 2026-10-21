@@ -32,7 +32,7 @@ def test_core_never_imports_transport_and_workspace_never_orchestrates():
 def test_terminal_submits_intent_without_approvals_or_docker_orchestration():
     forbidden = {"ApprovalRecord", "FileApprovalStore", "CodeService", "RepairService",
                  "SandboxCliService", "SandboxOutputService", "SandboxApplyService",
-                 "SandboxVerificationService", "DockerSandboxWorker"}
+                 "SandboxVerificationService", "DockerSandboxWorker", "RunnerSandboxWorker"}
     for path in (ROOT / "transport/cli").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         assert not {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} & forbidden, path

@@ -50,6 +50,17 @@ class OpenSandboxRuntime:
         self.connection, self.disk_reserve = connection, disk_reserve
         self._groups: dict[str, set[Path]] = {}
 
+    def doctor(self) -> None:
+        import httpx
+        with httpx.Client(trust_env=False, timeout=3) as client:
+            response = client.get("http://127.0.0.1:8081/health")
+            response.raise_for_status()
+            if response.json().get("status") != "healthy":
+                raise ValueError("OpenSandbox is unavailable")
+        for image in IMAGES.values():
+            if not docker("image", "inspect", image):
+                raise ValueError("Pinned image is not cached")
+
     def prepare_work(self, job_id: str, work: Path, store: JobStore) -> None:
         if work != JOBS_ROOT / job_id / "work":
             raise ValueError("Only the owned Job work directory may be prepared")
@@ -116,7 +127,8 @@ class OpenSandboxRuntime:
                 return "cancelled", None, b"", b""
             handlers = ExecutionHandlers(on_stdout=lambda msg: output("stdout", msg),
                 on_stderr=lambda msg: output("stderr", msg), skip_accumulation=True)
-            task = asyncio.create_task(box.commands.run(["python", "-B", "./" + request.script],
+            argv = ["python", *(["-I"] if request.policy_revision == "python-isolated-script-v2" else []), "-B", "./" + request.script]
+            task = asyncio.create_task(box.commands.run(argv,
                 opts=RunCommandOpts(working_directory="/workspace", uid=10001, gid=10001,
                     timeout=timedelta(seconds=request.timeout_seconds)), handlers=handlers))
             deadline = time.monotonic() + request.timeout_seconds

@@ -18,7 +18,9 @@ from yipilot.domain.execution import (
     ExecutionPolicy,
     ToolKind,
     ToolPolicy,
+    fingerprint_model,
 )
+from yipilot.domain.remote_execution import TOOLS_IMAGE, RunnerSettings
 from yipilot.domain.sandbox import (
     SandboxBudgets,
     SandboxMode,
@@ -33,6 +35,7 @@ from yipilot.workspace import sandbox_output as output_module
 from yipilot.workspace import sandbox_sources as module
 from yipilot.workspace.git_runner import GitRunner
 from yipilot.workspace.repo_service import RepoService
+from yipilot.workspace.runner_client import RunnerClient
 from yipilot.workspace.sandbox_output import (
     SandboxOutputService,
     output_approval_fingerprint,
@@ -90,17 +93,23 @@ def prepare(s):
     return s.service.prepare(s.task, "repo", s.run, s.base)
 
 
-def test_cli_prepares_frozen_patch_data_and_requires_exact_human_approval(setup, monkeypatch):
+@pytest.fixture
+def configured_runner(tmp_path):
+    RunnerClient.configure(RunnerSettings(endpoint="http://127.0.0.1:18090", credential_ref="env:FIXTURE_KEY"), tmp_path / "settings")
+    return RunnerClient(settings_dir=tmp_path / "settings")
+
+
+def test_cli_prepares_frozen_patch_data_and_requires_exact_human_approval(setup, monkeypatch, configured_runner):
     from yipilot.domain.patch_proposal import PatchProposal
     from yipilot.workflow.sandbox_application import SandboxCliService
-    from yipilot.workspace.docker_worker import DockerSandboxWorker
+    from yipilot.workspace.runner_worker import RunnerSandboxWorker
 
     s = setup
-    monkeypatch.setattr(DockerSandboxWorker, "execute", lambda *_a, **_k: pytest.fail("Worker invoked"))
-    service = SandboxCliService(s.project)
+    monkeypatch.setattr(RunnerSandboxWorker, "execute", lambda *_a, **_k: pytest.fail("Worker invoked"))
+    service = SandboxCliService(s.project, runner=configured_runner)
     proposal = PatchProposal(summary="change", patches=({"path": "app.py",
         "unified_diff": "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-value = 1\n+value = 3\n"},))
-    request = service.prepare("1", "repo", s.base, proposal, "sha256:" + "a" * 64)
+    request = service.prepare("1", "repo", s.base, proposal, TOOLS_IMAGE)
     copies, loaded = service.load("1", request.run_id)
     assert loaded == request
     assert (copies.baseline / "app.py").read_bytes() == b"value = 1\n"
@@ -108,6 +117,12 @@ def test_cli_prepares_frozen_patch_data_and_requires_exact_human_approval(setup,
     assert request.input_manifest_hash
     with pytest.raises(DomainError, match="APPROVAL_NOT_FOUND"):
         service.execute(request, "missing")
+    old = ApprovalRecord(approval_id="old-policy", task_id="1", operation_id=request.operation_id,
+        run_id=request.run_id, action_type="sandbox_execution", target_fingerprint=request.fingerprint,
+        policy_revision="sandbox-cli-apply-v1", decision=ApprovalDecision.APPROVED, decided_at=datetime.now(UTC))
+    FileApprovalStore(s.store).save(old)
+    with pytest.raises(DomainError, match="APPROVAL_STALE"):
+        service.execute(request, old.approval_id)
     approval = ApprovalRecord(approval_id="fixture", task_id="1", operation_id=request.operation_id,
         run_id=request.run_id, action_type="sandbox_execution", target_fingerprint=request.fingerprint,
         policy_revision=request.policy_revision, decision=ApprovalDecision.APPROVED,
@@ -119,7 +134,7 @@ def test_cli_prepares_frozen_patch_data_and_requires_exact_human_approval(setup,
     assert s.store.get_run("1", request.run_id).status.value == "cancelled"
 
 
-def test_cli_invalid_input_cancels_new_run_without_worker(setup):
+def test_cli_invalid_input_cancels_new_run_without_worker(setup, configured_runner):
     from yipilot.domain.patch_proposal import PatchProposal
     from yipilot.workflow.sandbox_application import SandboxCliService
 
@@ -127,7 +142,7 @@ def test_cli_invalid_input_cancels_new_run_without_worker(setup):
     proposal = PatchProposal(summary="change", patches=({"path": "app.py",
         "unified_diff": "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-value = 1\n+value = 3\n"},))
     with pytest.raises(ValueError):
-        SandboxCliService(s.project).prepare("1", "repo", s.base, proposal, "mutable:tag")
+        SandboxCliService(s.project, runner=configured_runner).prepare("1", "repo", s.base, proposal, "mutable:tag")
     new = next(r for r in s.store.list_runs("1") if r.stage == "sandbox_apply")
     assert new.status.value == "cancelled"
     assert not (s.store.event_journal_path(new.run_id).parent / "sandbox-cli-request.json").exists()
@@ -405,7 +420,8 @@ def test_worktree_scan_exception_is_exact_and_never_applies_to_worker_tree(tmp_p
 
 
 @pytest.fixture
-def output_setup(setup):
+def output_setup(setup, monkeypatch):
+    monkeypatch.setattr(output_module, "verify_remote_result", lambda root, request, result: result)
     s = setup
     s.copies = prepare(s)
     s.output = SandboxOutputService(s.project, GitRunner())
@@ -431,14 +447,16 @@ def output_setup(setup):
             "mode": SandboxMode.OFFLINE_WORKSPACE_WRITE,
             "execution_directory": str(s.copies.execution),
             "baseline_manifest_hash": s.copies.manifest_hash,
-            "image_digest": "sha256:" + "a" * 64,
+            "image_digest": TOOLS_IMAGE,
+            "runner_endpoint": "http://127.0.0.1:8090",
+            "input_manifest_hash": fingerprint_model(s.copies.manifest),
             "tool_id": "tests",
             "argv": ("python", "-m", "pytest"),
             "budgets": SandboxBudgets(
                 wall_clock_seconds=60,
                 cpu_count=1,
-                memory_bytes=1024**3,
-                pid_limit=64,
+                memory_bytes=512 * 1024**2,
+                pid_limit=128,
                 stdout_bytes=1024,
                 stderr_bytes=1024,
             ),
@@ -471,14 +489,14 @@ def output_setup(setup):
         operation_id=s.run.operation_id,
         run_id=s.run.run_id,
         request_fingerprint=s.request.fingerprint,
-        container_id="b" * 64,
+        job_id="b" * 32,
+        remote_request_fingerprint="b" * 64,
+        sandbox_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        profile="yipilot-tools-v3",
+        writers_stopped=True, resources_removed=True,
         image_digest=s.request.image_digest,
-        docker_version="fixture",
-        backend="unknown",
-        enhanced_container_isolation=None,
-        network="none",
-        effective_uid=1000,
-        effective_gid=1000,
+        effective_uid=10001,
+        effective_gid=10001,
         resource_limits=s.request.budgets,
         reason="exited",
         exit_code=0,
@@ -489,7 +507,6 @@ def output_setup(setup):
         stdout_bytes=0,
         stderr_bytes=0,
         output_manifest_hash="c" * 64,
-        fallback_occurred=False,
     )
     approve_output(s)
     return s
@@ -522,7 +539,7 @@ def test_worker_rejects_invalid_seed_before_any_docker_command(
     output_setup, monkeypatch, invalid
 ):
     from yipilot.domain.execution import fingerprint_model
-    from yipilot.workspace.docker_worker import DockerSandboxWorker
+    from yipilot.workspace.runner_worker import RunnerSandboxWorker
 
     s = output_setup
     seed = s.copies.manifest.model_copy(
@@ -544,19 +561,20 @@ def test_worker_rejects_invalid_seed_before_any_docker_command(
         request = request.model_copy(update={"input_manifest_hash": "d" * 64})
     elif invalid == "unbound":
         request = request.model_copy(update={"input_manifest_hash": None})
-    worker = DockerSandboxWorker(
+    worker = RunnerSandboxWorker(
         s.project,
         s.policy,
         s.copies,
         input_manifest=None if invalid == "missing" else seed,
+        runner=RunnerClient(),
     )
 
     def forbidden(*args):
         pytest.fail("invalid seed must not reach Docker")
 
-    monkeypatch.setattr(worker, "_cli", forbidden)
+    monkeypatch.setattr(worker._runner, "submit", forbidden)
     with pytest.raises(DomainError, match="SANDBOX_MANIFEST_INVALID"):
-        worker.execute(request)
+        worker.freeze(request)
 
 
 def collect_output(s):
@@ -628,9 +646,9 @@ def test_trusted_diff_roundtrip_and_complete_bundle(output_setup, change):
         ("reason", "timed_out"),
         ("reason", "cancelled"),
         ("reason", "output_limit"),
-        ("reason", "container_error"),
-        ("fallback_occurred", True),
-        ("network", "host"),
+        ("reason", "runtime_error"),
+        ("writers_stopped", False),
+        ("resources_removed", False),
         ("effective_uid", 0),
         ("operation_id", "other"),
         ("run_id", "other"),

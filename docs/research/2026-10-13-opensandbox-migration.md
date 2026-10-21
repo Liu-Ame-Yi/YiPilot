@@ -1,5 +1,7 @@
 # YiPilot 沙箱迁移到 OpenSandbox：调研、代码整合与精简方案
 
+Historical reference：本文保留当日设计；旧实时 Worker 已从当前工作树删除，旧源码链接固定到迁移前提交。当前实现与尚未通过的 G4 见[业务迁移记录](2026-10-21-opensandbox-business-migration.md)。
+
 > **调研日期：2026-10-13（Asia/Shanghai）。状态：Proposed / Research。** 本文没有表示迁移已实现或真实沙箱已验收。用户的部署顺序是：**先在本机模拟，后续可能接独立服务器或 Kubernetes**。建议“模拟”包括真实 OpenSandbox + Docker 的最小实验；mock 只负责验证错误处理。
 >
 > 仓库依据：当前工作树，HEAD `f7b6ec282e453a14c60811afa36ce5326444fd2a`；存在未提交修改，分析以实际文件为准。本轮只维护调研与规划文档，不调整现有运行代码或产品状态。代码整合、精简与删除顺序见第 9 节。
@@ -55,7 +57,7 @@ flowchart LR
 | 位置 | 现有耦合 | 建议最小修改 |
 |---|---|---|
 | [domain/sandbox.py](../../src/yipilot/domain/sandbox.py) | 64 位 Docker ID、docker_version、wsl2/hyper-v、network=none；请求只有裸 sha256 镜像值 | 新证据版本分开公共结果与运行时事实；记录 provider、sandbox_id、不可变镜像引用、策略版本、命令和清理结果 |
-| [workspace/docker_worker.py](../../src/yipilot/workspace/docker_worker.py) | Docker CLI、Windows named pipe、Docker inspect、挂载与生命周期 | 保留旧实现供回归；新增 `OpenSandboxWorker` Adapter 封装 SDK、生命周期、传输和证据，不向上层泄漏 SDK 对象 |
+| [workspace/docker_worker.py](https://github.com/Liu-Ame-Yi/YiPilot/blob/bc189b11b08ed1ddd9cf96aea5f12c9982ed5a73/src/yipilot/workspace/docker_worker.py) | Docker CLI、Windows named pipe、Docker inspect、挂载与生命周期 | 保留旧实现供回归；新增 `OpenSandboxWorker` Adapter 封装 SDK、生命周期、传输和证据，不向上层泄漏 SDK 对象 |
 | [workflow/sandbox_application.py](../../src/yipilot/workflow/sandbox_application.py) | 直接创建 Docker Worker，doctor 和 artifacts 路径写死 Docker | 注入可信 Worker 选择；冻结运行时策略并用于请求指纹；使用该运行时的证据验证 |
 | [workflow/sandbox_verification.py](../../src/yipilot/workflow/sandbox_verification.py) | 直接执行 Docker；读取 container-after/cleanup，调用 check_container | 复用同一选择和验证 Interface；先保留每个固定工具独立副本/子 Run，避免新增跨工具状态 |
 | [workspace/sandbox_apply.py](../../src/yipilot/workspace/sandbox_apply.py) | `_require_stopped_worker` 直接要求 Docker 清理收据 | 改成按证据版本/运行时验证“任务已停止、输出被冻结、资源清理已确认”；不能删除这个检查 |
@@ -68,7 +70,7 @@ flowchart LR
 | [pyproject.toml](../../pyproject.toml)、[uv.lock](../../uv.lock)、[Dockerfile](../../Dockerfile) | 没有 OpenSandbox SDK；现有镜像有自己的 USER/ENTRYPOINT | 接入时只加基础 `opensandbox` SDK；Server 独立安装部署；镜像兼容 execd 的 bootstrap，并预装固定测试依赖 |
 | tests、fixtures、产品与指南 | tests monkeypatch Docker、构造旧 inspect/cleanup；文档声称离线 Docker | 加新合同与真实 OpenSandbox 测试，修改真正受影响的 fixture/边界检查；实现后同步 status/guide/V2，保留历史研究 |
 
-特别注意镜像字段：当前 Worker 将 `image_digest` 与 Docker `image inspect` 的 `Id` 比较，即本地 image/config identity；远端可拉取的固定镜像引用通常是 `repository@sha256:<manifest digest>`。两者不能直接互换。新合同应分别记录不可变引用、目标平台与实际 image identity，登记/审批/doctor 一起调整；旧裸 sha256 值不应默认为可从仓库拉取的地址。[当前 readiness](../../src/yipilot/workspace/docker_worker.py)、[Docker 按 digest 拉取](https://docs.docker.com/reference/cli/docker/image/pull/)、[OCI manifest/config 分离](https://github.com/opencontainers/image-spec/blob/v1.1.1/manifest.md)
+特别注意镜像字段：当前 Worker 将 `image_digest` 与 Docker `image inspect` 的 `Id` 比较，即本地 image/config identity；远端可拉取的固定镜像引用通常是 `repository@sha256:<manifest digest>`。两者不能直接互换。新合同应分别记录不可变引用、目标平台与实际 image identity，登记/审批/doctor 一起调整；旧裸 sha256 值不应默认为可从仓库拉取的地址。[当前 readiness](https://github.com/Liu-Ame-Yi/YiPilot/blob/bc189b11b08ed1ddd9cf96aea5f12c9982ed5a73/src/yipilot/workspace/docker_worker.py)、[Docker 按 digest 拉取](https://docs.docker.com/reference/cli/docker/image/pull/)、[OCI manifest/config 分离](https://github.com/opencontainers/image-spec/blob/v1.1.1/manifest.md)
 
 **建议的 Seam：** 位于 `workspace/`，围绕现有 `SandboxRequest` 的完整执行及持久化证据校验。最小 Interface 需要能完成 `execute`、运行前 `doctor`、消费时 `verify_evidence` 这三项职责；名称可以随现有代码习惯调整。创建、命令、上传、停止、删除是 Adapter 的 Implementation。不要把这些操作散到 workflow，也不用增加通用插件注册系统。
 
@@ -153,7 +155,7 @@ SDK 使用有界流式处理，禁用默认无限累积日志，并对控制端�
 | pytest 返回非零，或真实 pytest/Ruff/mypy 成功 | 非零保留失败诊断供受控 repair；只有全部验证且输出未漂移才产生 Handoff |
 | 旧 Docker Run、新 OpenSandbox Run、配置切换 | 历史审计可读，不改写旧证据；当前 Run 继续用冻结配置 |
 
-复用 [现有 Docker 真实验收](../../tests/integration/test_docker_worker.py)、[源码/输出攻击 fixture](../../tests/integration/test_sandbox_sources.py)、[请求与结果合同测试](../../tests/unit/domain/test_sandbox.py)，并增加 OpenSandbox 的网络传输/生命周期故障。更新 [组合 fixture](../../tests/integration/test_project_application.py)、[CLI 测试](../../tests/unit/transport/test_cli_sandbox.py) 与 [职责边界测试](../../tests/unit/architecture/test_module_boundaries.py)。
+复用 [现有 Docker 真实验收](https://github.com/Liu-Ame-Yi/YiPilot/blob/bc189b11b08ed1ddd9cf96aea5f12c9982ed5a73/tests/integration/test_docker_worker.py)、[源码/输出攻击 fixture](../../tests/integration/test_sandbox_sources.py)、[请求与结果合同测试](../../tests/unit/domain/test_sandbox.py)，并增加 OpenSandbox 的网络传输/生命周期故障。更新 [组合 fixture](../../tests/integration/test_project_application.py)、[CLI 测试](../../tests/unit/transport/test_cli_sandbox.py) 与 [职责边界测试](../../tests/unit/architecture/test_module_boundaries.py)。
 
 K8s 阶段另查：controller/CRD 与所选 provider 的兼容矩阵、每租户身份与 Namespace/RBAC、禁止 automount ServiceAccount token、CNI 的真实策略执行、RuntimeClass 与 egress 兼容性、PID/ephemeral-storage/总配额、PVC/volume 生命周期，以及删除 API 返回与 Pod 实际停止之间的差异。不同 runtime 的能力不能通过统一 SDK 名称推断。
 
@@ -296,7 +298,7 @@ src/yipilot/
 | 现有位置 | 整合目的地与做法 | 必须保留的差异 |
 |---|---|---|
 | [应用 load](../../src/yipilot/workflow/sandbox_application.py)、[验证 _copies](../../src/yipilot/workflow/sandbox_verification.py) 都重建 PreparedSources、读取 manifest/hash | 由现有 SandboxSourceService 提供同一加载与关联核验实现，复用有界 read_evidence | apply 的 stage/current-request 检查留在应用模块；verify 的父子 Run 与批准输入关系留在验证模块 |
-| [Docker _validate_sources](../../src/yipilot/workspace/docker_worker.py) 的冻结输入/seed 校验 | 把与 Docker 无关的输入规则收进 SandboxSourceService，两个 Worker 使用同一入口 | 执行前确认 pending/running 与冻结输入；输出阶段只检查 baseline 和安全性，不能要求 execution 仍等于输入 |
+| [Docker _validate_sources](https://github.com/Liu-Ame-Yi/YiPilot/blob/bc189b11b08ed1ddd9cf96aea5f12c9982ed5a73/src/yipilot/workspace/docker_worker.py) 的冻结输入/seed 校验 | 把与 Docker 无关的输入规则收进 SandboxSourceService，两个 Worker 使用同一入口 | 执行前确认 pending/running 与冻结输入；输出阶段只检查 baseline 和安全性，不能要求 execution 仍等于输入 |
 | [可信 apply _require_stopped_worker](../../src/yipilot/workspace/sandbox_apply.py) 与 [验证 _verify_tool](../../src/yipilot/workflow/sandbox_verification.py) 重复读取终态、清理、运行时配置 | 收拢到 sandbox_runtime 的有界 receipt 验证入口，按版本校验 provider-specific facts；Provider 的 live probe 仍在 Adapter | apply 另核对 accepted result；verify 另要求输出等于已批准 seed；这些业务条件不能丢掉 |
 | [输出 validate_result](../../src/yipilot/workspace/sandbox_output.py) 与 [failed_diagnostics](../../src/yipilot/workflow/sandbox_verification.py) 重复核对结果关联、日志 artifact/hash | 在现有 SandboxOutputService 中保留一份结果关联与日志完整性规则，成功/失败路径复用 | 输出发布要求 exit=0；repair 只接受已终止且非零的代码失败，不能接受超时、断连、清理失败等基础设施故障 |
 | apply/verify 都列出 result/container-after/cleanup 并 register | 运行时证据由 Adapter/receipt 所有者写入并注册，结果用现有 ArtifactRef 引用；workflow 只登记本阶段产物 | 运行时收据的完整集合、请求指纹与 producer 要一致；失败日志和清理失败证据同样要保留 |

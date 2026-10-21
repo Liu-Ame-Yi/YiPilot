@@ -90,7 +90,7 @@ class FileArtifactStore:
         run, run_root = self._run_context(task_id, run_id)
         self._require_operation(run, operation_id)
         path = artifact_path(run_root, relative_path)
-        content = _redact_bytes(content)
+        content = redact_artifact_bytes(content)
         if path.exists() and path.read_bytes() != content:
             raise DomainError("ARTIFACT_STALE", "published artifact cannot be overwritten")
         atomic_write_bytes(path, content)
@@ -164,7 +164,7 @@ class FileArtifactStore:
         )
 
 
-def _redact_bytes(content: bytes) -> bytes:
+def redact_artifact_bytes(content: bytes) -> bytes:
     try:
         return SecretRedactor().redact_text(content.decode("utf-8")).encode("utf-8")
     except UnicodeDecodeError:

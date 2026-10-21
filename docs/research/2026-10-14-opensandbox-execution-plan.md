@@ -1,5 +1,7 @@
 # OpenSandbox 本机迁移、代码整合与精简：详细执行计划
 
+Historical reference：本文保留当日设计；旧实时 Worker 已从当前工作树删除，旧源码链接固定到迁移前提交。当前实现与尚未通过的 G4 见[业务迁移记录](2026-10-21-opensandbox-business-migration.md)。
+
 > **Historical reference / Superseded（实施路线）：** 后续已取得华为云节点，并将本地业务、远端 Runner 作为推荐接入方式。当前专项实施安排见 [2026-10-19 远程迁移计划](2026-10-19-opensandbox-implementation-plan.md)。本文件保留早期本机 SDK/collector 与补丁候选背景，不再按以下工作包直接续做。
 
 > **日期：2026-10-14（Asia/Shanghai）。状态：Proposed，详细安排；尚未实施迁移。**
@@ -158,7 +160,7 @@ W08 可与本机可行性准备独立推进，但只合并既有规则；正式�
 | [CLI](../../src/yipilot/transport/cli/app.py)、[interactive](../../src/yipilot/transport/cli/interactive.py) | configure/register/doctor 显式运行时与镜像身份，批准界面展示真实策略 | [CLI tests](../../tests/unit/transport/test_cli_sandbox.py)、实际 help；新参数未实现前只在本计划中描述 |
 | [executors.py](../../src/yipilot/workspace/executors.py) / [test helpers](../../tests/helpers/fake_executor.py) | 迁出只被 test_code_harness 使用的 ControlledWorkspaceWriter；保留有实际调用的 LocalCommandRunner | [code harness](../../tests/integration/test_code_harness.py) 保留批准/cwd/写入保护场景 |
 | [pyproject/uv.lock](../../pyproject.toml)、[Dockerfile](../../Dockerfile)、[CI](../../.github/workflows/ci.yml) | SDK 固定；镜像与补丁制品独立；加严格 sandbox marker/required job | Windows offline 保留，Linux真实 job 无 skipped 放行，锁文件一致 |
-| [旧 DockerWorker](../../src/yipilot/workspace/docker_worker.py) | 对账/切换后删实时 CLI/probe/lifecycle；移出历史纯检查；删无调用包装 | 删除仅旧内部实现测试，迁移旧安全/业务场景；旧 JSON/hash 仍可审计 |
+| [旧 DockerWorker](https://github.com/Liu-Ame-Yi/YiPilot/blob/bc189b11b08ed1ddd9cf96aea5f12c9982ed5a73/src/yipilot/workspace/docker_worker.py) | 对账/切换后删实时 CLI/probe/lifecycle；移出历史纯检查；删无调用包装 | 删除仅旧内部实现测试，迁移旧安全/业务场景；旧 JSON/hash 仍可审计 |
 
 `configure` 为候选的新入口，尚未实现；不得把拟定参数写入当前用户指南。CLI schema 变化与 metadata/config 变化一起落地，不先给不存在的命令造文档。旧 register 的 image-digest 若保留，明确仅适用于迁移期 Docker；新 image-ref 使用 repository@digest，不静默重新解释旧值。
 
