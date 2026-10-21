@@ -14,7 +14,7 @@ from uuid import UUID
 
 from filelock import FileLock
 
-from yipilot.domain.remote_execution import IMAGES, JobRequest
+from yipilot.domain.remote_execution import IMAGES, TOOLS_PROFILE, JobRequest
 from yipilot.persistence.filesystem import atomic_write_bytes
 from yipilot.runner import disk
 from yipilot.runner.service import sync_directory
@@ -67,9 +67,21 @@ class OpenSandboxRuntime:
         store.update(job_id, sandbox_id=str(UUID(job_id)))
         with FileLock(work.parent / "runtime.lock", timeout=0):
             lease(job_id, "authorized")
-        disk.prepare(job_id, work)
+        tools = store.get(job_id)[0].profile == TOOLS_PROFILE
+        # Serialize allocation so concurrent Jobs cannot spend the same disk reserve.
+        with FileLock(JOBS_ROOT.parent / "disk.lock", timeout=30):
+            required = disk.WORK_BYTES + (disk.TEMP_BYTES if tools else 0)
+            if shutil.disk_usage(work.parent).free < self.disk_reserve + required:
+                raise ValueError("Insufficient reserved Job disk")
+            disk.prepare(job_id, work)
+            if tools:
+                temporary = work.parent / "tmp"
+                disk.prepare(job_id, temporary)
+                temporary.chmod(0o700)
+                os.chown(temporary, 10001, 10001)  # type: ignore[attr-defined]
 
     def release_work(self, job_id: str, work: Path) -> None:
+        disk.release(job_id, work.parent / "tmp")
         disk.release(job_id, work)
 
     def execute(self, job_id: str, request: JobRequest, work: Path, store: JobStore) -> tuple[str, int | None, bytes, bytes]:
@@ -91,6 +103,13 @@ class OpenSandboxRuntime:
         reason = "exited"
         task: asyncio.Task[Any] | None = None
         box = None
+        tools = request.profile == TOOLS_PROFILE
+        volumes = [Volume(name="work", host=Host(path=str(work)), mountPath="/workspace")]
+        envs = {"TMPDIR": "/job-tmp"} if tools else {}
+        if tools:
+            volumes.append(Volume(name="tmp", host=Host(path=str(work.parent / "tmp")), mountPath="/job-tmp"))
+        if request.policy_revision == "python-isolated-script-v2":
+            envs["HYPOTHESIS_STORAGE_DIRECTORY"] = ("/job-tmp" if tools else "/tmp") + "/yipilot-hypothesis"
 
         for path in [work, *work.rglob("*")]:
             require_plain_path(path)
@@ -112,7 +131,7 @@ class OpenSandboxRuntime:
                 metadata={"yipilot.job_id": job_id, "yipilot.profile": request.profile},
                 entrypoint=["tail", "-f", "/dev/null"],
                 network_policy=NetworkPolicy.model_validate({"defaultAction": "deny", "egress": [{"action": "deny", "target": "*"}]}),
-                volumes=[Volume(name="work", host=Host(path=str(work)), mountPath="/workspace")],
+                volumes=volumes,
                 connection_config=self.connection)
             if box.id != store.get(job_id)[1].sandbox_id:
                 raise ValueError("Server creation identity differs from reserved identity")
@@ -130,8 +149,7 @@ class OpenSandboxRuntime:
             argv = ["python", *(["-I"] if request.policy_revision == "python-isolated-script-v2" else []), "-B", "./" + request.script]
             task = asyncio.create_task(box.commands.run(argv,
                 opts=RunCommandOpts(working_directory="/workspace", uid=10001, gid=10001,
-                    envs={"HYPOTHESIS_STORAGE_DIRECTORY": "/tmp/yipilot-hypothesis"}
-                    if request.policy_revision == "python-isolated-script-v2" else None,
+                    envs=envs or None,
                     timeout=timedelta(seconds=request.timeout_seconds)), handlers=handlers))
             deadline = time.monotonic() + request.timeout_seconds
             while not task.done():

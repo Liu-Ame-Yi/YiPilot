@@ -53,17 +53,20 @@ def validate_request(request):
         raise ValueError("A bounded sandbox lifetime of 60..900 seconds is required")
     if request.get("networkPolicy") != DENY:
         raise ValueError("The explicit deny-all network policy is mandatory")
-    expected = JOBS_ROOT / job / "work"
+    expected = [("work", "/workspace")]
+    if profile == TOOLS_PROFILE:
+        expected.append(("tmp", "/job-tmp"))
     volumes = request.get("volumes") or []
-    if len(volumes) != 1:
-        raise ValueError("Exactly one Job work mount is required")
-    volume = volumes[0]
-    if (set(volume) - {"name", "host", "mountPath", "readOnly"}
-            or volume.get("name") != "work" or volume.get("mountPath") != "/workspace"
-            or volume.get("readOnly", False) is not False
-            or volume.get("host") != {"path": str(PurePosixPath(expected.as_posix()))}):
-        raise ValueError("Only this Job's work directory may be mounted at /workspace")
-    validate_work_directory(expected)
+    if len(volumes) != len(expected):
+        raise ValueError("Exactly the fixed Job mounts are required")
+    for volume, (name, target) in zip(volumes, expected, strict=True):
+        path = JOBS_ROOT / job / name
+        if (set(volume) - {"name", "host", "mountPath", "readOnly"}
+                or volume.get("name") != name or volume.get("mountPath") != target
+                or volume.get("readOnly", False) is not False
+                or volume.get("host") != {"path": str(PurePosixPath(path.as_posix()))}):
+            raise ValueError("Only this Job's fixed work and temporary directories may be mounted")
+        validate_work_directory(path)
 
 
 def validate_resources(limits):

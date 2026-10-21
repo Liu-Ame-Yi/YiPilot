@@ -593,9 +593,11 @@ def test_manifest_rejects_oversized_path_components(tmp_path):
 
 @pytest.mark.parametrize("sdk_timeout", [False, True])
 @pytest.mark.parametrize("isolated", [False, True])
-def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_path, monkeypatch, sdk_timeout, isolated):
+@pytest.mark.parametrize("tools", [False, True])
+def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_path, monkeypatch, sdk_timeout, isolated, tools):
     sdk = pytest.importorskip("opensandbox")
-    _, bundle, request = frozen(tmp_path, policy="python-isolated-script-v2" if isolated else "python-script-v1")
+    _, bundle, request = frozen(tmp_path, policy="python-isolated-script-v2" if isolated else "python-script-v1",
+                                profile=TOOLS_PROFILE if tools else PROFILE, image=TOOLS_IMAGE if tools else IMAGE)
     runner = Runner(tmp_path / "runner", Runtime(), disk_reserve=0)
     job = runner.submit(bundle)
     work = runner.jobs / job.job_id / "work"
@@ -609,7 +611,10 @@ def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_pa
     async def command(argv, **options):
         assert argv == ["python", *(["-I"] if isolated else []), "-B", "./main.py"]
         assert options["opts"].uid == options["opts"].gid == 10001
-        assert options["opts"].envs == ({"HYPOTHESIS_STORAGE_DIRECTORY": "/tmp/yipilot-hypothesis"} if isolated else None)
+        env = {"TMPDIR": "/job-tmp"} if tools else {}
+        if isolated:
+            env["HYPOTHESIS_STORAGE_DIRECTORY"] = ("/job-tmp" if tools else "/tmp") + "/yipilot-hypothesis"
+        assert options["opts"].envs == (env or None)
         assert options["handlers"].skip_accumulation
         calls.append("command")
         return SimpleNamespace(exit_code=1 if sdk_timeout else 0,
@@ -620,6 +625,8 @@ def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_pa
 
     async def create(*args, **options):
         assert options["skip_health_check"] is True and "health_check" not in options
+        mounts = {v.mount_path: v.host.path for v in options["volumes"]}
+        assert mounts == {"/workspace": str(work), **({"/job-tmp": str(work.parent / "tmp")} if tools else {})}
         return SimpleNamespace(id=sandbox_id, check_ready=check_ready,
                                commands=SimpleNamespace(run=command), close=close)
 
@@ -646,6 +653,7 @@ def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_pa
     from opensandbox.config import ConnectionConfig
     runtime = OpenSandboxRuntime(ConnectionConfig(domain="127.0.0.1:8081"), disk_reserve=0)
     runtime.prepare_work(job.job_id, work, runner.store)
+    assert (work.parent / "tmp").is_dir() is tools
     assert json.loads((work.parent / "runtime.json").read_text())["state"] == "authorized"
     outcome = runtime.execute(job.job_id, request, work, runner.store)
     assert outcome == (("timed_out", 1, b"", b"") if sdk_timeout else ("exited", 0, b"", b""))

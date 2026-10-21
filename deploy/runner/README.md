@@ -33,7 +33,7 @@ Runner 在创建之前持久登记确定的 sandbox UUID 和 root 私有创建�
 
 若源码扫描或结果发布失败，Job 保持 failed / OUTPUT_INVALID；已有执行原因、退出码和 stdout/stderr 单独原子保存为 diagnostics.json。每个日志遵守原请求预算且不超过 128 KiB，整个诊断文档另有约 1.52 MiB 传输上限，绑定 Job、请求指纹和 sandbox 身份，并随原 Job 负载过期。诊断中不包含源码或成功/清理回执。结果接口仍拒绝该 Job；客户端将其记录为 REMOTE_OUTPUT_INVALID，日志不可用时仍保留已执行失败的事实，不称为提交前拒绝，也不自动重放。旧任务没有保存过的日志无法补回。
 
-隔离入口 python-isolated-script-v2 的执行环境将 HYPOTHESIS_STORAGE_DIRECTORY 固定到容器私有 /tmp/yipilot-hypothesis；与现有 Ruff、mypy 临时缓存一起避免污染受控源码。旧 python-script-v1 环境语义、冻结脚本字节、镜像与数据库版本保持不变。
+工具 profile 的执行环境将 TMPDIR 固定到 /job-tmp；隔离入口 python-isolated-script-v2 的 HYPOTHESIS_STORAGE_DIRECTORY 为 /job-tmp/yipilot-hypothesis。基础 profile 仍使用原 64 MiB /tmp，隔离入口的 Hypothesis 缓存为 /tmp/yipilot-hypothesis。源码、冻结脚本、镜像和数据库版本不变。
 
 ## 运行与验收
 
@@ -51,6 +51,7 @@ Runner 在创建之前持久登记确定的 sandbox UUID 和 root 私有创建�
   diagnostics.json                    输出收集失败时的独立执行诊断
   work.fs                             root 私有 256 MiB 稀疏 ext4 镜像
   work/                               执行时挂载，任务 UID/GID 10001
+  tmp.fs / tmp/                       工具任务独立 1 GiB ext4 临时盘，结束后删除
   artifacts/result.zip                任务不可访问
 ```
 
@@ -65,6 +66,8 @@ Runner 在创建之前持久登记确定的 sandbox UUID 和 root 私有创建�
 ## 磁盘、保留和恢复
 
 每个 work 使用宿主独立 256 MiB ext4 loop 文件系统，挂载 nodev/nosuid，无空间预留给 root；有效数据容量约 227 MiB，另有限 inode。主容器的只读 rootfs、受限 tmpfs 仍由固定 profile 提供。宿主校验文件系统 UUID、源 loop 设备和镜像路径，停止所有写入者后扫描和发布，再正常卸载；卸载失败仍占额度，禁止 lazy umount 和全局 prune。需要宿主 mkfs.ext4/mount/umount/findmnt/losetup；当前 Ubuntu 主机已验证，K8s 不适用此存储实现。
+
+工具 profile 另有私有 /job-tmp，宿主路径只能为同一 Job 的 tmp。复用上述 ext4 所有权与卸载检查，固定 1 GiB、独立 UUID、nodev/nosuid/noexec，预分配磁盘空间；准备过程串行核对 work 加临时盘及原空盘保留量。临时数据不参与源码扫描或结果传输，停止写入者后卸载、分离 loop 并删除镜像，部分创建也按同一规则回收；失败则保持隔离。Runner 与固定 profile 必须排空后一起升级，旧的工具 profile SDK 创建请求缺少临时盘将被拒绝；不重新执行既有任务。
 
 默认保留 24 小时、最多 32 份 Job 负载。达到数量上限时先释放最老的已完成任务；running、cleanup_failed 和正在下载的结果不清理。过期先持久记录 result_expired，再删除本 Runner 已登记的目录，重启继续未完成删除。状态和原 request key/摘要保留，重复提交仍返回原 Job，结果下载返回 410；去重记录随总请求数增长。未登记目录不自动删除。下载完整性或结果过期不能作为重跑授权。
 

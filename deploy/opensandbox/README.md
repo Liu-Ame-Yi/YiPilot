@@ -2,7 +2,7 @@
 
 **只允许受信 fixture 验收，尚未放行正式不可信任务。** 2026-10-20 的 v2 已通过 18 项服务器验收、控制进程死亡与隔离安装失败测试、Docker 重启恢复。此前 v1 的 init 重绑漏洞已修复；[最新记录](../../docs/research/2026-10-20-opensandbox-control-isolation.md)说明验证范围及剩余门槛。
 
-这份目录只负责 Linux Docker profile。后续最小 Runner 和本地 HTTP 客户端已完成独立样例闭环，见 [Runner 说明](../runner/README.md)；YiPilot 的旧业务执行调用仍未替换。当前 Python 镜像是隔离测试基底，尚非包含 pytest/Ruff/mypy/Git 的正式工具镜像。
+这份目录负责 Linux Docker profile。业务接入及固定工具镜像的当前状态见 [Runner 说明](../runner/README.md)。基础 profile 仅挂载 work；工具 profile 还要求同一 Job 的 tmp 挂载到 /job-tmp，由 Runner 创建独立、限额且 noexec 的磁盘临时目录。Runner 与 profile 需排空后一起升级。
 
 ## 制品及边界
 

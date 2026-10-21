@@ -38,7 +38,17 @@ def test_tools_image_and_profile_are_an_indivisible_pair(request_document):
     with pytest.raises(ValueError):
         profile.validate_request(request_document)
     request_document["image"]["uri"] = profile.TOOLS_IMAGE
+    with pytest.raises(ValueError):
+        profile.validate_request(request_document)
+    request_document["volumes"].append({"name": "tmp", "host": {
+        "path": "/srv/yipilot-runner/jobs/" + "a" * 32 + "/tmp"}, "mountPath": "/job-tmp", "readOnly": False})
     profile.validate_request(request_document)
+    for change in ({"mountPath": "/tmp"}, {"host": {"path": "/etc"}}, {"readOnly": True},
+                   {"host": {"path": "/srv/yipilot-runner/jobs/" + "b" * 32 + "/tmp"}}, {"name": "work"}):
+        changed = copy.deepcopy(request_document)
+        changed["volumes"][1].update(change)
+        with pytest.raises(ValueError):
+            profile.validate_request(changed)
     request_document["metadata"]["yipilot.profile"] = profile.PROFILE
     with pytest.raises(ValueError):
         profile.validate_request(request_document)
