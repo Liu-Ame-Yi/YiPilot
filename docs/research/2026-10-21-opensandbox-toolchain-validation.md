@@ -12,7 +12,7 @@
 
 新镜像的 18 项隔离探针全部通过：包括 UID/GID、rootfs、控制端口、管理 API、跨 Job/宿主/metadata 网络、受保护控制进程及退出后写入者清理。工具增加不替代这些边界。Windows 控制端经实际 SSH 隧道的原 v2 五类任务回归也通过，包括非零退出、超时、取消、输入拒绝和冻结输入重建。
 
-最终受影响离线测试为 143 passed、2 skipped（本机未安装 Server wheel/patch 工具的构建测试）、1 条重复 ZIP 条目测试的预期 warning；Ruff 检查 src/tests/deploy 通过，mypy 的 81 个源码文件通过。完整 CI 的最终提交结果由服务器发布收据绑定，不能用本轮子集结果代替整个业务 G4 验收。
+最终受影响离线测试为 143 passed、2 skipped（Linux flock 与固定 Server wheel/patch 构建在 Linux CI 执行）、1 条重复 ZIP 条目测试的预期 warning；Ruff 检查 src/tests/deploy 通过，mypy 的 81 个源码文件通过。完整 CI 的最终提交结果由服务器发布收据绑定，不能用本轮子集结果代替整个业务 G4 验收。
 
 ## 实际资源结果
 
