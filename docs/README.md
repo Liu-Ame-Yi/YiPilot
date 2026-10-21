@@ -19,7 +19,7 @@
 
 目录职责迁移记录见 [职责边界重构实施记录](architecture/responsibility-refactor.md)。当前 SQLite 数据映射与事务边界见 [持久化实施记录](architecture/sqlite-persistence.md)，实际操作见 [迁移指南](guides/sqlite-migration.md)。
 
-本地业务替换、检查范围及尚未部署的阻塞见[第四阶段业务迁移记录](research/2026-10-21-opensandbox-business-migration.md)。当前服务器未升级；G4 未通过。
+本地业务替换与检查过程见[第四阶段业务迁移记录](research/2026-10-21-opensandbox-business-migration.md)；[服务器业务演练](research/2026-10-21-opensandbox-business-validation.md)已完成六个真实 Job、交付工件与重启/清理检查，常驻和用户项目切换尚未完成。
 
 ## 历史与依据
 

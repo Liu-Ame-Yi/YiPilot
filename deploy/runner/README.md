@@ -1,6 +1,6 @@
 # Runner 最小远程 Job 闭环
 
-状态：**早期 Job 与工具镜像样例已验收；当前工作树已接入业务，但新版本 CI/服务器 G4 实测与部署尚未完成。** 本地通过 SSH 隧道访问服务器回环 8090，Runner 再通过官方 SDK 1.1.1 调用回环 8081 的固定 OpenSandbox profile。管理端口不公开。
+状态：**完整 CI 与六 Job 的真实服务器业务主链路已通过；候选安装后停止且 disabled，常驻与用户项目切换尚未完成。** 本地通过 SSH 隧道访问服务器回环 8090，Runner 再通过官方 SDK 1.1.1 调用回环 8081 的固定 OpenSandbox profile。管理端口不公开。
 
 Runner 使用独立 Python 3.11 环境和 `yipilot[runner]` 可选依赖。普通本地安装不需要 OpenSandbox SDK；本地 HTTP 客户端复用已有 httpx，凭据由 SecretStore 提供。源码、依赖和配置均由可信宿主部署，任务只看到自己的 work。
 
@@ -34,8 +34,8 @@ Runner 在创建之前持久登记确定的 sandbox UUID 和 root 私有创建�
 
 ```text
 /opt/yipilot-python/                    独立 CPython 3.11
-/opt/yipilot-runner/venv/              锁定依赖及安装的 YiPilot wheel
-/opt/yipilot-runner/releases/          候选源码与摘要收据
+/opt/yipilot-runner/venv/              保留的前一运行环境；不能直接读新策略任务
+/opt/yipilot-runner/releases/          独立候选源码、venv、wheel 与摘要收据
 /etc/yipilot-runner.toml               root:root 0600，两种独立密钥
 /srv/yipilot-runner/jobs.db            Runner 独立 SQLite
 /srv/yipilot-runner/jobs/<id>/
@@ -64,15 +64,15 @@ Runner 在创建之前持久登记确定的 sandbox UUID 和 root 私有创建�
 
 ## 已测容量和剩余门槛
 
-最多 4 个运行槽位，同时按主容器加每个 sidecar 64 MiB/100m CPU 的总预算准入。默认总量已校准为 768 MiB、1500m CPU，保留 4 GiB 空盘。四个 128 MiB/250m 请求连同 sidecar 正好占 768 MiB/1400m；超出总量的单个请求直接拒绝。现有业务的 1 GiB 请求未被降低，在此配置下会明确返回 BUDGET_UNAVAILABLE。命令最长 600 秒，stdout/stderr 分别最多 128 KiB。
+最多 4 个运行槽位，同时按主容器加每个 sidecar 64 MiB/100m CPU 的总预算准入。默认总量已校准为 768 MiB、1500m CPU，保留 4 GiB 空盘。四个 128 MiB/250m 请求连同 sidecar 正好占 768 MiB/1400m；超出总量的单个请求直接拒绝。历史 v1 业务的 1 GiB 请求不被降低，在此配置下明确返回 BUDGET_UNAVAILABLE；新 v2 业务显式申请 512 MiB，本轮只验证顺序执行。命令最长 600 秒，stdout/stderr 分别最多 128 KiB。
 
 这台标称 2 GiB 主机已通过 **1/2/4 个真实活跃轻任务**，每个样例分配 48 MiB 并保持 12 秒。四并发最低可用内存仍超过 550 MiB，无 OOM、资源残留；这是轻量内存与等待任务的校准，未证明重构建或 1 GiB 验证可用四并发。[第三阶段数据与故障范围](../../docs/research/2026-10-20-opensandbox-reliability-validation.md)。
 
 `reliability.py` 仅供已排空的专用验收环境，以 Linux root 运行；它会创建自有任务、暂停候选 API、重启/强制终止 Runner 并注入卸载失败。通过断言后保存无凭据 JSON 收据，不在用户项目中运行。
 
-本轮不调用真实模型，不应用到用户工作树。正式业务调用、审批、项目锁和工具镜像的全面迁移仍属于第四阶段；下一步统一替换这些调用并删除旧 Docker 执行实现。[迁移安排](../../docs/research/2026-10-19-opensandbox-implementation-plan.md)。
+本轮不调用真实模型，不应用到用户工作树。第四阶段已统一替换业务调用、审批、项目锁并删除旧 Docker 实时实现；真实业务样例通过，正式用户切换仍待完成。[迁移安排](../../docs/research/2026-10-19-opensandbox-implementation-plan.md)。
 
-## 业务接入（当前工作树，待服务器验收）
+## 业务接入（受信样例已验收）
 
 ProjectApplication 共享一个惰性 RunnerClient；配置保存到用户 settings-dir/runner.json，密钥通过 SecretStore 引用解析，不传给任务。审批前只读取公共端点并冻结输入，不读取 key 或调用网络。新业务使用独立 v2 请求/结果，历史 v1 DTO 保留只读，旧 DockerWorker 已删除。
 
@@ -80,4 +80,6 @@ ProjectApplication 共享一个惰性 RunnerClient；配置保存到用户 setti
 
 提交意图在 HTTP 前持久化。丢失响应时通过 key/fingerprint 查询，绝不自动 POST 重放；无法确认停止或清理时本地保留 paused。run recover 对原 Job 查询/取消，确认终态后保守结束中断 Run，不继续审批或应用。新业务脚本使用 python -I，禁止仓库同名模块污染可信入口；普通历史脚本策略保持原义。上传和下载的包体传输有 20 分钟期限及单次 I/O 超时，结果传输只接受 identity 编码。
 
-业务实测脚本 business_acceptance.py 已准备：仅模型是受信 fixture，真实 Runner 完成应用、一次实际 pytest 失败、有限修复和新的 pytest/Ruff/mypy 交付。尚未运行，不能把本地 FakeRuntime 测试当成此验收通过。[当前业务迁移记录](../../docs/research/2026-10-21-opensandbox-business-migration.md)。
+业务实测脚本 business_acceptance.py 已通过：仅模型是受信 fixture，真实 Runner 完成应用、一次实际 pytest 失败、有限修复和新的 pytest/Ruff/mypy 交付。本机经实际 SSH 隧道完成六个服务器 Job，结果、重启及清理见[真实业务验收](../../docs/research/2026-10-21-opensandbox-business-validation.md)。FixtureModel 的 FIXTURE_MODEL_KEY 只需非空占位值，实际 Runner 密钥仍由 SecretStore 解析。[当前业务迁移记录](../../docs/research/2026-10-21-opensandbox-business-migration.md)。
+
+当前受测发布的 systemd drop-in `/etc/systemd/system/yipilot-runner.service.d/release.conf` 指向独立 release/venv；以 `systemctl show yipilot-runner --property=ExecStart` 与 runtime-release.json 确认实际路径。回退前必须处理新策略负载并保留去重记录，禁止直接还原旧数据库覆盖新增 Job。
