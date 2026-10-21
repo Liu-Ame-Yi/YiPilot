@@ -2,9 +2,9 @@
 
 Yipilot 是本地运行、面向单个 Python 仓库的自动研发交付项目。目标流程是需求/PRD → SRS 与评审 → SDD 与评审 → 实现 → 验证/修复/代码评审 → 分支与 PR/MR → 可选 CI → 交接，**不自动合并**。
 
-当前已接入真实模型提案；应用和验证代码已切换为远程 OpenSandbox Runner，完整 CI 与服务器受信样例业务验收已通过。后续[真实项目实测](docs/research/2026-10-21-opensandbox-real-project-validation.md)完成模型生成和远程应用，但完整验证被二进制资源/测试缓存兼容问题挡住；常驻与正式项目切换未放行。完整自动流程尚未实现。准确边界见 [当前状态](docs/product/status.md)。
+当前已接入真实模型提案；应用和验证代码已切换为远程 OpenSandbox Runner，完整 CI 与服务器受信样例业务验收已通过。后续[真实项目实测](docs/research/2026-10-21-opensandbox-real-project-validation.md)完成模型生成和远程应用，排除二进制资源的源码副本现已通过服务器完整 pytest；原始仓库接入、常驻与正式项目切换仍未放行。完整自动流程尚未实现。准确边界见 [当前状态](docs/product/status.md)。
 
-[失败诊断和缓存隔离](docs/research/2026-10-21-opensandbox-diagnostics-validation.md)现已修复并通过针对性实测；Ruff/mypy通过，完整pytest仍有临时空间兼容问题，尚未完成整仓交付。
+[失败诊断和缓存隔离](docs/research/2026-10-21-opensandbox-diagnostics-validation.md)已修复；后续[磁盘临时目录与 inode 修复](docs/research/2026-10-21-opensandbox-temporary-storage-validation.md)让同一源码副本的完整 pytest 达到 855 passed、9 skipped。原仓库二进制资源和正式业务交付仍待验收。
 
 ## 开始阅读
 

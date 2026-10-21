@@ -1,5 +1,7 @@
 # 失败诊断与测试缓存修复：针对性实测通过
 
+后续[独立磁盘临时目录与 inode 修复](2026-10-21-opensandbox-temporary-storage-validation.md)已让同一源码副本的完整 pytest 通过。下文保留本轮当时的失败与125条任务审计，不用后续结果覆盖历史事实。
+
 2026-10-21，提交 `96ea1ecf7a7e2785e5d31b98b8047bd020684c55`。
 
 接续[真实项目失败记录](2026-10-21-opensandbox-real-project-validation.md)，本次完成独立失败诊断与 Hypothesis 缓存隔离。两项针对性实测通过；同一源码副本的 Ruff、mypy 通过，完整 pytest 已返回可信失败结果，仍未通过整体验收，没有新的业务 Change Handoff。

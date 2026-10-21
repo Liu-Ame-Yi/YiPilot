@@ -23,7 +23,7 @@
 
 后续[真实模型与 YiPilot 实测](research/2026-10-21-opensandbox-real-project-validation.md)已跑通模型生成和远程应用，但原仓库二进制资源与测试缓存被现有规则拒绝，完整真实项目验证未通过；该记录列明下一步修复顺序和119条任务的收尾审计。
 
-最新[失败诊断与缓存修复](research/2026-10-21-opensandbox-diagnostics-validation.md)已通过针对性服务器复测；Ruff/mypy通过，完整pytest仍有临时存储等问题。记录包含125条任务收尾与下一步临时磁盘安排。
+此前[失败诊断与缓存修复](research/2026-10-21-opensandbox-diagnostics-validation.md)通过针对性服务器复测，并定位临时存储问题。后续[磁盘临时目录与 inode 实测](research/2026-10-21-opensandbox-temporary-storage-validation.md)已让同一源码副本的完整 pytest 达到855 passed、9 skipped；原仓库二进制资源与正式业务切换仍未验收。
 
 ## 历史与依据
 

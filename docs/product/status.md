@@ -1,5 +1,7 @@
 # 当前实现状态
 
+2026-10-21 临时存储后续：工具任务使用独立 1 GiB 磁盘临时目录与 131072 个 inode，保留 noexec 和原资源限制；修复了 64 MiB tmpfs 准入冲突及临时盘 inode 耗尽。同一冻结源码副本完整 pytest 为855 passed、9 skipped、1 warning，退出码0，没有源码改写；最终控制提交完整CI通过。仍排除12张文档PNG，本轮没有新的业务 Change Handoff；132条任务已完成重启/清理对账，服务停止且disabled。见[实测范围与证据](../research/2026-10-21-opensandbox-temporary-storage-validation.md)。
+
 2026-10-21 后续修复：独立失败诊断、客户端错误分类与 Hypothesis 缓存隔离已部署并通过真实针对性复测，历史冻结输入仍有效。同一源码副本的 Ruff/mypy 通过，完整 pytest 正常返回失败结果；首个定位到的阻塞是容器 `/tmp` 只有64 MiB，而测试内部 Runner 要求至少512 MiB空盘。完整日志和全部失败原因尚未确认。125条任务完成重启/清理对账，服务已停止，未放行完整项目或业务交付。见[修复证据及下一步](../research/2026-10-21-opensandbox-diagnostics-validation.md)。
 
 2026-10-21 后续真实项目实测：已有默认 DeepSeek 正常生成提案，经服务器应用到独立 YiPilot worktree；完整验证未通过。原仓库 12 张文档 PNG 在调用前被拒绝，排除截图的源码副本又因 Hypothesis 生成的 gzip 缓存在输出收集时报 `OUTPUT_INVALID`，没有可用 pytest 退出码或日志，Ruff/mypy 未执行，无 Change Handoff。压缩模型响应问题已修复，修复提交完整 CI 通过；本机 Runner keyring 引用已配置，测试后服务与隧道停止，119 条任务身份保留，未放行正式切换。下一步先补失败诊断、缓存隔离、二进制资源合同和复核性能，见[真实项目记录与安排](../research/2026-10-21-opensandbox-real-project-validation.md)。
