@@ -1,6 +1,6 @@
 # 当前实现状态
 
-2026-10-21 OpenSandbox 专项：前三阶段及固定工具镜像的真实证据见[第四阶段前置记录](../research/2026-10-21-opensandbox-toolchain-validation.md)。应用、验证、修复、恢复和 doctor 已接到 Runner，旧 Docker 实时执行实现已删除。本地首轮全套为 846 passed、8 skipped、1 failed；唯一失败已定位到 Windows 锁文件删除竞态，修复后 81 项持久化/迁移回归及 3,000 次真实并发锁获取通过。完整 CI 按对应 GitHub 提交记录判定；服务器业务实测与部署尚未完成，G4 未通过。详见[业务迁移记录](../research/2026-10-21-opensandbox-business-migration.md)。
+2026-10-21 OpenSandbox 专项：前三阶段及固定工具镜像的真实证据见[第四阶段前置记录](../research/2026-10-21-opensandbox-toolchain-validation.md)。应用、验证、修复、恢复和 doctor 已接到 Runner，旧 Docker 实时执行实现已删除。本地首轮全套为 846 passed、8 skipped、1 failed；后续完整 CI 又发现启动锁路径解析竞态；两处修复后 84 项持久化/迁移回归、3,000 次真实并发锁获取及 8 线程共 80 次初始化通过。完整 CI 按对应 GitHub 提交记录判定；服务器业务实测与部署尚未完成，G4 未通过。详见[业务迁移记录](../research/2026-10-21-opensandbox-business-migration.md)。
 
 核对日期：2026-09-15。依据当前工作树源码、离线组合测试和 CLI help 检查，**不是发布版本或完整端到端验收声明**。产品目标见 [产品定义](vision.md)，技术目标见 [V2 架构](../superpowers/specs/2026-09-07-yipilot-v2-architecture.md)。
 

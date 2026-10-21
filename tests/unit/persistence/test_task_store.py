@@ -1,3 +1,4 @@
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -62,6 +63,37 @@ def test_concurrent_initialization_creates_one_valid_project(tmp_path: Path) -> 
 
     assert schema_versions == [1] * 16
     assert FileTaskStore(tmp_path).get_project().schema_version == 1
+
+
+@pytest.mark.parametrize("race", ["missing", "outside"])
+def test_initialization_survives_bootstrap_deletion_during_resolution(tmp_path, monkeypatch, race):
+    runtime = tmp_path / ".yipilot"
+    runtime.mkdir()
+    bootstrap = runtime / ".bootstrap.lock"
+    bootstrap.touch()
+    original = Path.resolve
+
+    def resolve(candidate, *args, **kwargs):
+        if candidate == bootstrap:
+            if race == "missing":
+                raise FileNotFoundError("concurrent lock release")
+            return tmp_path.parent / "disappeared.lock"
+        return original(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    assert FileTaskStore(tmp_path).initialize_project().schema_version == 1
+    assert FileTaskStore(tmp_path).get_project().schema_version == 1
+
+
+def test_initialization_rejects_hard_linked_bootstrap_without_changing_target(tmp_path):
+    runtime = tmp_path / ".yipilot"
+    runtime.mkdir()
+    target = tmp_path / "original.txt"
+    target.write_bytes(b"preserve")
+    os.link(target, runtime / ".bootstrap.lock")
+    with pytest.raises(DomainError, match="PATH_DENIED"):
+        FileTaskStore(tmp_path).initialize_project()
+    assert target.read_bytes() == b"preserve"
 
 
 def test_invalid_task_id_leaves_no_task_directory(tmp_path: Path) -> None:

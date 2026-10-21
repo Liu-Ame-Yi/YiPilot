@@ -16,6 +16,7 @@ from yipilot.domain.models import RunStatus, transition_run, validate_task_id
 from yipilot.domain.sandbox import ImageDigest
 from yipilot.persistence.database import Database
 from yipilot.persistence.filesystem import project_path
+from yipilot.security.paths import require_plain_path
 
 
 class RepoMetadataRecord(BaseModel):
@@ -78,7 +79,10 @@ class FileTaskStore:
     def initialize_project(self) -> ProjectRecord:
         runtime = self._runtime_root()
         runtime.mkdir(exist_ok=True)
-        with FileLock(str(self._runtime_path(".bootstrap.lock"))):
+        # The parent is stable; FileLock removes its file on Windows release.
+        bootstrap = runtime / ".bootstrap.lock"
+        require_plain_path(bootstrap)
+        with FileLock(str(bootstrap)):
             if not self.db.path.exists() and self._runtime_path("config.yaml").exists():
                 raise DomainError("MIGRATION_REQUIRED", "run explicit storage migration first")
             for parts in (("locks",), ("tasks",), ("cache", "repos"), ("audit",)):

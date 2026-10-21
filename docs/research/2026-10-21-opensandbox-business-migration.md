@@ -35,6 +35,14 @@
 
 修复后持久化/迁移 **81 passed**；双线程 **3,000 次实际锁获取通过**，期间捕获 7 次真实零链接状态。Ruff、mypy 81 个源码文件及 diff 检查通过。本地首轮全套的失败不能改写为全量通过；最终整套结果由本次同步触发的 GitHub Windows/Linux Runner/profile 三项 CI 分别记录。相关本地日志位于未入库的 `tmp/full-suite-tests.log`、`tmp/full-suite-results.xml` 与 `tmp/full-suite-lock-regression.log`。
 
+## 首次 CI 与启动锁修复
+
+[提交 cebe113 的首次 CI](https://github.com/Liu-Ame-Yi/YiPilot/actions/runs/39551852798)中，Linux Runner **65 passed**、profile 构建 **95 passed**；Windows **844 passed、12 skipped、1 failed**，失败为并发初始化解析 `.bootstrap.lock` 时误报路径越界。此前事件日志并发用例已通过，不能把这轮 CI 写成全部通过。
+
+无数据库的并发最小复现也在 `exists()` 与 `resolve()` 之间遇到启动锁删除。初始化现在复用已解析的稳定 runtime 父目录，单独对原 `.bootstrap.lock` 做普通路径校验，再交给 FileLock；原锁路径和互斥机制保持原义，未放宽项目越界、符号链接或硬链接拒绝。
+
+新增两类瞬态解析回归与真实硬链接拒绝回归均在修复前失败。修复后持久化/迁移 **84 passed**；8 个线程共 **80 次真实初始化通过**，数据库只保留一条 Project。最后单独复测并发初始化与三个新回归 **4 passed**，Ruff、mypy 81 个源码文件通过。完整三项 CI 随后按修复提交重新执行，结果须核对该提交的 GitHub 运行，不能沿用首次 CI 的成功子项替代。
+
 ## 工具通道
 
 首次执行时，服务器备份、只读 SSH 和新增套接字测试命令曾在 CreateProcess 前遇到自动权限审批审查超时，GitHub 连接器亦曾传输失败。这些是此前未推送/部署的原因，不能视为动作不安全或已成功执行。
