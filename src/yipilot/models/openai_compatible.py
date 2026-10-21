@@ -85,12 +85,15 @@ class OpenAICompatibleModelPort:
             with self._client.stream(
                 "POST",
                 f"{self._model.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {secret}"},
+                headers={"Authorization": f"Bearer {secret}", "Accept-Encoding": "identity"},
                 json=body,
                 timeout=httpx.Timeout(timeout),
             ) as response:
                 self._check_stop(deadline)
                 self._raise_for_status(response)
+                # Raw reads keep wire and parser budgets identical.
+                if response.headers.get("content-encoding", "identity").strip().casefold() != "identity":
+                    raise DomainError("MODEL_PROTOCOL_ERROR", "compressed model responses are unsupported")
                 content_type = response.headers.get("content-type", "").casefold()
                 if not streaming or "application/json" in content_type:
                     content = self._json_content(self._bounded_bytes(response, deadline))

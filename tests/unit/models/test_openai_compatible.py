@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import json
 
@@ -153,6 +154,37 @@ def test_non_streaming_json_fallback_has_the_same_chunk_semantics() -> None:
         )
 
     assert "".join(chunk.content for chunk in _port(profile, handler).stream(_request(profile))) == "fallback"
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_raw_readers_negotiate_identity_encoding(streaming: bool) -> None:
+    content = (
+        b'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n'
+        b'data: [DONE]\n'
+        if streaming else b'{"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]}'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("accept-encoding") != "identity":
+            return _response(200, headers={"content-encoding": "gzip"}, content=gzip.compress(content))
+        return _response(200, content=content)
+
+    port = _port(_profile(), handler)
+    assert "".join(c.content for c in (port.stream if streaming else port.probe)(_request(_profile()))) == "OK"
+
+
+@pytest.mark.parametrize("streaming", [True, False])
+def test_unsolicited_compression_is_rejected_before_reading(streaming: bool) -> None:
+    class UnreadableStream(httpx.SyncByteStream):
+        def __iter__(self):
+            raise AssertionError("compressed response must not be consumed")
+            yield b""
+
+    port = _port(_profile(), lambda _: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, stream=UnreadableStream()))
+    with pytest.raises(DomainError, match="MODEL_PROTOCOL_ERROR"):
+        (port.stream if streaming else port.probe)(_request(_profile()))
+    assert not port.last_completion.complete and port.last_completion.transport_bytes == 0
 
 
 @pytest.mark.parametrize(
