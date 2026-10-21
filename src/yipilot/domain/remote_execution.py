@@ -12,6 +12,10 @@ from yipilot.domain.sandbox import Identifier, SourceFile, source_path
 
 PROFILE: Literal["yipilot-python-v2"] = "yipilot-python-v2"
 IMAGE = "public.ecr.aws/docker/library/python@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258"
+TOOLS_PROFILE: Literal["yipilot-tools-v3"] = "yipilot-tools-v3"
+TOOLS_IMAGE = "sha256:caac41fa96e695ef735b8583eb975b74a21567c234ddb7d789e58df13389b755"
+Profile = Literal["yipilot-python-v2", "yipilot-tools-v3"]
+IMAGES = {PROFILE: IMAGE, TOOLS_PROFILE: TOOLS_IMAGE}
 MAX_BUNDLE_BYTES = 132 * 1024**2
 MAX_LOG_BYTES = 128 * 1024
 SandboxId = Annotated[str, Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")]
@@ -38,7 +42,7 @@ class JobRequest(RemoteModel):
     operation_id: Identifier
     run_id: Identifier
     policy_revision: Literal["python-script-v1"] = "python-script-v1"
-    profile: Literal["yipilot-python-v2"] = PROFILE
+    profile: Profile = PROFILE
     image: str = IMAGE
     script: str
     files: tuple[SourceFile, ...] = Field(min_length=1, max_length=10000)
@@ -54,7 +58,7 @@ class JobRequest(RemoteModel):
     @model_validator(mode="after")
     def validate_contract(self) -> Self:
         validate_files(self.files)
-        if self.image != IMAGE or not self.script.endswith(".py") or self.script not in {f.path for f in self.files}:
+        if self.image != IMAGES[self.profile] or not self.script.endswith(".py") or self.script not in {f.path for f in self.files}:
             raise ValueError("A pinned image and a registered input Python script are required")
         return self
 
@@ -96,7 +100,7 @@ class JobResult(RemoteModel):
     input_manifest_hash: Sha256
     output_manifest_hash: Sha256
     sandbox_id: SandboxId
-    profile: Literal["yipilot-python-v2"] = PROFILE
+    profile: Profile = PROFILE
     image: str = IMAGE
     task_uid: Literal[10001] = 10001
     task_gid: Literal[10001] = 10001
@@ -117,7 +121,7 @@ class JobResult(RemoteModel):
     @model_validator(mode="after")
     def validate_result(self) -> Self:
         validate_files(self.files)
-        if self.image != IMAGE or self.output_manifest_hash != manifest_hash(self.files):
+        if self.image != IMAGES[self.profile] or self.output_manifest_hash != manifest_hash(self.files):
             raise ValueError("Output manifest or image differs")
         if (self.started_at.tzinfo is None or self.ended_at.tzinfo is None
                 or self.ended_at < self.started_at or (self.reason == "exited" and self.exit_code is None)):

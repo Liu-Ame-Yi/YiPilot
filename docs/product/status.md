@@ -1,6 +1,6 @@
 # 当前实现状态
 
-2026-10-20 OpenSandbox 专项已实现独立 Runner、创建租约、每任务磁盘上限和保留期去重；本机 1/2/4 个轻任务与选定故障恢复已实测，见[第三阶段记录](../research/2026-10-20-opensandbox-reliability-validation.md)。正式业务执行调用仍使用下述旧 Docker 路径；项目锁、工具镜像、审批与全部调用的迁移尚未完成，未放行正式不可信任务。
+2026-10-21 OpenSandbox 专项已完成独立 Runner、创建租约、每任务磁盘上限、保留期去重及选定故障验收；[第三阶段记录](../research/2026-10-20-opensandbox-reliability-validation.md)保留原轻任务测试。新增固定工具镜像已通过 18 项隔离探针、一个 512 MiB 小工具任务与一个轻任务并行，以及四轻任务实测，见[第四阶段前置记录](../research/2026-10-21-opensandbox-toolchain-validation.md)。正式业务执行调用仍使用下述旧 Docker 路径；项目锁、审批与全部调用迁移尚未完成，未放行正式不可信任务。
 
 核对日期：2026-09-15。依据当前工作树源码、离线组合测试和 CLI help 检查，**不是发布版本或完整端到端验收声明**。产品目标见 [产品定义](vision.md)，技术目标见 [V2 架构](../superpowers/specs/2026-09-07-yipilot-v2-architecture.md)。
 

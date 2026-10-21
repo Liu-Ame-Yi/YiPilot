@@ -14,7 +14,7 @@ from uuid import UUID
 
 from filelock import FileLock
 
-from yipilot.domain.remote_execution import IMAGE, PROFILE, JobRequest
+from yipilot.domain.remote_execution import IMAGES, JobRequest
 from yipilot.persistence.filesystem import atomic_write_bytes
 from yipilot.runner import disk
 from yipilot.runner.service import sync_directory
@@ -95,10 +95,10 @@ class OpenSandboxRuntime:
                 raise ValueError("Output budget reached")
 
         try:
-            box = await Sandbox.create(IMAGE, timeout=timedelta(seconds=min(900, request.timeout_seconds + 120)),
+            box = await Sandbox.create(request.image, timeout=timedelta(seconds=min(900, request.timeout_seconds + 120)),
                 skip_health_check=True,
                 resource={"cpu": str(request.cpu_millis) + "m", "memory": str(request.memory_bytes)},
-                metadata={"yipilot.job_id": job_id, "yipilot.profile": PROFILE},
+                metadata={"yipilot.job_id": job_id, "yipilot.profile": request.profile},
                 entrypoint=["tail", "-f", "/dev/null"],
                 network_policy=NetworkPolicy.model_validate({"defaultAction": "deny", "egress": [{"action": "deny", "target": "*"}]}),
                 volumes=[Volume(name="work", host=Host(path=str(work)), mountPath="/workspace")],
@@ -107,7 +107,9 @@ class OpenSandboxRuntime:
                 raise ValueError("Server creation identity differs from reserved identity")
             await box.check_ready(timeout=timedelta(seconds=30), polling_interval=timedelta(milliseconds=200))
             facts = docker("inspect", "sandbox-" + box.id)[0]
-            if facts["Config"]["Labels"].get("yipilot.job_id") != job_id or not facts["State"]["Running"]:
+            if (facts["Config"]["Labels"].get("yipilot.job_id") != job_id
+                    or facts["Config"]["Labels"].get("yipilot.profile") != request.profile
+                    or facts["Config"]["Image"] != request.image or not facts["State"]["Running"]):
                 raise ValueError("Runtime ownership differs")
             self._groups[job_id] = {writer_group(facts["State"]["Pid"])}
             if store.get(job_id)[1].cancel_requested:
@@ -186,7 +188,8 @@ class OpenSandboxRuntime:
         for container in facts:
             labels = container["Config"]["Labels"]
             primary = (container["Name"] == "/sandbox-" + sandbox_id and labels.get("yipilot.job_id") == job_id
-                       and labels.get("yipilot.profile") == PROFILE)
+                       and labels.get("yipilot.profile") in IMAGES
+                       and container["Config"]["Image"] == IMAGES[labels["yipilot.profile"]])
             sidecar = (container["Name"] == "/sandbox-egress-" + sandbox_id
                        and labels.get("opensandbox.io/egress-sidecar-for") == sandbox_id)
             if not (primary or sidecar):

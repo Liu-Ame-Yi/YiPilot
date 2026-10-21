@@ -33,6 +33,17 @@ def test_minimal_request_and_explicit_limits(request_document):
     profile.validate_resources((1024**3, 1_000_000_000, None))
 
 
+def test_tools_image_and_profile_are_an_indivisible_pair(request_document):
+    request_document["metadata"]["yipilot.profile"] = profile.TOOLS_PROFILE
+    with pytest.raises(ValueError):
+        profile.validate_request(request_document)
+    request_document["image"]["uri"] = profile.TOOLS_IMAGE
+    profile.validate_request(request_document)
+    request_document["metadata"]["yipilot.profile"] = profile.PROFILE
+    with pytest.raises(ValueError):
+        profile.validate_request(request_document)
+
+
 @pytest.mark.parametrize("field,value", [
     ("image", {"uri": "python:latest"}), ("image", {"uri": profile.IMAGE, "auth": {"username": "x"}}),
     ("timeout", None), ("timeout", 901), ("timeout", True),

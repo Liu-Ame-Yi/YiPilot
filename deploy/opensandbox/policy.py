@@ -9,6 +9,9 @@ NETWORK = "yipilot-isolated"
 BRIDGE = "yipilot0"
 JOBS_ROOT = Path("/srv/yipilot-runner/jobs")
 IMAGE = "public.ecr.aws/docker/library/python@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258"
+TOOLS_PROFILE = "yipilot-tools-v3"
+TOOLS_IMAGE = "sha256:caac41fa96e695ef735b8583eb975b74a21567c234ddb7d789e58df13389b755"
+IMAGES = {PROFILE: IMAGE, TOOLS_PROFILE: TOOLS_IMAGE}
 EXECD = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/execd@sha256:cda2bc35409bbf57561599b316cafb899598f7dce671332e7ceda14eb1cfeded"
 EGRESS = "sandbox-registry.cn-zhangjiakou.cr.aliyuncs.com/opensandbox/egress@sha256:bce2cc2e4dc3a3594678b91ac29efb0669fccebfdfc137727018d3b087fbb13a"
 DENY = {"defaultAction": "deny", "egress": [{"action": "deny", "target": "*"}]}
@@ -30,11 +33,13 @@ def validate_request(request):
     """Reject unsupported shapes before image resolution or Docker side effects."""
     metadata = request.get("metadata") or {}
     job = metadata.get("yipilot.job_id", "")
+    profile = metadata.get("yipilot.profile", "")
     if (re.fullmatch(r"[0-9a-f]{32}", job) is None
-            or metadata != {"yipilot.job_id": job, "yipilot.profile": PROFILE}):
+            or profile not in IMAGES
+            or metadata != {"yipilot.job_id": job, "yipilot.profile": profile}):
         raise ValueError("Exactly one canonical Job ID and profile label are required")
-    if request.get("image") != {"uri": IMAGE}:
-        raise ValueError("Only the cached pinned Python image is permitted")
+    if request.get("image") != {"uri": IMAGES[profile]}:
+        raise ValueError("Only the cached image pinned to this profile is permitted")
     for field in ("snapshotId", "templateId", "extensions", "env", "lifecycle",
                   "credentialProxy", "secureAccess", "resourceRequests"):
         if request.get(field):

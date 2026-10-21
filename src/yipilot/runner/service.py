@@ -273,6 +273,7 @@ class Runner:
         changed = tuple(sorted(p for p in new if old.get(p) != new[p]))
         status = self.store.get(job_id)[1]
         result = JobResult(job_id=job_id, request_fingerprint=request.fingerprint,
+            profile=request.profile, image=request.image,
             input_manifest_hash=manifest_hash(request.files), output_manifest_hash=manifest_hash(files),
             sandbox_id=status.sandbox_id or "", reason=reason, exit_code=exit_code,  # type: ignore[arg-type]
             started_at=started, ended_at=datetime.now(UTC), files=files,

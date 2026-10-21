@@ -12,9 +12,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from yipilot.domain.remote_execution import (
+    IMAGE,
     MAX_BUNDLE_BYTES,
+    PROFILE,
     JobRequest,
     JobResult,
+    Profile,
     canonical,
     manifest_hash,
 )
@@ -96,11 +99,12 @@ def write_source(root: Path, file: SourceFile, data: bytes) -> None:
 def freeze_bundle(source: Path, destination: Path, *, request_key: str, task_id: str,
                   operation_id: str, run_id: str, script: str,
                   frozen_files: tuple[SourceFile, ...] = (), timeout_seconds: int = 60,
-                  memory_bytes: int = 128 * 1024**2, cpu_millis: int = 250) -> JobRequest:
+                  memory_bytes: int = 128 * 1024**2, cpu_millis: int = 250,
+                  profile: Profile = PROFILE, image: str = IMAGE) -> JobRequest:
     files, contents = scan_source_tree(source, frozen_files)
     request = JobRequest(request_key=request_key, task_id=task_id, operation_id=operation_id,
                          run_id=run_id, script=script, files=files, timeout_seconds=timeout_seconds,
-                         memory_bytes=memory_bytes, cpu_millis=cpu_millis)
+                         memory_bytes=memory_bytes, cpu_millis=cpu_millis, profile=profile, image=image)
     require_plain_path(destination)
     with destination.open("xb") as output, zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as bundle:
         bundle.writestr("request.json", canonical(request))
@@ -160,6 +164,7 @@ def reconstruct_result(input_bundle: Path, output_bundle: Path, destination: Pat
         with bounded_zip(output_bundle) as bundle:
             result = JobResult.model_validate_json(read_entry(bundle, "result.json", 4 * 1024**2))
             if (result.job_id != job_id or result.request_fingerprint != request.fingerprint
+                    or result.profile != request.profile or result.image != request.image
                     or result.input_manifest_hash != manifest_hash(request.files)):
                 raise ValueError("Result belongs to a different input or Job")
             old, new = {f.path: f for f in request.files}, {f.path: f for f in result.files}

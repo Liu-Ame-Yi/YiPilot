@@ -1,0 +1,8 @@
+{
+  "image_id": "sha256:caac41fa96e695ef735b8583eb975b74a21567c234ddb7d789e58df13389b755",
+  "platform": "linux/amd64",
+  "size_bytes": 131274365,
+  "dockerfile_sha256": "758fb26de90f65d0de35095f221c37a134eb87ff39cc4b7976ec2b46c58b489f",
+  "uv_lock_sha256": "bff8128b053e57f8e3d1e6777cfd0ed519052f400c924356b5fb81ed082c641a",
+  "requirements_sha256": "695c6275d15394ffd21d7cec0999bc3b235313e9e6b15253a7c6471f0cec2539"
+}

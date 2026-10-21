@@ -1,3 +1,4 @@
 deploy/opensandbox/** text eol=lf
+deploy/toolchain/** text eol=lf
 # Empty unified-diff context lines contain a required space marker.
 deploy/opensandbox/*.patch whitespace=-blank-at-eol

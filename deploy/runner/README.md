@@ -16,6 +16,8 @@ Runner 使用独立 Python 3.11 环境和 `yipilot[runner]` 可选依赖。普�
 
 所有接口要求 `Authorization: Bearer <独立 Runner key>`，与 OpenSandbox key 分开。请求只接受版本 2 合同、固定 profile/镜像、已登记的 `python-script-v1` 工具及其输入脚本；不接收 shell、宿主路径、额外 Docker 参数或模型配置。
 
+已登记的对应关系包括原 `yipilot-python-v2` 基础镜像和新增 `yipilot-tools-v3` [工具镜像](../toolchain/README.md)。冻结输入时显式传入对应的 profile 和 image；结果也必须与原输入对应，客户端拒绝跨 profile 替换。默认值仍是原 profile，不改变历史指纹或现有业务预算。
+
 输入包为 `request.json` 加 `source/<路径>`。校验 ZIP 中央目录数量/长度、普通文件类型、完整条目集合、便携路径、UTF-8、摘要、文件数和展开大小，不使用 `extractall`。复用现有源码扫描，拒绝链接、特殊文件、凭据目录和 `.env` 等排除项。单文件最多 16 MiB、全树最多 128 MiB、10000 文件，传输包最多 132 MiB。
 
 相同 request key 和请求摘要返回同一 Job；内容不同返回冲突。接受前不执行；进入 running 后发生崩溃，不自动重放。重启先对账 running 和 cleanup_failed，再把已停止而结局不确定的执行记为 uncertain。不能承诺外部副作用 exactly-once。

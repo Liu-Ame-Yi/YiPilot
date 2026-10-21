@@ -20,6 +20,8 @@ from yipilot.domain.errors import DomainError
 from yipilot.domain.remote_execution import (
     IMAGE,
     PROFILE,
+    TOOLS_IMAGE,
+    TOOLS_PROFILE,
     JobRequest,
     JobResult,
     manifest_hash,
@@ -39,14 +41,14 @@ from yipilot.workspace.remote_bundle import (
 from yipilot.workspace.runner_client import RunnerClient
 
 
-def frozen(tmp_path, *, key="example", timeout=60):
+def frozen(tmp_path, *, key="example", timeout=60, profile=PROFILE, image=IMAGE):
     source = tmp_path / key
     source.mkdir()
     (source / "main.py").write_text("print('fixture')\n", encoding="utf-8")
     (source / "unchanged.txt").write_text("frozen\n", encoding="utf-8")
     bundle = tmp_path / (key + ".zip")
     request = freeze_bundle(source, bundle, request_key=key, task_id="1", operation_id="operation",
-                            run_id=key, script="main.py", timeout_seconds=timeout)
+                            run_id=key, script="main.py", timeout_seconds=timeout, profile=profile, image=image)
     return source, bundle, request
 
 
@@ -496,7 +498,41 @@ def test_contract_matches_fixed_server_profile():
     import runpy
     profile = runpy.run_path(str(Path(__file__).parents[2] / "deploy/opensandbox/policy.py"))
     assert IMAGE == profile["IMAGE"] and PROFILE == profile["PROFILE"]
+    assert TOOLS_IMAGE == profile["TOOLS_IMAGE"] and TOOLS_PROFILE == profile["TOOLS_PROFILE"]
     assert JobRequest.model_fields["schema_version"].default == 2
+
+
+def test_tool_profile_roundtrip_and_cross_profile_result_rejected(tmp_path):
+    _, bundle, request = frozen(tmp_path, profile=TOOLS_PROFILE, image=TOOLS_IMAGE)
+    runner = Runner(tmp_path / "runner", Runtime(), disk_reserve=0)
+    job = runner.submit(bundle)
+    runner.start()
+    try:
+        assert terminal(runner, job.job_id).state == "succeeded"
+        output = runner.result_path(job.job_id)
+        result = reconstruct_result(bundle, output, tmp_path / "verified", job_id=job.job_id)
+        assert (result.profile, result.image) == (request.profile, request.image)
+        altered = tmp_path / "wrong-profile.zip"
+        with zipfile.ZipFile(output) as source, zipfile.ZipFile(altered, "w") as target:
+            for entry in source.infolist():
+                data = source.read(entry)
+                if entry.filename == "result.json":
+                    value = json.loads(data)
+                    value.update(profile=PROFILE, image=IMAGE)
+                    data = json.dumps(value).encode()
+                target.writestr(entry, data)
+        with pytest.raises(ValueError, match="different input"):
+            reconstruct_result(bundle, altered, tmp_path / "rejected", job_id=job.job_id)
+        assert not (tmp_path / "rejected").exists()
+    finally:
+        runner.close()
+
+
+@pytest.mark.parametrize("profile,image", [(PROFILE, TOOLS_IMAGE), (TOOLS_PROFILE, IMAGE)])
+def test_input_cannot_exchange_profile_images(tmp_path, profile, image):
+    _, _, request = frozen(tmp_path)
+    with pytest.raises(ValueError, match="pinned image"):
+        JobRequest(**{**request.model_dump(), "profile": profile, "image": image})
 
 
 def test_manifest_rejects_oversized_path_components(tmp_path):
@@ -552,7 +588,8 @@ def test_sdk_records_identity_before_readiness_and_awaits_manager_factory(tmp_pa
     monkeypatch.setattr(runtime_module, "JOBS_ROOT", runner.jobs)
     monkeypatch.setattr(runtime_module.disk, "prepare", lambda job_id, work: work.mkdir())
     monkeypatch.setattr(runtime_module, "docker", lambda *args: [{
-        "Config": {"Labels": {"yipilot.job_id": job.job_id}}, "State": {"Running": True, "Pid": 1}}])
+        "Config": {"Labels": {"yipilot.job_id": job.job_id, "yipilot.profile": request.profile},
+                   "Image": request.image}, "State": {"Running": True, "Pid": 1}}])
     original_read = Path.read_text
     monkeypatch.setattr(Path, "read_text", lambda self, *a, **kw:
                         "0::/owned\n" if self.name == "cgroup" else original_read(self, *a, **kw))

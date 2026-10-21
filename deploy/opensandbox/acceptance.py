@@ -1,5 +1,6 @@
 """Trusted-fixture acceptance on the Linux host; never executes repository code."""
 
+import argparse
 import asyncio
 import copy
 import hashlib
@@ -17,7 +18,7 @@ from opensandbox import Sandbox
 from opensandbox.config import ConnectionConfig
 from opensandbox.models import Host, NetworkPolicy, Volume, WriteEntry
 from opensandbox.models.execd import RunCommandOpts
-from policy import DENY, IMAGE, JOBS_ROOT, PROFILE
+from policy import DENY, IMAGE, JOBS_ROOT, PROFILE, TOOLS_IMAGE, TOOLS_PROFILE
 
 
 async def run(box, code, **options):
@@ -67,7 +68,7 @@ def assert_stopped(pids):
             pass
 
 
-async def main():
+async def main(image=IMAGE, profile=PROFILE):
     config = tomli.loads(Path("/etc/opensandbox/yipilot-profile.toml").read_text())
     client = docker.from_env()
     connection = ConnectionConfig(domain="127.0.0.1:8081", protocol="http",
@@ -80,7 +81,7 @@ async def main():
               "cancel_then_destroy_live_writers", "timeout_then_destroy_and_stable_host_collection",
               "task_capabilities_zero", "control_process_protected", "control_port_bind_denied",
               "proxy_surface_restricted", "filesystem_identity_enforced", "task_loopback_preserved")
-    report = {"trusted_fixtures_only": True, "profile": PROFILE, "jobs": [],
+    report = {"trusted_fixtures_only": True, "profile": profile, "jobs": [],
               "checks": dict.fromkeys(checks, False)}
     baseline_containers = {c.id for c in client.containers.list(all=True)}
     baseline_volumes = {v.id for v in client.volumes.list()}
@@ -91,9 +92,9 @@ async def main():
         job = secrets.token_hex(16)
         root = job_directory(job)
         report["jobs"].append(job)
-        payload = {"image": {"uri": IMAGE}, "entrypoint": ["tail", "-f", "/dev/null"],
+        payload = {"image": {"uri": image}, "entrypoint": ["tail", "-f", "/dev/null"],
             "timeout": 300, "resourceLimits": {"memory": "128Mi", "cpu": "250m"},
-            "metadata": {"yipilot.job_id": job, "yipilot.profile": PROFILE},
+            "metadata": {"yipilot.job_id": job, "yipilot.profile": profile},
             "networkPolicy": DENY, "volumes": [{"name": "work", "host": {"path": str(root / "work")},
                                                 "mountPath": "/workspace", "readOnly": False}]}
         before = ({c.id for c in client.containers.list(all=True)}, {v.id for v in client.volumes.list()})
@@ -127,9 +128,9 @@ async def main():
                 job = secrets.token_hex(16)
                 root = job_directory(job)
                 report["jobs"].append(job)
-            box = await asyncio.wait_for(Sandbox.create(IMAGE,
+            box = await asyncio.wait_for(Sandbox.create(image,
                 timeout=timedelta(minutes=5), resource={"memory": "128Mi", "cpu": "250m"},
-                metadata={"yipilot.job_id": job, "yipilot.profile": PROFILE},
+                metadata={"yipilot.job_id": job, "yipilot.profile": profile},
                 entrypoint=["tail", "-f", "/dev/null"], network_policy=NetworkPolicy.model_validate(DENY),
                 volumes=[Volume(name="work", host=Host(path=str(root / "work")), mount_path="/workspace")],
                 connection_config=connection), timeout=70)
@@ -234,7 +235,7 @@ print(json.dumps({'nonroot':True,'readonly':True,'work_roundtrip':True,'control_
         # An unrestricted default-bridge peer may not reach this sandbox either.
         first_sidecar = client.containers.get("sandbox-egress-" + box.id)
         destination = first_sidecar.attrs["NetworkSettings"]["Networks"]["yipilot-isolated"]["IPAddress"]
-        peer = client.containers.run(IMAGE, ["python", "-c",
+        peer = client.containers.run(image, ["python", "-c",
             f"import socket\nfor port in [443,44772]:\n s=socket.socket(); s.settimeout(1); assert s.connect_ex(({destination!r},port))!=0; s.close()"],
             detach=True, network="bridge", user="10001:10001", read_only=True,
             mem_limit="64m", memswap_limit="64m", nano_cpus=100_000_000,
@@ -332,4 +333,7 @@ print(json.dumps({'denied':results}))"""))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tools", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(main(TOOLS_IMAGE, TOOLS_PROFILE) if args.tools else main())

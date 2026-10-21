@@ -27,6 +27,8 @@
 
 最新的[第三阶段记录](research/2026-10-20-opensandbox-reliability-validation.md)包含真实 1/2/4 轻任务、选定故障恢复、磁盘上限与保留期；[Runner 闭环记录](research/2026-10-20-opensandbox-runner-validation.md)保留第二阶段范围。隔离依据见 [v2 实测](research/2026-10-20-opensandbox-control-isolation.md)，[v1 失败记录](research/2026-10-20-opensandbox-profile-validation.md)保留历史证据。业务全面替换、项目锁和重型负载尚未完成，尚未放行正式不可信任务。
 
+2026-10-21 的[第四阶段前置记录](research/2026-10-21-opensandbox-toolchain-validation.md)新增固定工具镜像、18 项隔离回归、512 MiB 小工具任务与轻任务混合并发、四轻任务和旧 profile 的真实回归；业务调用仍未切换。[镜像构建与分发](../deploy/toolchain/README.md)说明本地 image ID 和归档部署的限制。
+
 | 位置 | 如何使用 |
 | --- | --- |
 | [原始规划书](../规划书.md) | AI 对 Go 原项目的二次总结，混有重写建议；只作参考，不要求兼容所有协议、目录或功能 |
