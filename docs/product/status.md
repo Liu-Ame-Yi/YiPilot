@@ -1,5 +1,7 @@
 # 当前实现状态
 
+2026-10-21 后续真实项目实测：已有默认 DeepSeek 正常生成提案，经服务器应用到独立 YiPilot worktree；完整验证未通过。原仓库 12 张文档 PNG 在调用前被拒绝，排除截图的源码副本又因 Hypothesis 生成的 gzip 缓存在输出收集时报 `OUTPUT_INVALID`，没有可用 pytest 退出码或日志，Ruff/mypy 未执行，无 Change Handoff。压缩模型响应问题已修复，修复提交完整 CI 通过；本机 Runner keyring 引用已配置，测试后服务与隧道停止，119 条任务身份保留，未放行正式切换。下一步先补失败诊断、缓存隔离、二进制资源合同和复核性能，见[真实项目记录与安排](../research/2026-10-21-opensandbox-real-project-validation.md)。
+
 2026-10-21 OpenSandbox 专项：应用、验证、修复、恢复和 doctor 已接到 Runner，旧 Docker 实时执行实现已删除。受测提交 bc1e838 的完整 CI 通过；本机经 SSH 隧道完成六个真实服务器 Job，覆盖应用、一次 pytest 失败、有限修复及 pytest/Ruff/mypy 交付。历史 111 条任务身份与终态保留，新增六条后共 117 条；重启只读对账无重放，资源已清理。受信业务主链路通过，服务演练后停止且 disabled，常驻启用和用户项目切换未完成，不表示生产放行。见[服务器业务验收](../research/2026-10-21-opensandbox-business-validation.md)与[迁移过程](../research/2026-10-21-opensandbox-business-migration.md)。
 
 核对日期：2026-09-15。依据当前工作树源码、离线组合测试和 CLI help 检查，**不是发布版本或完整端到端验收声明**。产品目标见 [产品定义](vision.md)，技术目标见 [V2 架构](../superpowers/specs/2026-09-07-yipilot-v2-architecture.md)。

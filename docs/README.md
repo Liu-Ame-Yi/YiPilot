@@ -21,6 +21,8 @@
 
 本地业务替换与检查过程见[第四阶段业务迁移记录](research/2026-10-21-opensandbox-business-migration.md)；[服务器业务演练](research/2026-10-21-opensandbox-business-validation.md)已完成六个真实 Job、交付工件与重启/清理检查，常驻和用户项目切换尚未完成。
 
+后续[真实模型与 YiPilot 实测](research/2026-10-21-opensandbox-real-project-validation.md)已跑通模型生成和远程应用，但原仓库二进制资源与测试缓存被现有规则拒绝，完整真实项目验证未通过；该记录列明下一步修复顺序和119条任务的收尾审计。
+
 ## 历史与依据
 
 本轮 OpenSandbox 专项的 **Proposed 实施安排**见[远程迁移计划](research/2026-10-19-opensandbox-implementation-plan.md)：包含四阶段、验收条件、代码整合范围与用户下一步。它不是当前可用能力或对产品 roadmap 的更新；服务器现状与源码分发分别见[安装记录](research/2026-10-19-opensandbox-server-installation.md)、[GitHub 同步记录](research/2026-10-19-yipilot-github-sync.md)。

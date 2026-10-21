@@ -2,7 +2,7 @@
 
 Yipilot 是本地运行、面向单个 Python 仓库的自动研发交付项目。目标流程是需求/PRD → SRS 与评审 → SDD 与评审 → 实现 → 验证/修复/代码评审 → 分支与 PR/MR → 可选 CI → 交接，**不自动合并**。
 
-当前已接入真实模型提案；应用和验证代码已切换为远程 OpenSandbox Runner，完整 CI 与服务器受信样例业务验收已通过；常驻启用和用户项目切换尚未完成。完整自动流程尚未实现。准确边界见 [当前状态](docs/product/status.md)。
+当前已接入真实模型提案；应用和验证代码已切换为远程 OpenSandbox Runner，完整 CI 与服务器受信样例业务验收已通过。后续[真实项目实测](docs/research/2026-10-21-opensandbox-real-project-validation.md)完成模型生成和远程应用，但完整验证被二进制资源/测试缓存兼容问题挡住；常驻与正式项目切换未放行。完整自动流程尚未实现。准确边界见 [当前状态](docs/product/status.md)。
 
 ## 开始阅读
 

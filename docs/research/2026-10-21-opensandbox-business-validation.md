@@ -30,3 +30,5 @@ systemd 的 `yipilot-runner.service.d/release.conf` 指向新环境，旧 venv �
 仍未验证：真实模型、任意用户项目及额外依赖、真实基础设施上的业务中断恢复、重构建并发和 K8s；常驻服务、本机持久凭据与隧道仍未启用。下一步按此受测版本配置本机连接，再用选定用户项目做首次受控切换。
 
 无凭据的逐 Job 证据、摘要和部署/重启清理收据见 [JSON 记录](evidence/2026-10-21-opensandbox-business.json)。
+
+后续真实默认模型与 YiPilot 项目实测已另行完成：模型和应用通过，完整验证失败；本轮样例的成功不变，也不能替代该真实项目的未通过结论。最新边界、119条任务收尾和修复安排见[真实项目记录](2026-10-21-opensandbox-real-project-validation.md)。

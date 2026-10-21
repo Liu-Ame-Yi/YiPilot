@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-10-21T09:01:09.284905+00:00",
+  "verdict": "real_project_end_to_end_not_passed",
+  "production_ready": false,
+  "business_cutover": false,
+  "original_repository_attempt": {
+    "verdict": "source_rejected_before_model_call",
+    "error_code": "SANDBOX_SOURCE_DENIED",
+    "model_called": false,
+    "remote_jobs": 0,
+    "audit_root": "C:\\Users\\liuyi\\AppData\\Local\\Temp\\yreal-c9736ac2"
+  },
+  "source_only_project_attempt": {
+    "root": "C:\\Users\\liuyi\\AppData\\Local\\Temp\\yreal-f7de5b41",
+    "actual_model": true,
+    "actual_repository": "D:\\ly112233\\agent",
+    "actual_remote_runtime": true,
+    "source_head": "c5242c49b0c376312d178b65762ff39a16a5b26d",
+    "tested_source_commit": "3f125fde32bdc612f84f901ccdd2116f9fad56ad",
+    "model_selector": "deepseek-1/deepseek-flash:reasoning-high",
+    "excluded_documentation_screenshots": [
+      "docs/architecture/yipilot-docker-sandbox-v3.visual-check.1440x900.dark.png",
+      "docs/architecture/yipilot-docker-sandbox-v3.visual-check.1440x900.light.png",
+      "docs/architecture/yipilot-docker-sandbox-v3.visual-check.2048x1320.dark.png",
+      "docs/architecture/yipilot-docker-sandbox-v3.visual-check.2048x1320.light.png",
+      "docs/architecture/yipilot-gated-delivery-v3.visual-check.1440x900.dark.png",
+      "docs/architecture/yipilot-gated-delivery-v3.visual-check.1440x900.light.png",
+      "docs/architecture/yipilot-gated-delivery-v3.visual-check.2048x1320.dark.png",
+      "docs/architecture/yipilot-gated-delivery-v3.visual-check.2048x1320.light.png",
+      "docs/architecture/yipilot-v2.visual-check.1440x900.dark.png",
+      "docs/architecture/yipilot-v2.visual-check.1440x900.light.png",
+      "docs/architecture/yipilot-v2.visual-check.2048x1320.dark.png",
+      "docs/architecture/yipilot-v2.visual-check.2048x1320.light.png"
+    ],
+    "generation": {
+      "error_code": null,
+      "operation_id": "0e58aa24-b729-457d-92ba-fe57a64af10a",
+      "plan_artifact_ref": {
+        "artifact_id": "2c493dbe-5075-4976-89b6-4af8ab4a91d5",
+        "operation_id": "0e58aa24-b729-457d-92ba-fe57a64af10a",
+        "relative_path": "artifacts/agent-plan.json",
+        "run_id": "05747617-5740-417d-92af-c4b0781cd5a5",
+        "sha256": "9aab5dc53fba7bf361d22be2503e6aa8b1daf2633935b69eadefb5b190fc9f32",
+        "task_id": "1"
+      },
+      "patch_proposal_artifact_ref": {
+        "artifact_id": "72557807-a7fe-4cc4-8113-1d42b2071c2d",
+        "operation_id": "0e58aa24-b729-457d-92ba-fe57a64af10a",
+        "relative_path": "artifacts/patch-proposal.json",
+        "run_id": "05747617-5740-417d-92af-c4b0781cd5a5",
+        "sha256": "c23d57773d0ff53eba0607113a7e545ab6062971fc180f59d9483d8fc7c3a686",
+        "task_id": "1"
+      },
+      "run_id": "05747617-5740-417d-92af-c4b0781cd5a5",
+      "status": "succeeded",
+      "task_id": "1"
+    },
+    "model_proposal": {
+      "schema_version": 1,
+      "summary": "Add `src` to pytest's pythonpath while preserving the existing current-directory entry.",
+      "patches": [
+        {
+          "path": "pyproject.toml",
+          "unified_diff": "--- a/pyproject.toml\n+++ b/pyproject.toml\n@@ -34,5 +34,5 @@\n [tool.pytest.ini_options]\n testpaths = [\"tests\"]\n-pythonpath = [\".\"]\n+pythonpath = [\".\", \"src\"]\n addopts = \"-q --strict-markers\"\n markers = ['live: explicit provider network validation']\n"
+        }
+      ]
+    },
+    "approvals": [
+      {
+        "action": "sandbox_execution",
+        "run_id": "c1003857-9eaf-4d54-b3d4-2dfd038528fa",
+        "fingerprint": "80279430d347658cefaaabf76ba07723ae3c928566d13b4b8143c751c03f306f"
+      },
+      {
+        "action": "sandbox_output",
+        "run_id": "c1003857-9eaf-4d54-b3d4-2dfd038528fa",
+        "fingerprint": "8623cd168a95f654096fe72390c975646a07b98e364b994d507b3e7c8dae6d2d"
+      },
+      {
+        "action": "sandbox_verification",
+        "run_id": "a85e5489-dd60-4587-9eee-e7a8fc65b935",
+        "fingerprint": "a9294168822f3e53fea1256f33dea0f87259c0891fb545e5b54ebb54e30eb85a"
+      }
+    ],
+    "apply_run": "c1003857-9eaf-4d54-b3d4-2dfd038528fa",
+    "runs": [
+      {
+        "run_id": "05747617-5740-417d-92af-c4b0781cd5a5",
+        "stage": "code_generate",
+        "status": "succeeded",
+        "error_code": null
+      },
+      {
+        "run_id": "c1003857-9eaf-4d54-b3d4-2dfd038528fa",
+        "stage": "sandbox_apply",
+        "status": "succeeded",
+        "error_code": null
+      },
+      {
+        "run_id": "a85e5489-dd60-4587-9eee-e7a8fc65b935",
+        "stage": "sandbox_verification",
+        "status": "failed",
+        "error_code": "RUNNER_REQUEST_REJECTED"
+      },
+      {
+        "run_id": "9531100e-581f-4ebc-a7ae-e4cb0f767239",
+        "stage": "verification-pytest",
+        "status": "failed",
+        "error_code": "RUNNER_REQUEST_REJECTED"
+      },
+      {
+        "run_id": "57680851-626b-45e8-8b2a-dd1148fcbc83",
+        "stage": "verification-ruff",
+        "status": "cancelled",
+        "error_code": "RUNNER_REQUEST_REJECTED"
+      },
+      {
+        "run_id": "06259010-cfa1-4c39-a153-f47aced21a3b",
+        "stage": "verification-mypy",
+        "status": "cancelled",
+        "error_code": "RUNNER_REQUEST_REJECTED"
+      }
+    ],
+    "jobs": [
+      {
+        "job_id": "7732791a30294304b2f92436ca540b37",
+        "request_fingerprint": "a9b55df32efe5b3725db195d0adaa8dbe0fa5fc3c87924326b1cd765f61db5fa",
+        "sandbox_id": "7732791a-3029-4304-b2f9-2436ca540b37",
+        "task_uid": 10001,
+        "exit_code": 0,
+        "reason": "exited",
+        "started_at": "2026-10-21T08:34:21.557878Z",
+        "ended_at": "2026-10-21T08:34:26.083656Z",
+        "writers_stopped": true,
+        "resources_removed": true,
+        "run_id": "c1003857-9eaf-4d54-b3d4-2dfd038528fa",
+        "stage": "sandbox_apply",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "summary": []
+      },
+      {
+        "job_id": "e286693941354c4da9f8176e426e10f0",
+        "request_fingerprint": "c7dc4d03609b45ffd5a734d20395fcbdf149935491a79cb6c59d0594a939d058",
+        "sandbox_id": "e2866939-4135-4c4d-a9f8-176e426e10f0",
+        "state": "failed",
+        "runner_error_code": "OUTPUT_INVALID",
+        "run_id": "9531100e-581f-4ebc-a7ae-e4cb0f767239",
+        "stage": "verification-pytest",
+        "result_available": false,
+        "exit_code": null,
+        "writers_stopped": null,
+        "resources_removed": null
+      }
+    ],
+    "model_calls": [
+      {
+        "run_id": "05747617-5740-417d-92af-c4b0781cd5a5",
+        "status": "succeeded",
+        "completion": {
+          "schema_version": 1,
+          "finish_reason": "stop",
+          "transport_bytes": 235357,
+          "text_bytes": 424,
+          "reasoning_bytes": 2263,
+          "output_budget_tokens": 16384,
+          "usage": {
+            "prompt_tokens": 606,
+            "completion_tokens": 781,
+            "total_tokens": 1387
+          },
+          "received": true,
+          "complete": true
+        },
+        "started_at": "2026-10-21T08:32:47.634389Z",
+        "ended_at": "2026-10-21T08:32:51.766855Z"
+      }
+    ],
+    "snapshot_matches_client_commit": "0d59554eabcb1e943dd7443e0e6eb924622ef63d",
+    "fresh_apply_gate_passed": true,
+    "source_unchanged": true,
+    "persisted_credentials_absent": true,
+    "credential_scan_files": 2922,
+    "status": "verification_failed"
+  },
+  "configuration": {
+    "settings_directory": "C:\\Users\\liuyi\\AppData\\Local\\Yipilot\\yipilot",
+    "provider_backup": "C:\\Users\\liuyi\\AppData\\Local\\Yipilot\\yipilot\\providers.json.before-opensandbox-real-20261021T082128Z.bak",
+    "selector": "deepseek-1/deepseek-flash:reasoning-high",
+    "credential_readable": true,
+    "auth_unchanged": true,
+    "public_config_valid": true
+  },
+  "cache_proof": {
+    "path": "/.hypothesis/unicode_data/15.0.0/charmap.json.gz",
+    "bytes": 21726,
+    "sha256": "635be22cd52f26007d6a50c890cf0ce06dea6271bc7126cf4bb8adef4b0f1d6a",
+    "gzip_magic": true,
+    "utf8": false,
+    "contains_nul": true,
+    "violates_current_source_policy": true
+  },
+  "baseline_scan_timing": {
+    "files": 261,
+    "bytes": 5035615,
+    "baseline_scan_seconds": 2.173
+  },
+  "server_audit": {
+    "passed": true,
+    "historical_jobs_preserved": 117,
+    "new_jobs": 2,
+    "ledger_jobs": 119,
+    "database_integrity": "ok",
+    "terminal_states": {
+      "succeeded": 66,
+      "failed": 30,
+      "uncertain": 10,
+      "cancelled": 13
+    },
+    "services": {
+      "yipilot-runner": "stopped, disabled",
+      "opensandbox-profile": "stopped, disabled"
+    },
+    "original_server": "healthy",
+    "original_config_sha256": "b4500d04c25253827034395f5af281823cd87172df1f652ae8a0e398c4a6718f",
+    "backup": "/srv/yipilot-runner/backups/real-project-20261021T085843Z-6670d3",
+    "containers": 0,
+    "volumes": 0,
+    "work_mounts": 0,
+    "work_loops": 0,
+    "host_oom_kill_counter": 0,
+    "memory_kib": {
+      "MemAvailable": 1091656
+    },
+    "production_ready": false,
+    "business_cutover": false
+  },
+  "client_fix_ci": {
+    "head": "0d59554eabcb1e943dd7443e0e6eb924622ef63d",
+    "run_id": 39570327349,
+    "url": "https://github.com/Liu-Ame-Yi/YiPilot/actions/runs/39570327349",
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "offline",
+        "id": 119122583773,
+        "conclusion": "success",
+        "summary": "852 passed, 12 skipped, 1 warning in 606.59s (0:10:06)",
+        "ruff": "passed",
+        "mypy": "81 source files passed"
+      },
+      {
+        "name": "runner-linux",
+        "id": 119122583344,
+        "conclusion": "success",
+        "summary": "65 passed, 1 warning in 48.46s"
+      },
+      {
+        "name": "opensandbox-profile-build",
+        "id": 119122583798,
+        "conclusion": "success",
+        "summary": "95 passed in 0.48s"
+      }
+    ]
+  },
+  "failure_limits": {
+    "pytest_exit_code_available": false,
+    "pytest_stdout_stderr_available": false,
+    "ruff_executed": false,
+    "mypy_executed": false,
+    "change_handoff_created": false,
+    "opaque_binary_source_supported": false
+  },
+  "harness_note": "The driver compared git diff HEAD before and after the run. Committing the already-tested adapter fix changed HEAD during the run, causing its final assertion to fail. Independent collection verified the snapshot against commit 0d59554 except the 12 documented screenshot exclusions, revalidated accepted apply evidence, and checked all Run terminal states. The exact orphan SSH child was stopped and server resource cleanup was audited separately. No driver exit code is used as evidence of business success."
+}

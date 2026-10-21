@@ -1,6 +1,6 @@
 # 当前版本快速开始
 
-核对：2026-09-07 当前工作树。这里只描述实际入口，完整自动研发仍是 [目标](../product/vision.md)。
+核对：2026-10-21 当前工作树。这里只描述实际入口，完整自动研发仍是 [目标](../product/vision.md)。
 
 ## 安装与任务
 
@@ -32,7 +32,9 @@ yipilot code generate --project C:\work\yipilot-demo --taskid 1001 --alias sampl
 
 ## OpenSandbox 应用与验证
 
-本地业务代码已改为 Runner；当前版本的 CI 与服务器 G4 验收尚未完成。本节新命令用于部署该版本之后，不能视为服务器已经升级。
+本地业务代码已改为 Runner，完整 CI 与服务器六 Job 样例验收已通过。后续[真实项目实测](../research/2026-10-21-opensandbox-real-project-validation.md)的模型生成和远程应用成功，但原仓库 PNG 与 Hypothesis 压缩缓存触发现有文本源文件/输出限制，完整验证尚未通过，不能视为任意 Python 项目已经可用。
+
+测试结束后 Runner 与固定 profile 已停止且 disabled。已配置本机凭据引用不代表服务或隧道常驻；下方连接命令需要先启动服务器受测服务。当前华为云测试端的 Runner 引用为 `keyring:runner-huawei`，原 OpenSandbox 管理 key 不能代用。
 
 本机不再安装 Docker。服务器运行固定 OpenSandbox profile 和 Runner，本机通过 SSH 隧道连接回环服务；在独立终端持续运行：
 
